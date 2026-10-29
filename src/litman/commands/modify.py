@@ -35,7 +35,7 @@ import click
 from rich.console import Console
 from rich.markup import escape
 
-from litman.commands._hub_report import hub_settlement_lines
+from litman.commands._hub_report import PROJECTS_NOT_UPDATED, hub_settlement_lines
 from litman.commands._options import library_option, vault_option
 from litman.core.atomic import staged_write
 from litman.core.config import load_config
@@ -77,7 +77,7 @@ from litman.core.views import (
     view_fields_snapshot,
 )
 from litman.core.yaml_pool import ThreadLocalYAML
-from litman.exceptions import ModifyError, PaperNotFoundError
+from litman.exceptions import ConfigError, ModifyError, PaperNotFoundError
 
 console = Console()
 
@@ -926,9 +926,16 @@ def _apply_modify(
     # its member entries carry full metadata by construction (this condition
     # is exactly the member-upgrade branch above). Best-effort like
     # rebuild_all_project_refs: a project whose dir is missing on this
-    # machine is silently skipped.
+    # machine is silently skipped. A config that cannot be read skips every
+    # project, as reconcile_derived does above — the edit is committed, so the
+    # command finishes and says the project folders were not updated.
+    project_side_skipped = bool(derived["config_unreadable"])
     if not projects_changed and refs_fields_changed and member_projects:
-        registry = load_config(vault).projects
+        try:
+            registry = load_config(vault).projects
+        except ConfigError:
+            registry = {}
+            project_side_skipped = True
         for proj in member_projects:
             project_dir_str = registry.get(proj)
             if not project_dir_str:
@@ -965,9 +972,11 @@ def _apply_modify(
     refreshed = "INDEX.json + views/"
     if retitled_notes is not None:
         refreshed += " + notes.md heading"
-    if projects_changed:
+    if projects_changed and not project_side_skipped:
         refreshed += " + project litman_reflib/REFERENCES.md"
     console.print(f"[dim]{refreshed} refreshed.[/]")
+    if project_side_skipped:
+        console.print(PROJECTS_NOT_UPDATED, soft_wrap=True)
     return True
 
 

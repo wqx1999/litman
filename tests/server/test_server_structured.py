@@ -2272,3 +2272,27 @@ def test_restoring_a_paper_says_the_config_cannot_be_read(
     _assert_config_detail(resp.json()["detail"], kind)
     assert [e.entry_name for e in list_trash(vault)] == [entry_name]
     assert not (vault / "papers" / paper_id).exists()
+
+
+@pytest.mark.parametrize("kind", ["unparsable", "invalid"])
+def test_editing_a_project_member_saves_when_the_config_cannot_be_read(
+    vault_with_paper: tuple[Path, str], tmp_path: Path, kind: str
+) -> None:
+    """The edit is saved before the project folders are refreshed, so it
+    answers 200 rather than "fix it and try again" for a change that already
+    landed. The health panel is where the unreadable config shows."""
+    vault, paper_id = vault_with_paper
+    _register_project(vault, "pepforge", tmp_path / "pepforge")
+    client = _client(vault)
+    linked = client.post(f"/api/paper/{paper_id}/project", json={"project": "pepforge"})
+    assert linked.status_code == 200
+    _damage_config(vault, kind)
+
+    resp = client.put(
+        f"/api/paper/{paper_id}/metadata", json={"set": {"title": "Brand New Title"}}
+    )
+
+    assert resp.status_code == 200, resp.text
+    assert resp.json() == {"ok": True, "changed": True}
+    meta_text = (vault / "papers" / paper_id / "metadata.yaml").read_text(encoding="utf-8")
+    assert _yaml.load(meta_text)["title"] == "Brand New Title"

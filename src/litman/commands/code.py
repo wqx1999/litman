@@ -22,6 +22,7 @@ from rich.markup import escape
 from rich.panel import Panel
 from rich.table import Table
 
+from litman.commands._hub_report import PROJECTS_NOT_UPDATED
 from litman.commands._options import format_option, library_option, vault_option
 from litman.commands._path_lines import path_lines, print_unwrapped
 from litman.commands._usage import reject_second_positional
@@ -51,6 +52,7 @@ from litman.core.confirm import refuse_without_terminal
 from litman.core.library import find_vault, resolve_library_or_vault
 from litman.core.locking import rmtree
 from litman.core.paper_lookup import complete_paper_id, resolve_paper_input
+from litman.core.project_link import code_links_not_refreshed
 from litman.core.undecodable import printable
 from litman.exceptions import CodeError, PaperNotFoundError
 
@@ -331,6 +333,8 @@ def code_add_cmd(
             "update INDEX.json.",
         ],
     )
+    if paper_id is not None and bound_now and code_links_not_refreshed(vault, [paper_id]):
+        console.print(PROJECTS_NOT_UPDATED, soft_wrap=True)
 
 
 # ---------------------------------------------------------------------------
@@ -530,6 +534,8 @@ def code_link_cmd(
             f"[yellow]No-op:[/] {escape(paper_id)} ↔ {escape(repo_name)} "
             "already bound on both sides."
         )
+    if changed and code_links_not_refreshed(vault, [paper_id]):
+        console.print(PROJECTS_NOT_UPDATED, soft_wrap=True)
 
 
 # ---------------------------------------------------------------------------
@@ -597,6 +603,8 @@ def code_unlink_cmd(
             f"[yellow]No-op:[/] {escape(paper_id)} ✕ {escape(repo_name)} "
             "already unbound on both sides."
         )
+    if changed and code_links_not_refreshed(vault, [paper_id]):
+        console.print(PROJECTS_NOT_UPDATED, soft_wrap=True)
 
 
 # ---------------------------------------------------------------------------
@@ -754,6 +762,8 @@ def code_rm_cmd(
             + ", ".join(escape(p) for p in affected)
         )
     console.print(summary)
+    if affected and code_links_not_refreshed(vault, affected):
+        console.print(PROJECTS_NOT_UPDATED, soft_wrap=True)
 
 
 # ---------------------------------------------------------------------------

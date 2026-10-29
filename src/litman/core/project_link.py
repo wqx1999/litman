@@ -32,7 +32,7 @@ import io
 import os
 import shutil
 import uuid
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from pathlib import Path
 from typing import Any, Literal, NamedTuple
 
@@ -68,7 +68,7 @@ from litman.core.views import (
     view_fields_snapshot,
 )
 from litman.core.yaml_pool import ThreadLocalYAML
-from litman.exceptions import LitmanError, PaperNotFoundError, TaxonomyError
+from litman.exceptions import ConfigError, LitmanError, PaperNotFoundError, TaxonomyError
 
 _PROJECTS_DICT = "projects"
 
@@ -587,6 +587,22 @@ def find_dangling_bridges(
     return out
 
 
+def _paper_projects(papers: list[dict[str, Any]], paper_id: str) -> list[str]:
+    """The projects ``paper_id`` is in; ``[]`` when it is not in ``papers``."""
+    paper = next((p for p in papers if p.get("id") == paper_id), None)
+    if paper is None:
+        return []
+    return [str(project) for project in paper.get("projects") or []]
+
+
+def _project_registry(vault: Path) -> dict[str, str] | None:
+    """``lit-config.yaml``'s project map; ``None`` when the file cannot be read."""
+    try:
+        return dict(load_config(vault).projects)
+    except ConfigError:
+        return None
+
+
 def refresh_project_code_links(
     vault: Path, paper_id: str
 ) -> dict[str, dict[str, list[str]]]:
@@ -600,19 +616,21 @@ def refresh_project_code_links(
     fresh, post-mutation metadata; a pure derived refresh that never mutates
     metadata. Skips projects not registered in ``lit-config.yaml`` or whose
     directory is absent on this machine (those are owned by the
-    ``project_path_exists`` health check).
+    ``project_path_exists`` health check), and every project when
+    ``lit-config.yaml`` cannot be read: the caller's write is already
+    committed, so the command finishes and says so
+    (:func:`code_links_not_refreshed`).
 
     Returns ``{project: {"created": [...], "removed": [...]}}`` for the
     projects actually reconciled.
     """
     papers = list_papers(vault)
-    paper = next((p for p in papers if p.get("id") == paper_id), None)
-    if paper is None:
-        return {}
-    projects = paper.get("projects") or []
+    projects = _paper_projects(papers, paper_id)
     if not projects:
         return {}
-    registry = load_config(vault).projects
+    registry = _project_registry(vault)
+    if registry is None:
+        return {}
     out: dict[str, dict[str, list[str]]] = {}
     for project in projects:
         project_dir_str = registry.get(project)
@@ -625,6 +643,20 @@ def refresh_project_code_links(
             vault, project, project_dir, papers
         )
     return out
+
+
+def code_links_not_refreshed(vault: Path, paper_ids: Iterable[str]) -> bool:
+    """Whether :func:`refresh_project_code_links` left a project's
+    ``litman_code/`` as it was for one of ``paper_ids``.
+
+    It does when ``lit-config.yaml`` cannot be read and the paper is in a
+    project. Decided by the same two helpers the refresh uses, so the command
+    that reports the skip and the refresh that made it cannot disagree.
+    """
+    if _project_registry(vault) is not None:
+        return False
+    papers = list_papers(vault)
+    return any(_paper_projects(papers, paper_id) for paper_id in paper_ids)
 
 
 def link_paper_to_project(

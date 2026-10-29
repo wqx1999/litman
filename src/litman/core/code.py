@@ -867,7 +867,14 @@ def unbind_repo_from_all_papers(vault: Path, repo_name: str) -> list[str]:
     from litman.core.project_link import refresh_project_code_links
 
     for pid, _ in affected:
-        refresh_project_code_links(vault, pid)
+        try:
+            refresh_project_code_links(vault, pid)
+        except OSError:
+            # Best-effort, as in bind/unbind above: the strip is already
+            # committed, and propagating would stop `lit code rm` before it
+            # deletes the clone. A symlink left behind is surfaced by
+            # `lit health-check`.
+            pass
     return [pid for pid, _ in affected]
 
 

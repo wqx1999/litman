@@ -47,7 +47,7 @@ import click
 from rich.console import Console
 from rich.markup import escape
 
-from litman.commands._hub_report import hub_settlement_lines
+from litman.commands._hub_report import PROJECTS_NOT_UPDATED, hub_settlement_lines
 from litman.commands._options import library_option, vault_option
 from litman.core.atomic import DirMoveError, op_moving_folders, staged_write
 from litman.core.code import CODES_DIRNAME, REPO_META_FILENAME
@@ -422,3 +422,5 @@ def rename_cmd(
     for line in hub_settlement_lines(0, moved_aside_from(derived)):
         console.print(f"  {line}", soft_wrap=True)
     console.print("[dim]INDEX.json + views/ refreshed.[/]")
+    if derived["config_unreadable"]:
+        console.print(PROJECTS_NOT_UPDATED, soft_wrap=True)

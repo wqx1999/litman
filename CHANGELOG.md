@@ -25,6 +25,15 @@ own entry. Read those before you upgrade, whatever the number says.
   until the page was reloaded, and adding a project or restoring a paper said
   only "Internal Server Error". It now stays up to date, and those actions say
   that `lit-config.yaml` needs fixing; the health panel says what is wrong.
+- **Changing a paper while `lit-config.yaml` cannot be read now finishes.**
+  `lit modify`, `lit code link`, `lit code unlink`, `lit code add --paper` and
+  `lit code rm --cascade` saved the change and then stopped with an error —
+  `lit code add` also removed the repo it had just added — and the web UI said
+  the edit had failed. `lit rename` and changing a paper's projects left the
+  project folders behind without a word. They all now finish and say the
+  project folders were not updated: fix the file, then run
+  `lit health-check --fix`. `lit code rm --cascade` also no longer stops before
+  deleting the repo when a link in a project folder cannot be removed.
 
 ## 1.3.9 — 2026-10-28
 

@@ -24,6 +24,11 @@ Two paths stay silent. The GUI's rebuild by design — the health badge re-runs
 the checks instead (decision #9). And ``reconcile_project_code_links``, behind
 ``lit code add`` / ``lit unlink``, which has no per-project report block of its
 own; `lit health-check` surfaces anything it parked.
+
+The other thing said here is that a rebuild did not run at all: the write was
+committed, but ``lit-config.yaml`` cannot be read, so no project folder could be
+brought up to date. ``lit modify``, ``lit rename`` and the ``lit code`` commands
+that bind or unbind a paper end with :data:`PROJECTS_NOT_UPDATED` then.
 """
 
 from __future__ import annotations
@@ -31,6 +36,11 @@ from __future__ import annotations
 from collections.abc import Sequence
 
 from rich.markup import escape
+
+PROJECTS_NOT_UPDATED = (
+    "[yellow]warning:[/] lit-config.yaml cannot be read, so the project "
+    "folders were not updated. Fix it, then run `lit health-check --fix`."
+)
 
 
 def hub_settlement_lines(

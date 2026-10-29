@@ -98,10 +98,12 @@ def reconcile_derived(
             → wholesale ``rebuild_views``.
 
     Returns ``{"index": 1, "views": <n_symlinks>, "project_refs": <n_projects>,
-    "hub_replaced_copies": <n>, "hub_moved_aside": [<path>, ...]}`` — the last
-    two summarise what the project-link rebuild had to do with hub positions
-    occupied by real folders, so the caller can report it without ``core``
-    printing anything.
+    "hub_replaced_copies": <n>, "hub_moved_aside": [<path>, ...],
+    "config_unreadable": <bool>}`` — the two ``hub_*`` keys summarise what the
+    project-link rebuild had to do with hub positions occupied by real folders,
+    and ``config_unreadable`` says the project side was asked for but skipped
+    because ``lit-config.yaml`` cannot be read, so the caller can report either
+    without ``core`` printing anything.
 
     Tier-2 only when ``papers is None``: it calls ``list_papers`` (reads every
     metadata.yaml), so it MUST NOT run inside the Tier-1 hook (invariant #15).
@@ -130,6 +132,7 @@ def reconcile_derived(
     n_projects = 0
     hub_replaced = 0
     hub_moved_aside: list[str] = []
+    config_unreadable = False
     if project_refs:
         # Project-side derived artifacts (#3). Only when projects are
         # configured; rebuild_all_* skip unreachable project dirs internally.
@@ -142,7 +145,9 @@ def reconcile_derived(
         # lit-config.yaml surfaces via `lit config show`, and
         # check_project_references already returns [] on a broken config — so
         # there is no #3 drift to repair and we skip the project-side rebuild
-        # entirely. The rebuild calls themselves are NOT in this try: a genuine
+        # entirely. A write command's change is committed by now, so it says
+        # the project folders were not updated (config_unreadable below). The
+        # rebuild calls themselves are NOT in this try: a genuine
         # filesystem failure (permission error writing REFERENCES.md, symlink
         # failure on a reachable project dir) must propagate so
         # health.py:_apply_fixes does not falsely report "project_references: 1"
@@ -151,6 +156,7 @@ def reconcile_derived(
             config = load_config(vault)
         except ConfigError:
             config = None
+            config_unreadable = True
         if config is not None:
             projects = dict(config.projects)
             if projects:
@@ -173,6 +179,7 @@ def reconcile_derived(
         "project_refs": n_projects,
         "hub_replaced_copies": hub_replaced,
         "hub_moved_aside": hub_moved_aside,
+        "config_unreadable": config_unreadable,
     }
 
 
