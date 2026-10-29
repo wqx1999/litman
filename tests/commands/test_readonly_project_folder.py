@@ -224,21 +224,52 @@ def test_health_check_fix_does_not_claim_a_read_only_folder_it_could_not_change(
     assert project_issues(lib) == []
 
 
-def test_code_unlink_says_it_could_not_update_litman_code(
-    lib: Library, monkeypatch: pytest.MonkeyPatch
+def _vault_repo(lib: Library, name: str) -> str:
+    repo = lib.vault / "codes" / name
+    (repo / "repo").mkdir(parents=True)
+    (repo / "repo" / "README.md").write_text("# t\n", encoding="utf-8")
+    (repo / "repo-meta.yaml").write_text(
+        f"name: {name}\nupstream: file:///fake\npapers: []\n", encoding="utf-8"
+    )
+    return name
+
+
+def _source_folder(lib: Library) -> str:
+    source = lib.project_dir.parent / "elsewhere"
+    source.mkdir()
+    (source / "run.py").write_text("print(1)\n", encoding="utf-8")
+    return str(source)
+
+
+# The lit code commands that change a project's litman_code/: a link to remove
+# (the first two) or to add (the last two).
+CODE_COMMANDS: dict[str, Any] = {
+    "code unlink": lambda lib: ["code", "unlink", "repoS", "--paper", "p1"],
+    "code rm --cascade": lambda lib: ["code", "rm", "repoS", "--cascade", "-y"],
+    "code link": lambda lib: [
+        "code", "link", _vault_repo(lib, "repoT"), "--paper", "p2"
+    ],
+    "code add --paper": lambda lib: [
+        "code", "add", _source_folder(lib), "--paper", "p2", "--name", "repoT"
+    ],
+}
+
+
+@pytest.mark.parametrize("name", list(CODE_COMMANDS))
+def test_lit_code_says_it_could_not_update_a_read_only_litman_code(
+    lib: Library, monkeypatch: pytest.MonkeyPatch, name: str
 ) -> None:
+    argv = CODE_COMMANDS[name](lib)
     with monkeypatch.context() as patch:
         deny_writes(patch, lib.code_dir)
-        code, output, exc = run_lit(
-            lib, ["code", "unlink", "repoS", "--paper", "p1"]
-        )
+        code, output, exc = run_lit(lib, argv)
 
     assert code == 0, f"{output} {exc!r}"
-    assert "repoS" not in (paper_meta(lib, "p1").get("code-clones") or [])
     assert output.count(
         f"warning: could not update a project's litman_code/ folder "
         f"({ACCESS_DENIED}). Fix that, then run `lit health-check --fix`."
     ) == 1
+    assert "cannot hold folder links" not in output
 
     run_lit(lib, ["health-check", "--fix"])
     assert project_issues(lib) == []

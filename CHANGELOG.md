@@ -81,9 +81,11 @@ own entry. Read those before you upgrade, whatever the number says.
 - **A project folder litman can read but not change is called that.** In a
   `litman_reflib/` or `litman_code/` that takes no changes (`chmod 555`, a
   read-only mount, a folder another user shares), `lit unlink`, `lit rm`,
-  `lit project rm` and `lit code unlink` left the old links behind without a
-  word, and a link that could not be added was blamed on the drive ("this
-  filesystem cannot hold folder links") or on an entry to remove by hand;
+  `lit project rm`, `lit code unlink` and `lit code rm --cascade` left the old
+  links behind without a word, and a link that could not be added (`lit link`,
+  `lit code link`, `lit code add --paper` and the rest) was blamed on the
+  drive ("this filesystem cannot hold folder links") or on an entry to remove
+  by hand;
   `lit health-check` said the same of a project folder that took no changes
   at all. They now end with the one line a folder they cannot read gets, and
   `lit project rm` names the folder to clear by hand. Rebuilding a project
