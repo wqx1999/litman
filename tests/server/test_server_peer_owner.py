@@ -3,15 +3,17 @@
 On Linux the guard asks the kernel who owns the client's end of each
 connection (``peer_owner``) and lets in only the server's own user and root.
 A client that hung up before it could be identified is refused too: its
-request would still run, so that is how another user would write blind.
-Wherever nobody can tell — Windows, macOS, the test client — everything passes
-as before.
+request would still run, so that is how another user would write blind. So is
+one whose lookup failed where the kernel can be asked. Wherever nobody can
+tell — Windows, macOS, the test client — everything passes as before.
 
 The rule is pinned on a fake kernel table, the kernel's answer on hand-built
-bytes, and the refusal on a guard handed a fake owner. The rest runs the real
-lookup against real sockets: a real server lets its own user in on every
-platform, and on Linux it refuses requests whose client hung up while it
-serves the same request from a client that stays.
+bytes, the netlink conversation on a fake netlink socket, and the refusal on a
+guard handed a fake owner. The rest runs the real lookup against real sockets:
+a real server lets its own user in on every platform, and on Linux it finds a
+client bound to a device, still looks up with every file descriptor in use,
+and refuses requests whose client hung up while it serves the same request
+from a client that stays.
 """
 
 from __future__ import annotations
@@ -23,9 +25,12 @@ import json
 import os
 import socket
 import struct
+import subprocess
+import sys
+import textwrap
 import threading
 import time
-from collections.abc import Iterator
+from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
@@ -43,12 +48,27 @@ from starlette.websockets import WebSocketDisconnect
 from litman.core.library import create_vault
 from litman.server import create_app, peer_owner
 from litman.server.local_guard import LocalPageGuard
-from litman.server.peer_owner import GONE, UNKNOWN, Owner, Socket, allowed, owner, parse_reply
+from litman.server.peer_owner import (
+    FAILED,
+    GONE,
+    UNKNOWN,
+    CannotTell,
+    Owner,
+    SockDiag,
+    Socket,
+    allowed,
+    answers_for_tcp,
+    owner,
+    parse_reply,
+    uid_mapped,
+)
 from tests.server._client import TestClient
 
-# Read once, at import: whether this platform can be asked at all.
-HAS_NETLINK = hasattr(socket, "AF_NETLINK")
-ONLY_LINUX = "only Linux says who owns a connection's other end; elsewhere every client passes"
+# Asked once, at import, as the server asks: whether this machine can say who
+# owns a socket. No on Windows and macOS; no on a Linux whose sandbox refuses
+# netlink or whose kernel has no tcp_diag.
+KERNEL = peer_owner.sock_diag()
+CANNOT_TELL = "this machine cannot say who owns a connection's other end; every client passes"
 
 ME = 1000  # the server's own user, in the fake tables
 OTHER = 1001
@@ -171,14 +191,25 @@ def test_what_no_socket_stands_behind_is_unknown(client, server) -> None:
     assert allowed(UNKNOWN, me=ME) is True
 
 
-@pytest.mark.parametrize("fails_on", ["client end", "server end"])
-def test_a_kernel_that_will_not_answer_lets_the_request_through(fails_on: str) -> None:
+def test_a_machine_that_cannot_tell_lets_the_request_through() -> None:
     def lookup(local, remote):
-        if (local, remote) == ((CLIENT, SERVER) if fails_on == "client end" else (SERVER, CLIENT)):
-            raise OSError(errno.EPERM, "no netlink for you")
-        return None
+        raise CannotTell
 
     assert owner(CLIENT, SERVER, lookup=lookup) == UNKNOWN
+    assert allowed(UNKNOWN, me=ME) is True
+
+
+@pytest.mark.parametrize("fails_on", ["client end", "server end"])
+def test_a_lookup_that_fails_is_refused(fails_on: str) -> None:
+    """Another user who can make the lookup fail must not get in by it."""
+
+    def lookup(local, remote):
+        if (local, remote) == ((CLIENT, SERVER) if fails_on == "client end" else (SERVER, CLIENT)):
+            raise OSError(errno.EMFILE, "Too many open files")
+        return None
+
+    assert owner(CLIENT, SERVER, lookup=lookup) == FAILED
+    assert allowed(FAILED, me=ME) is False
 
 
 def test_without_uids_only_root_and_unknown_pass() -> None:
@@ -187,6 +218,20 @@ def test_without_uids_only_root_and_unknown_pass() -> None:
     assert allowed(0, me=None) is True
     assert allowed(OTHER, me=None) is False
     assert allowed(GONE, me=None) is False
+    assert allowed(FAILED, me=None) is False
+
+
+@pytest.mark.parametrize(
+    ("uid_map", "uid", "mapped"),
+    [
+        ("         0          0 4294967295\n", 1000, True),  # no user namespace
+        ("         0       1000          1\n", 0, True),  # unshare -Ur
+        ("         0       1000          1\n", 1000, False),
+        ("", 65534, False),  # unshare -U: no mapping at all
+    ],
+)
+def test_a_uid_without_a_mapping_tells_nobody_apart(uid_map: str, uid: int, mapped: bool) -> None:
+    assert uid_mapped(uid_map, uid) is mapped
 
 
 # --- The kernel's answer, on hand-built bytes -------------------------------
@@ -259,7 +304,74 @@ def test_an_answer_that_says_nothing_is_an_error(reply: bytes) -> None:
     def lookup(local, remote):
         return parse_reply(reply, local, remote)
 
-    assert owner(CLIENT, SERVER, lookup=lookup) == UNKNOWN
+    assert owner(CLIENT, SERVER, lookup=lookup) == FAILED
+
+
+# --- The netlink conversation, on a fake netlink socket ----------------------
+
+
+def _seq(message: bytes) -> int:
+    return struct.unpack_from("=I", message, 8)[0]
+
+
+def _with_seq(message: bytes, seq: int) -> bytes:
+    return message[:8] + struct.pack("=I", seq) + message[12:]
+
+
+class FakeNetlink:
+    """Answers each request from ``table`` (device index → reply, ENOENT when
+    absent), after ``before`` — what else reaches the socket first."""
+
+    def __init__(self, table: dict[int, bytes], before: Sequence[tuple[bytes, int]] = ()) -> None:
+        self.table = table
+        self.inbox: list[tuple[bytes, int]] = []
+        self.before = list(before)
+        self.devices: list[int] = []
+
+    def send(self, data: bytes) -> int:
+        device = struct.unpack_from("=I", data, 60)[0]  # inet_diag_sockid.idiag_if
+        self.devices.append(device)
+        answer = self.table.get(device, _error(errno.ENOENT))
+        self.inbox += self.before + [(_with_seq(answer, _seq(data)), 0)]
+        self.before = []
+        return len(data)
+
+    def recvfrom(self, size: int) -> tuple[bytes, tuple[int, int]]:
+        data, sender = self.inbox.pop(0)
+        return data, (sender, 0)
+
+
+def test_a_late_or_forged_answer_is_skipped() -> None:
+    """The answer to a question that timed out arrives late, and another
+    process may write to the socket: only the kernel's answer to this question
+    counts."""
+    late = _with_seq(_reply(uid=OTHER), 0)
+    forged = _with_seq(_reply(uid=0), 1)
+    netlink = FakeNetlink({0: _reply(uid=ME, inode=77)}, before=[(late, 0), (forged, 4242)])
+    found = SockDiag(netlink).lookup(CLIENT, SERVER)  # type: ignore[arg-type]
+    assert found == Socket(ESTABLISHED, ME, 77)
+
+
+def test_a_socket_bound_to_a_device_is_asked_for_on_that_device(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``SO_BINDTODEVICE``: the kernel finds the socket only when asked with
+    its device's index, and not finding it read as a client out of sight."""
+    monkeypatch.setattr(socket, "if_nameindex", lambda: [(1, "lo"), (2, "eth0"), (9, "vrf")])
+    netlink = FakeNetlink({9: _reply(uid=OTHER, inode=77)})
+    found = SockDiag(netlink).lookup(CLIENT, SERVER)  # type: ignore[arg-type]
+    assert found == Socket(ESTABLISHED, OTHER, 77)
+    assert netlink.devices == [0, 1, 2, 9]
+
+    unbound = FakeNetlink({0: _reply(uid=OTHER, inode=77)})
+    SockDiag(unbound).lookup(CLIENT, SERVER)  # type: ignore[arg-type]
+    assert unbound.devices == [0]
+
+
+def test_a_kernel_without_tcp_diag_cannot_tell() -> None:
+    """It finds no TCP socket at all — not even the server's own connection —
+    and every client would read as gone, the server's own user included."""
+    assert answers_for_tcp(SockDiag(FakeNetlink({}))) is False  # type: ignore[arg-type]
 
 
 # --- The refusal, from a guard handed a fake owner --------------------------
@@ -273,6 +385,17 @@ def _counting_app() -> tuple[Starlette, list[str]]:
         return PlainTextResponse("ok")
 
     return Starlette(routes=[Route("/hit", hit, methods=["GET", "POST"])]), ran
+
+
+def test_a_failed_lookup_is_refused_and_says_so() -> None:
+    app, ran = _counting_app()
+    client = TestClient(LocalPageGuard(app, owner=lambda client, server: FAILED))
+    response = client.post("/hit")
+    assert response.status_code == 403
+    detail = response.json()["detail"]
+    assert detail == "litman could not check which user sent this request. Try again."
+    assert len(detail) <= 120
+    assert ran == []
 
 
 @pytest.mark.parametrize("method", ["GET", "POST"])
@@ -362,15 +485,107 @@ def test_the_real_lookup_finds_the_clients_own_socket() -> None:
         with socket.create_connection(server) as client_end:
             accepted, client = listener.accept()
             with accepted:
-                if HAS_NETLINK:
+                if KERNEL is not None:
                     # The inode is the client socket's own: the client's end
                     # was found, not the server's.
-                    found = peer_owner.sock_diag(client, server)
+                    found = KERNEL.lookup(client, server)
                     inode = os.fstat(client_end.fileno()).st_ino
                     assert found == Socket(ESTABLISHED, os.geteuid(), inode)
                     assert owner(client, server) == os.geteuid()
                 else:
                     assert owner(client, server) == UNKNOWN
+
+
+@pytest.mark.skipif(KERNEL is None, reason=CANNOT_TELL)
+def test_a_client_bound_to_a_device_is_found() -> None:
+    """Any user may bind a socket to ``lo`` (Linux 5.7+), and a lookup that
+    missed it let that user's requests through as a client out of sight."""
+    with socket.create_server(("127.0.0.1", 0)) as listener:
+        server = listener.getsockname()
+        with socket.socket() as client_end:
+            try:
+                client_end.setsockopt(socket.SOL_SOCKET, socket.SO_BINDTODEVICE, b"lo")
+            except OSError:
+                pytest.skip("this kernel lets only privileged users bind to a device")
+            client_end.connect(server)
+            accepted, client = listener.accept()
+            with accepted:
+                inode = os.fstat(client_end.fileno()).st_ino
+                assert KERNEL.lookup(client, server) == Socket(ESTABLISHED, os.geteuid(), inode)
+                assert owner(client, server) == os.geteuid()
+
+
+@pytest.mark.skipif(KERNEL is None, reason=CANNOT_TELL)
+def test_a_server_out_of_file_descriptors_still_looks_up() -> None:
+    """Another user once filled the server's file descriptors with idle
+    connections: each lookup then failed to open its socket, and a failed
+    lookup let the request through. Run in a child, which can use them all up."""
+    script = textwrap.dedent(
+        """
+        import os, resource, socket
+        from litman.server import peer_owner
+
+        assert peer_owner.sock_diag() is not None
+        listener = socket.create_server(("127.0.0.1", 0))
+        server = listener.getsockname()
+        client_end = socket.create_connection(server)
+        accepted, client = listener.accept()
+        soft, hard = resource.getrlimit(resource.RLIMIT_NOFILE)
+        resource.setrlimit(resource.RLIMIT_NOFILE, (min(soft, 256), hard))
+        held = []
+        try:
+            while True:
+                held.append(os.open(os.devnull, os.O_RDONLY))
+        except OSError:
+            pass
+        try:
+            socket.socket()
+        except OSError:
+            print("full", peer_owner.owner(client, server))
+        """
+    )
+    run = subprocess.run(
+        [sys.executable, "-c", script], capture_output=True, text=True, timeout=60
+    )
+    assert run.stdout.split() == ["full", str(os.geteuid())], run.stderr
+
+
+@pytest.mark.skipif(KERNEL is None, reason=CANNOT_TELL)
+def test_a_server_in_a_user_namespace_without_a_mapping_cannot_tell() -> None:
+    """``unshare -U``: the server's own uid and every other user's read as the
+    same overflow uid, so a uid there tells nobody apart."""
+    script = "from litman.server import peer_owner; print(peer_owner.sock_diag())"
+    try:
+        run = subprocess.run(
+            ["unshare", "-U", sys.executable, "-c", script],
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+    except OSError:
+        pytest.skip("no unshare here")
+    if run.returncode != 0 and "unshare:" in run.stderr:
+        pytest.skip(f"no user namespaces here: {run.stderr.strip()}")
+    assert run.stdout.split() == ["None"], run.stderr
+
+
+def test_the_app_opens_the_lookup_before_the_port_is_open() -> None:
+    """Opened at the first request instead, a lookup that another user's open
+    connections had made fail to open would read "cannot tell" for the
+    server's life — and let everyone in."""
+    script = textwrap.dedent(
+        """
+        from litman.server import create_app, peer_owner
+
+        assert not peer_owner._opened
+        create_app(None)
+        print(peer_owner._opened)
+        """
+    )
+    run = subprocess.run(
+        [sys.executable, "-c", script], capture_output=True, text=True, timeout=60
+    )
+    assert run.stdout.split() == ["True"], run.stderr
 
 
 def _post(port: int, path: str) -> bytes:
@@ -382,7 +597,7 @@ def _post(port: int, path: str) -> bytes:
         conn.close()
 
 
-@pytest.mark.skipif(not HAS_NETLINK, reason=ONLY_LINUX)
+@pytest.mark.skipif(KERNEL is None, reason=CANNOT_TELL)
 @pytest.mark.parametrize("checked", [True, False], ids=["guard", "no hang-up check"])
 def test_a_real_server_runs_no_request_whose_client_hung_up(checked: bool) -> None:
     """The same write, from a client that stays for the answer and from ones
@@ -449,7 +664,7 @@ def test_a_real_server_runs_no_request_whose_client_hung_up(checked: bool) -> No
         assert collections.Counter(ran) == {"stays": 1, "closes": 20, "resets": 20}
 
 
-@pytest.mark.skipif(not HAS_NETLINK, reason=ONLY_LINUX)
+@pytest.mark.skipif(KERNEL is None, reason=CANNOT_TELL)
 def test_a_dual_stack_client_is_found_too() -> None:
     """A browser may connect from an IPv6 socket to ``::ffff:127.0.0.1``; the
     server, bound to IPv4, sees it as ``127.0.0.1``."""
@@ -464,7 +679,7 @@ def test_a_dual_stack_client_is_found_too() -> None:
         accepted, client = listener.accept()
         with accepted:
             assert client[0] == "127.0.0.1"
-            found = peer_owner.sock_diag(client, server)
+            found = KERNEL.lookup(client, server)
             inode = os.fstat(client_end.fileno()).st_ino
             assert found == Socket(ESTABLISHED, os.geteuid(), inode)
             assert owner(client, server) == os.geteuid()

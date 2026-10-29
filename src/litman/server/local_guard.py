@@ -44,7 +44,8 @@ and root pass. So does a client nobody can identify, which is every client
 on Windows and macOS: litman does not look there, and the guard stays as it
 was. A client that hung up before it could be identified is refused: its
 request would still run, and that is how another user would send a write
-blind.
+blind. So is one whose lookup failed on a machine that can look: another
+user able to make it fail would otherwise get in by it.
 
 A pure ASGI middleware rather than ``@app.middleware("http")``: that kind never
 sees WebSocket traffic, and pages reach ``/api/presence`` too.
@@ -155,10 +156,10 @@ class LocalPageGuard:
         if scope["type"] == "http":
             send = _unframed(send)
         reason = refusal(scope)
-        if reason is None and not peer_owner.allowed(
-            self.owner(scope.get("client"), scope.get("server"))
-        ):
-            reason = "user"
+        if reason is None:
+            who = self.owner(scope.get("client"), scope.get("server"))
+            if not peer_owner.allowed(who):
+                reason = "unchecked" if who == peer_owner.FAILED else "user"
         if reason is None:
             await self.app(scope, receive, send)
             return
@@ -174,6 +175,8 @@ class LocalPageGuard:
             detail = f"litman answers only at 127.0.0.1 or localhost. Open {address}."
         elif reason == "origin":
             detail = "Only the litman page itself can send this request, not another website."
+        elif reason == "unchecked":
+            detail = "litman could not check which user sent this request. Try again."
         else:
             detail = (
                 "This litman server belongs to another user on this machine. "

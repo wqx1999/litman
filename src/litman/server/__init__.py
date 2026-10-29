@@ -29,6 +29,7 @@ from litman.exceptions import (
     CorruptMetadataError,
     UnreadableTaxonomyError,
 )
+from litman.server import peer_owner
 from litman.server.local_guard import LocalPageGuard
 from litman.server.routes_agent import router as agent_router
 from litman.server.routes_ingest import router as ingest_router
@@ -329,6 +330,9 @@ def create_app(vault: Path | None) -> FastAPI:
     # Added after ``_guard_vault`` so it wraps it: a request from another web
     # page is refused before anything reads the vault — WebSockets included.
     app.add_middleware(LocalPageGuard)
+    # Open the guard's kernel lookup now, before the server opens its port: a
+    # client cannot be using up the server's file descriptors yet.
+    peer_owner.sock_diag()
 
     @app.exception_handler(CorruptMetadataError)
     async def _corrupt_metadata(request: Request, exc: CorruptMetadataError) -> JSONResponse:

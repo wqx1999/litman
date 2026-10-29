@@ -9,15 +9,25 @@ machine holds, so every request is looked up and nothing is cached: a cache
 could only be keyed by the client's address and port, and another user can
 take a port over the moment it is freed.
 
-``owner()`` answers with the client's uid, or with one of two words:
+Whether this machine can be asked is settled once, before the server opens
+its port (``sock_diag``): the kernel must find a connection this process makes
+to itself, as this process's. The netlink socket that found it is then kept for
+the server's life, so a lookup needs no new file descriptor.
+
+``owner()`` answers with the client's uid, or with one of three words:
 
 * ``"gone"`` — the client hung up before anyone looked. Its request would
   still run, and sending a write and leaving at once is exactly how another
   user would get one past the guard with nothing left to identify. Nobody is
   waiting for the answer, so refusing it costs the server's own user nothing.
+* ``"failed"`` — this machine can tell, but the question failed this time.
+  Refused: a client able to make it fail must not get in by it, and using up
+  the server's file descriptors once did exactly that.
 * ``"unknown"`` — nobody can tell: there is no netlink here (Windows, macOS),
-  the kernel refused the question, or the address is not one a real socket
-  has (the test client's ``"testclient"``). Let through, as before.
+  the kernel cannot answer for TCP (no ``tcp_diag``), this process's uid has
+  no mapping in its user namespace (every user then reads as the same
+  overflow uid), or the address is not one a real socket has (the test
+  client's ``"testclient"``). Let through, as before.
 
 ``allowed()`` lets in the server's own user, root and ``"unknown"``.
 """
@@ -29,13 +39,16 @@ import ipaddress
 import os
 import socket
 import struct
+import threading
 from collections.abc import Callable
+from pathlib import Path
 from typing import Literal, NamedTuple
 
 GONE: Literal["gone"] = "gone"
+FAILED: Literal["failed"] = "failed"
 UNKNOWN: Literal["unknown"] = "unknown"
 
-Owner = int | Literal["gone", "unknown"]
+Owner = int | Literal["gone", "failed", "unknown"]
 Address = tuple[str, int]
 
 
@@ -48,9 +61,13 @@ class Socket(NamedTuple):
 
 
 # ``lookup(local, remote)``: the TCP socket whose own end is ``local`` and whose
-# other end is ``remote``; ``None`` when there is none; ``OSError`` when it
-# cannot be told.
+# other end is ``remote``; ``None`` when there is none; ``CannotTell`` where
+# nobody can; ``OSError`` when the question failed.
 Lookup = Callable[[Address, Address], Socket | None]
+
+
+class CannotTell(Exception):
+    """Raised by a lookup on a machine that cannot say who owns a socket."""
 
 TCP_ESTABLISHED = 1
 
@@ -84,17 +101,18 @@ def _is_ipv4(host: str) -> bool:
     return True
 
 
-def request(local: Address, remote: Address) -> bytes:
-    """A ``SOCK_DIAG_BY_FAMILY`` request for exactly one IPv4 TCP socket."""
+def request(local: Address, remote: Address, *, device: int = 0, seq: int = 1) -> bytes:
+    """A ``SOCK_DIAG_BY_FAMILY`` request for exactly one IPv4 TCP socket: one
+    bound to no device, or to the one with index ``device``."""
     sockid = struct.pack(
         "!HH16s16s",
         local[1],
         remote[1],
         ipaddress.IPv4Address(local[0]).packed,
         ipaddress.IPv4Address(remote[0]).packed,
-    ) + struct.pack("=III", 0, _NO_COOKIE, _NO_COOKIE)
+    ) + struct.pack("=III", device, _NO_COOKIE, _NO_COOKIE)
     body = struct.pack("=BBBBI", socket.AF_INET, socket.IPPROTO_TCP, 0, 0, _ALL_STATES) + sockid
-    header = _HEADER.pack(_HEADER.size + len(body), _SOCK_DIAG_BY_FAMILY, _NLM_F_REQUEST, 1, 0)
+    header = _HEADER.pack(_HEADER.size + len(body), _SOCK_DIAG_BY_FAMILY, _NLM_F_REQUEST, seq, 0)
     return header + body
 
 
@@ -122,18 +140,126 @@ def parse_reply(reply: bytes, local: Address, remote: Address) -> Socket | None:
     return Socket(state=reply[_STATE_AT], uid=uid, inode=inode)
 
 
-def sock_diag(local: Address, remote: Address) -> Socket | None:
-    """``Lookup`` through the kernel; ``OSError`` wherever netlink is missing."""
+class SockDiag:
+    """The kernel's lookup, over one netlink socket kept for the server's life.
+
+    Each lookup used to open a socket of its own, and a client that had used
+    up the server's file descriptors made every one of them fail.
+    """
+
+    def __init__(self, netlink: socket.socket) -> None:
+        self._netlink = netlink
+        self._lock = threading.Lock()
+        self._seq = 0
+
+    def lookup(self, local: Address, remote: Address) -> Socket | None:
+        """``Lookup``. The kernel finds a socket bound to a device
+        (``SO_BINDTODEVICE``, open to any user since Linux 5.7) only when asked
+        with that device's index, so a miss is asked again of every device."""
+        found = self._ask(local, remote, 0)
+        if found is None:
+            for device, _name in socket.if_nameindex():
+                found = self._ask(local, remote, device)
+                if found is not None:
+                    break
+        return found
+
+    def _ask(self, local: Address, remote: Address, device: int) -> Socket | None:
+        with self._lock:
+            self._seq = self._seq % 0xFFFFFFFF + 1
+            self._netlink.send(request(local, remote, device=device, seq=self._seq))
+            while True:
+                reply, (sender, _groups) = self._netlink.recvfrom(8192)
+                # Skip what the kernel did not send, and a late answer to a
+                # question that timed out before.
+                if (
+                    sender == 0
+                    and len(reply) >= _HEADER.size
+                    and _HEADER.unpack_from(reply)[3] == self._seq
+                ):
+                    return parse_reply(reply, local, remote)
+
+
+def answers_for_tcp(diag: SockDiag) -> bool:
+    """Whether ``diag`` finds a connection this process makes to itself, as
+    this process's. Without ``tcp_diag`` the kernel finds no TCP socket at all,
+    and every client would read as gone — the server's own user included."""
+    try:
+        with socket.create_server(("127.0.0.1", 0)) as listener:
+            listener.settimeout(_TIMEOUT_S)
+            server = listener.getsockname()
+            with socket.create_connection(server, timeout=_TIMEOUT_S) as client_end:
+                accepted, client = listener.accept()
+                with accepted:
+                    inode = os.fstat(client_end.fileno()).st_ino
+                    mine = Socket(TCP_ESTABLISHED, os.geteuid(), inode)
+                    return diag.lookup(client, server) == mine
+    except OSError:
+        return False
+
+
+def uid_mapped(uid_map: str, uid: int) -> bool:
+    """Whether ``uid`` has a mapping in ``uid_map`` (``/proc/self/uid_map``'s
+    text). In a user namespace without one, every user's socket reads as the
+    overflow uid — this process's own too — so uids tell nobody apart."""
+    for line in uid_map.splitlines():
+        fields = line.split()
+        if len(fields) == 3 and int(fields[0]) <= uid < int(fields[0]) + int(fields[2]):
+            return True
+    return False
+
+
+def open_sock_diag() -> SockDiag | None:
+    """The kernel's lookup, or ``None`` where it cannot tell users apart."""
     family = getattr(socket, "AF_NETLINK", None)
     if family is None:
-        raise OSError("this platform has no netlink")
-    with socket.socket(family, socket.SOCK_RAW, _NETLINK_SOCK_DIAG) as netlink:
-        netlink.settimeout(_TIMEOUT_S)
-        netlink.send(request(local, remote))
-        return parse_reply(netlink.recv(8192), local, remote)
+        return None
+    try:
+        uid_map = Path("/proc/self/uid_map").read_text(encoding="ascii")
+    except OSError:
+        uid_map = None
+    if uid_map is not None and not uid_mapped(uid_map, os.geteuid()):
+        return None
+    try:
+        netlink = socket.socket(family, socket.SOCK_RAW, _NETLINK_SOCK_DIAG)
+    except OSError:
+        return None
+    netlink.settimeout(_TIMEOUT_S)
+    diag = SockDiag(netlink)
+    if not answers_for_tcp(diag):
+        netlink.close()
+        return None
+    return diag
 
 
-def owner(client: Address | None, server: Address | None, *, lookup: Lookup = sock_diag) -> Owner:
+_opened = False
+_diag: SockDiag | None = None
+_open_lock = threading.Lock()
+
+
+def sock_diag() -> SockDiag | None:
+    """This process's ``open_sock_diag()``, opened on first use. The server asks
+    before it opens its port: no client can be using up its file descriptors
+    yet."""
+    global _opened, _diag
+    with _open_lock:
+        if not _opened:
+            _diag = open_sock_diag()
+            _opened = True
+        return _diag
+
+
+def kernel_lookup(local: Address, remote: Address) -> Socket | None:
+    """``Lookup`` through ``sock_diag()``."""
+    diag = sock_diag()
+    if diag is None:
+        raise CannotTell
+    return diag.lookup(local, remote)
+
+
+def owner(
+    client: Address | None, server: Address | None, *, lookup: Lookup = kernel_lookup
+) -> Owner:
     """Who sent a request: the uid owning the client's socket, ``"gone"`` or
     ``"unknown"`` (module docstring). ``client`` and ``server`` are the ASGI
     scope's."""
@@ -156,8 +282,10 @@ def owner(client: Address | None, server: Address | None, *, lookup: Lookup = so
         # client lives where this kernel cannot see it (another network
         # namespace, as with WSL2's mirrored networking); if not, it is gone.
         own = lookup(server, client)
-    except OSError:
+    except CannotTell:
         return UNKNOWN
+    except OSError:
+        return FAILED
     return UNKNOWN if own is not None and own.state == TCP_ESTABLISHED else GONE
 
 
