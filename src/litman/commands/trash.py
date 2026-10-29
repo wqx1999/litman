@@ -317,7 +317,7 @@ def trash_restore_cmd(
     # REFERENCES.md (result.projects_rebuilt) — behavior unchanged.
     # task-write-perf: reuse the list the staged INDEX.json was rendered from
     # and add just the reappearing paper's view links ({} → snapshot).
-    reconcile_derived(
+    derived = reconcile_derived(
         vault,
         papers=result.surviving_papers,
         project_refs=False,
@@ -365,7 +365,11 @@ def trash_restore_cmd(
     # edits TAXONOMY (invariant #2). The `[[A]] (deleted)` de-annotation is
     # done inside restore_from_trash's transaction (M24).
 
-    console.print("[dim]INDEX.json + views/ refreshed.[/]")
+    # A views/ folder it could not change was said by the rebuild itself.
+    console.print(
+        f"[dim]INDEX.json{'' if derived['view_errors'] else ' + views/'} "
+        "refreshed.[/]"
+    )
     # One line however many project folders refused, from either step.
     if link_errors:
         console.print(project_folder_not_updated(link_errors[0]), soft_wrap=True)

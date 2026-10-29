@@ -983,7 +983,8 @@ def _apply_modify(
     # rather than only in `health-check --fix`.
     for line in hub_settlement_lines(0, moved_aside_from(derived)):
         console.print(f"  {line}", soft_wrap=True)
-    refreshed = "INDEX.json + views/"
+    # A views/ folder it could not change was said by the rebuild itself.
+    refreshed = "INDEX.json" if derived["view_errors"] else "INDEX.json + views/"
     if retitled_notes is not None:
         refreshed += " + notes.md heading"
     if projects_changed and not project_side_skipped and not link_errors:

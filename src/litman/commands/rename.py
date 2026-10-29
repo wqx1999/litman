@@ -429,7 +429,11 @@ def rename_cmd(
     # folder out of the user's own directory (see commands/_hub_report).
     for line in hub_settlement_lines(0, moved_aside_from(derived)):
         console.print(f"  {line}", soft_wrap=True)
-    console.print("[dim]INDEX.json + views/ refreshed.[/]")
+    # A views/ folder it could not change was said by the rebuild itself.
+    console.print(
+        f"[dim]INDEX.json{'' if derived['view_errors'] else ' + views/'} "
+        "refreshed.[/]"
+    )
     if derived["config_unreadable"]:
         console.print(PROJECTS_NOT_UPDATED, soft_wrap=True)
     elif link_errors := link_errors_from(derived):

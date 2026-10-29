@@ -596,11 +596,16 @@ def _apply_fixes(vault: Path, issues: list[Issue]) -> dict[str, Any]:
         folders_left = link_errors_from(regenerated)
         if folders_left:
             counts[_PROJECT_FOLDERS_LEFT] = folders_left
+        # Likewise a views/ folder it could not change (the regen said which).
+        views_left = bool(regenerated.get("view_errors"))
         # A regen is a single wholesale rebuild; attribute one cleaned unit to
         # each fired klass-A category so the report names what was healed.
         for cat in klass_a_present:
-            if not (folders_left and cat == "project_references"):
-                counts[cat] = 1
+            if folders_left and cat == "project_references":
+                continue
+            if views_left and cat == "views_vs_metadata":
+                continue
+            counts[cat] = 1
         # Passed through, not counted: how many hub folder copies the rebuild
         # deleted, and which differing ones it kept. core does not print.
         for key in ("hub_replaced_copies", "hub_moved_aside"):

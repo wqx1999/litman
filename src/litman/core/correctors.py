@@ -30,6 +30,7 @@ from rich.console import Console
 from litman.core import views
 from litman.core.checks import Issue
 from litman.core.notes import annotate_deleted_wikilinks, enumerate_markdown_files
+from litman.core.portable_link import warn_views_not_updated
 
 __all__ = [
     "annotate",
@@ -105,7 +106,11 @@ def reconcile_derived(
     side was asked for but skipped because ``lit-config.yaml`` cannot be read,
     and ``link_errors`` holds one ``OSError`` per project folder that could not
     be brought up to date, so the caller can report any of them without
-    ``core`` printing anything.
+    ``core`` printing anything. ``view_errors`` holds ``(view_name, OSError)``
+    for each ``views/`` folder that could not be: those, and only those, are
+    also said here, one line on stderr for the first — every write command and
+    the web UI funnel through this call, and a delta of fifty papers would
+    otherwise say it fifty times.
 
     Tier-2 only when ``papers is None``: it calls ``list_papers`` (reads every
     metadata.yaml), so it MUST NOT run inside the Tier-1 hook (invariant #15).
@@ -120,16 +125,19 @@ def reconcile_derived(
         papers = list_papers(vault)
 
     views.write_index(vault, papers)
+    view_errors: list[tuple[str, OSError]] = []
     if views_delta is None:
-        view_counts = views.rebuild_views(vault, papers)
+        view_counts = views.rebuild_views(vault, papers, view_errors=view_errors)
     else:
         view_counts = {}
         for changed_id, old_fields, new_fields in views_delta:
             created = views.update_views_for_paper(
-                vault, changed_id, old_fields, new_fields
+                vault, changed_id, old_fields, new_fields, view_errors=view_errors
             )
             for view_name, n in created.items():
                 view_counts[view_name] = view_counts.get(view_name, 0) + n
+    if view_errors:
+        warn_views_not_updated(*view_errors[0])
 
     n_projects = 0
     hub_replaced = 0
@@ -195,6 +203,7 @@ def reconcile_derived(
         "hub_moved_aside": hub_moved_aside,
         "config_unreadable": config_unreadable,
         "link_errors": link_errors,
+        "view_errors": view_errors,
     }
 
 

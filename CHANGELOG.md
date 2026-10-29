@@ -92,6 +92,17 @@ own entry. Read those before you upgrade, whatever the number says.
   folder also leaves the links and `REFERENCES.md` that are already right as
   they are, so a read-only folder in order raises nothing;
   `REFERENCES.md`'s "Last updated" is now when its list last changed.
+- **A read-only folder in `views/` no longer stops a command.** When a folder
+  under the library's `views/` took no changes (`chmod 555` on
+  `views/by-status/` or one of its buckets), `lit drop`, `lit modify`,
+  `lit rename`, `lit rm`, `lit refresh-views`, `lit health-check --fix` and
+  the other commands that update `views/` either stopped with a Python error
+  after the change was already saved, or left the old link there and still
+  said "views/ refreshed"; changing a paper's status in the web UI answered
+  with a server error. They now finish and name the view they could not
+  update in one line, and `lit health-check` reports that view until the
+  folder takes changes again. A rebuild leaves the links in `views/` that are
+  already right as they are.
 - **Deleting a project in the web UI names the folder it could not clean up.**
   When a project's `litman_reflib/` or `litman_code/` could not be read or
   changed, the web UI said only "Removed project" and left the old links in

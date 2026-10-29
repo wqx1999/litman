@@ -16,6 +16,7 @@ from litman.commands._options import library_option, vault_option
 from litman.core.config import load_config
 from litman.core.document import list_papers
 from litman.core.library import find_vault, resolve_library_or_vault
+from litman.core.portable_link import warn_views_not_updated
 from litman.core.project_link import rebuild_all_project_links
 from litman.core.project_refs import rebuild_all_project_refs
 from litman.core.views import rebuild_views, write_index
@@ -49,7 +50,8 @@ def refresh_views_cmd(
     config = load_config(vault)
 
     write_index(vault, papers)
-    counts = rebuild_views(vault, papers)
+    view_errors: list[tuple[str, OSError]] = []
+    counts = rebuild_views(vault, papers, view_errors=view_errors)
     # review F16: rebuild the litman_reflib/<id> symlinks too, not just
     # REFERENCES.md — otherwise a `refresh-views` left dangling/missing project
     # symlinks while only the text index was current. Links first, then refs
@@ -63,6 +65,8 @@ def refresh_views_cmd(
     )
     for view_name, k in counts.items():
         console.print(f"  views/{view_name}: {k} link{'s' if k != 1 else ''}")
+    if view_errors:
+        warn_views_not_updated(*view_errors[0])
     if project_results:
         console.print(
             f"[green]✓[/] Project REFERENCES.md ({len(project_results)} "

@@ -453,6 +453,8 @@ class RmResult:
     # A project folder the teardown could not change: the CLI ends with the
     # one line every write command uses for it.
     link_errors: list[OSError]
+    # A views/ folder the rebuild could not change (it said which itself).
+    views_left: bool
 
 
 def _si_name(record: dict[str, Any]) -> str:
@@ -774,7 +776,7 @@ def execute_rm(plan: RmPlan, *, purge: bool = False) -> RmResult:
     # INDEX) and drop just the victim's own view links — the single-paper
     # delta path _apply_modify established; a full rebuild remains the
     # repair path (`lit health-check --fix`).
-    reconcile_derived(
+    derived = reconcile_derived(
         vault,
         papers=plan.surviving,
         project_refs=False,
@@ -798,6 +800,7 @@ def execute_rm(plan: RmPlan, *, purge: bool = False) -> RmResult:
         evicted=evicted,
         warnings=warnings,
         link_errors=link_errors,
+        views_left=bool(derived["view_errors"]),
     )
 
 
@@ -1047,7 +1050,9 @@ def rm_cmd(
             f"  Tagged [bold]{n}[/] referencing note{'s' if n != 1 else ''} "
             f"[dim](`[[{escape(paper_id)}]] (deleted)`)[/]"
         )
-    console.print("[dim]INDEX.json + views/ refreshed.[/]")
+    console.print(
+        f"[dim]INDEX.json{'' if result.views_left else ' + views/'} refreshed.[/]"
+    )
     if result.link_errors:
         console.print(
             project_folder_not_updated(result.link_errors[0]), soft_wrap=True

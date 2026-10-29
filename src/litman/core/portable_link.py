@@ -528,6 +528,23 @@ def warn_hub_entry_unmovable(path: Path, err: OSError) -> None:
     )
 
 
+def warn_views_not_updated(view_name: str, err: OSError) -> None:
+    """Warn that a ``views/`` folder could not be brought up to date.
+
+    One line per rebuild, however many buckets refused: the caller passes the
+    first. A view folder made read-only by hand — views/ lives in the library,
+    and a library that takes no change at all is refused before any command
+    gets this far. The write before it is committed; ``lit health-check``
+    reports the view out of date until the folder is fixed. Lives here for the
+    same reason as :func:`warn_hub_entry_unmovable`.
+    """
+    _console.print(
+        f"[yellow]warning:[/] could not update views/{escape(view_name)}/ "
+        f"({escape(_os_error_reason(err))}). Fix that, then run "
+        "`lit health-check --fix`."
+    )
+
+
 def _warn_links_unsupported(link_path: Path, err: OSError) -> None:
     """Emit a once-per-process warning when folder links cannot be created.
 
