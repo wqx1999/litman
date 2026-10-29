@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import io
 import os
+import shutil
 import sys
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -135,6 +136,9 @@ def deny_writes(
 
     monkeypatch.setattr(os, "open", os_open)
     monkeypatch.setattr(io, "open", io_open)
+    # rmtree's fd-based walk removes by name relative to a directory handle,
+    # which the path checks above cannot see; the path-based walk they can.
+    monkeypatch.setattr(shutil, "_use_fd_functions", False)
     if sys.platform == "win32":
         # A junction is made through _winapi, not os.
         import _winapi

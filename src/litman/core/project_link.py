@@ -43,6 +43,7 @@ from litman.core.document import list_papers, read_metadata_or_raise
 from litman.core.locking import rmtree
 from litman.core.portable_link import (
     _os_error_reason,
+    entry_refusal,
     is_portable_link,
     link_points_at,
     links_supported,
@@ -352,8 +353,13 @@ def settle_hub_entry(
         because it matched the vault or because it held nothing;
         ``('moved-aside', dest)`` — the folder now lives at ``dest``;
         ``('failed', None)`` — the filesystem refused to move or delete it
-        (a locked child, a read-only parent); warned about, left alone, and
+        (a locked child); warned about, left alone, and
         the rest of the rebuild carries on.
+
+    Raises:
+        OSError: the hub takes no new entry at all (no write permission, a
+            read-only mount), so nothing in it can be cleared; the caller
+            reports the folder it could not update.
     """
     # is_portable_link BEFORE is_dir: a junction answers is_dir() True, so the
     # other order would file every healthy Windows link as a folder copy.
@@ -365,6 +371,12 @@ def settle_hub_entry(
     # iterating over.
     if not links_supported(link_path.parent.parent):
         return HubSettlement("blocked", None)
+    # A hub that takes no new entry cannot give this folder up either. Said
+    # before trying: a cross-drive move would copy the folder into .trash/
+    # first and only then fail to remove it, on every run.
+    refusal = entry_refusal(link_path.parent)
+    if refusal is not None:
+        raise refusal
     if target is not None and _is_verbatim_copy(link_path, target):
         try:
             # locking.rmtree, not shutil's: the copy carries the vault's

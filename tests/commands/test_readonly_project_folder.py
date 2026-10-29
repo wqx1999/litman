@@ -10,6 +10,7 @@ runs the real thing with ``chmod`` where that exists.
 from __future__ import annotations
 
 import os
+import shutil
 from pathlib import Path
 from typing import Any
 
@@ -18,6 +19,7 @@ import pytest
 from litman.core.portable_link import (
     is_portable_link,
     remove_link_if_present,
+    reset_link_probe_cache,
     reset_warning_state,
 )
 from tests._project_folder import (
@@ -316,3 +318,79 @@ def test_a_views_bucket_that_cannot_be_changed_does_not_stop_a_write(
 
     assert code == 0, f"{output} {exc!r}"
     assert paper_meta(lib, "p2")["status"] == "skim"
+
+
+# ---------------------------------------------------------------------------
+# A folder that cannot be written is not a drive without links
+# ---------------------------------------------------------------------------
+
+
+def test_health_check_does_not_blame_the_drive_for_a_read_only_project_folder(
+    lib: Library, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The link probe writes in the project folder. One that takes nothing
+    read as "this drive cannot hold links": the missing links went
+    unreported and the hint sent the user to a different drive."""
+    _drop_links(lib)
+    reset_link_probe_cache()
+    with monkeypatch.context() as patch:
+        deny_writes(patch, lib.project_dir)
+        issues = project_issues(lib)
+        code, output, exc = run_lit(lib, ["health-check"])
+
+    assert (
+        "project 'pp' membership implies a litman_reflib link for 'p2' "
+        "but it is missing"
+    ) in issues
+    assert "links_unsupported" not in output
+    assert "FAT32" not in output
+    assert code == 1, f"{output} {exc!r}"
+
+    reset_link_probe_cache()
+    with monkeypatch.context() as patch:
+        deny_writes(patch, lib.project_dir)
+        code, output, exc = run_lit(lib, ["health-check", "--fix"])
+    assert output.count(LINE) == 1
+    assert "project_references: cleaned" not in output
+
+
+@pytest.mark.parametrize("content", ["a copy", "a copy with a file of the user's"])
+def test_a_real_folder_in_a_read_only_hub_is_left_and_said_in_one_line(
+    lib: Library, monkeypatch: pytest.MonkeyPatch, content: str
+) -> None:
+    """A copy is deleted, anything else moved to .trash/ — neither can happen
+    in a hub that takes no change, and "close anything using that folder"
+    pointed at the wrong cause."""
+    spot = lib.reflib / "p2"
+    remove_link_if_present(spot)
+    shutil.copytree(lib.vault / "papers" / "p2", spot)
+    if content != "a copy":
+        spot.joinpath("mine.txt").write_text("mine", encoding="utf-8")
+    with monkeypatch.context() as patch:
+        deny_writes(patch, lib.reflib)
+        code, output, exc = run_lit(lib, ["link", "--rebuild-all"])
+
+    assert code == 0, f"{output} {exc!r}"
+    assert output.count(LINE) == 1
+    assert "Close anything using that folder" not in output
+    assert spot.is_dir() and not is_portable_link(spot)
+    assert not (lib.vault / ".trash" / "replaced-folders").exists()
+
+
+@posix_only
+@not_root
+def test_health_check_on_a_project_folder_chmod_made_read_only(
+    lib: Library,
+) -> None:
+    """The real thing, nothing injected."""
+    _drop_links(lib)
+    reset_link_probe_cache()
+    lib.project_dir.chmod(0o555)
+    try:
+        code, output, exc = run_lit(lib, ["health-check"])
+    finally:
+        lib.project_dir.chmod(0o755)
+
+    assert code == 1, f"{output} {exc!r}"
+    assert "litman_reflib link for 'p2' but it is missing" in output
+    assert "FAT32" not in output

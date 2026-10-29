@@ -78,6 +78,18 @@ own entry. Read those before you upgrade, whatever the number says.
   brings it up to date. `lit project rm` names the folder to clear by hand,
   since nothing looks at it after. `lit health-check` and the web UI's health
   panel, which failed the same way, now name the folder they could not read.
+- **A project folder litman can read but not change is called that.** In a
+  `litman_reflib/` or `litman_code/` that takes no changes (`chmod 555`, a
+  read-only mount, a folder another user shares), `lit unlink`, `lit rm`,
+  `lit project rm` and `lit code unlink` left the old links behind without a
+  word, and a link that could not be added was blamed on the drive ("this
+  filesystem cannot hold folder links") or on an entry to remove by hand;
+  `lit health-check` said the same of a project folder that took no changes
+  at all. They now end with the one line a folder they cannot read gets, and
+  `lit project rm` names the folder to clear by hand. Rebuilding a project
+  folder also leaves the links and `REFERENCES.md` that are already right as
+  they are, so a read-only folder in order raises nothing;
+  `REFERENCES.md`'s "Last updated" is now when its list last changed.
 - **`lit rm` no longer deletes the only copy of a repo.** A folder added with
   `lit code add --move` exists only in the library. When the paper you deleted
   was the only one using it, `lit rm` deleted the repo too, and restoring the

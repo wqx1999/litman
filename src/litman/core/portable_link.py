@@ -183,16 +183,24 @@ def link_mechanism(directory: Path) -> str:
     filesystem and must never run on the Tier-1 per-command hot path
     (invariant #15).
 
-    A directory that does not exist, or any ``OSError``, reads as ``"none"``.
+    A directory that does not exist reads as ``"none"``. One that takes no
+    new entry at all (permissions, a read-only mount) reads as the platform's
+    mechanism: nothing can be learned there about links, and the drive is not
+    what is wrong — so the links it lacks are still reported, and ``--fix``
+    says which folder it could not update.
     """
     key = str(directory)
     cached = _LINK_MECHANISM.get(key)
     if cached is not None:
         return cached
     if sys.platform == "win32":
-        mechanism = "junction" if _probe_junction(directory) else "none"
+        native, works = "junction", _probe_junction(directory)
     else:
-        mechanism = "symlink" if _probe_symlink(directory) else "none"
+        native, works = "symlink", _probe_symlink(directory)
+    if works or (directory.is_dir() and entry_refusal(directory) is not None):
+        mechanism = native
+    else:
+        mechanism = "none"
     _LINK_MECHANISM[key] = mechanism
     return mechanism
 
@@ -283,8 +291,9 @@ def make_portable_link(link_path: Path, target_path: Path) -> bool:
             link_path.symlink_to(os.path.relpath(target_path, link_path.parent))
         return True
     except OSError as err:
-        if not isinstance(obstruction, IsADirectoryError) and not (
-            _can_create_entry(link_path.parent)
+        if (
+            not isinstance(obstruction, IsADirectoryError)
+            and entry_refusal(link_path.parent) is not None
         ):
             raise (obstruction if obstruction is not None else err) from None
         if obstruction is not None:
@@ -294,26 +303,30 @@ def make_portable_link(link_path: Path, target_path: Path) -> bool:
         return False
 
 
-def _can_create_entry(directory: Path) -> bool:
-    """Can a plain file be created in ``directory``?
+def entry_refusal(directory: Path) -> OSError | None:
+    """Why no plain file can be created in ``directory``; ``None`` if one can.
 
     Tells a folder litman cannot write to (permissions, a read-only mount, a
     full disk) from a drive that cannot hold links (FAT32 / exFAT, network
     shares): the second takes a file but refuses the link. Asked of the
     folder rather than read off the error number, which each platform and
-    filesystem spells its own way. Only reached once a link has failed.
+    filesystem spells its own way. Writes, so only reached once something has
+    already failed, or from a probe. The error names ``directory``, not the
+    scratch file it tried.
     """
     probe = directory / f".litman-write-probe-{os.getpid()}-{secrets.token_hex(4)}"
     try:
         fd = os.open(probe, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
-    except OSError:
-        return False
+    except OSError as err:
+        if err.errno is None:
+            return err
+        return OSError(err.errno, err.strerror, str(directory))
     os.close(fd)
     try:
         probe.unlink()
     except OSError:
         pass
-    return True
+    return None
 
 
 def link_points_at(link_path: Path, target_path: Path) -> bool:

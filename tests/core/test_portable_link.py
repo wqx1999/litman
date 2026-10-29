@@ -739,3 +739,30 @@ def test_a_link_gone_before_it_could_be_removed_counts_as_none(
     monkeypatch.setattr(os, "unlink", gone)
     monkeypatch.setattr(os, "rmdir", gone)
     assert remove_link_if_present(link) is False
+
+
+def test_a_folder_that_takes_no_entry_still_reads_as_able_to_hold_links(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Nothing about links can be learned in it, and the drive is not what is
+    wrong: reading it as "none" sent the user to a different drive."""
+    folder = tmp_path / "project"
+    folder.mkdir()
+    portable_link.reset_link_probe_cache()
+    with monkeypatch.context() as patch:
+        deny_writes(patch, folder)
+        mechanism = portable_link.link_mechanism(folder)
+
+    assert mechanism == ("junction" if sys.platform == "win32" else "symlink")
+    assert list(folder.iterdir()) == []
+    portable_link.reset_link_probe_cache()
+    assert portable_link.link_mechanism(tmp_path / "missing") == "none"
+
+
+def test_a_drive_that_refuses_links_still_reads_as_none(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    portable_link.reset_link_probe_cache()
+    _refuse_links(monkeypatch)
+    assert portable_link.link_mechanism(tmp_path) == "none"
+    portable_link.reset_link_probe_cache()
