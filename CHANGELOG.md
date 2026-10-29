@@ -147,7 +147,8 @@ own entry. Read those before you upgrade, whatever the number says.
   `notes.md` was back in the folder of a repo deleted with the paper (written
   by hand, or brought back by a sync), the restore replaced it with the copy
   saved at the delete. It now keeps that one, puts the saved copy beside it as
-  `notes.from-trash.md`, and says so.
+  `notes.from-trash.md`, and says so; `lit health-check` lists that copy until
+  you merge it in and delete it.
 
 ### Security
 

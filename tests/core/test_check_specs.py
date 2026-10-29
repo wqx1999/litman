@@ -61,13 +61,14 @@ _EXPECTED_CATEGORIES = (
     "pdf_viewer",
     "skill_drift",
     "code_clone_integrity",
+    "notes_from_trash",
     "supplementary",
     "supplementary_cited",
 )
 
 
 def test_registry_has_all_checks() -> None:
-    assert len(_CHECK_REGISTRY) == 34
+    assert len(_CHECK_REGISTRY) == 35
     assert tuple(spec.category for spec in _CHECK_REGISTRY) == _EXPECTED_CATEGORIES
 
 
@@ -162,6 +163,15 @@ def test_supplementary_cited_is_full_b_auth_report() -> None:
     spec = next(s for s in _CHECK_REGISTRY if s.category == "supplementary_cited")
     assert (spec.tier, spec.klass, spec.correction) == ("full", "B-auth", "report")
     assert "supplementary_cited" not in AUTO_FIXABLE_CATEGORIES
+
+
+def test_notes_from_trash_is_full_validity_report_and_never_fixed() -> None:
+    """A repo note a restore set aside beside a different notes.md: both are
+    the user's and nothing is derived, so it reports (info) and --fix leaves
+    it; listing every codes/ folder keeps it out of the Tier-1 hook."""
+    spec = next(s for s in _CHECK_REGISTRY if s.category == "notes_from_trash")
+    assert (spec.tier, spec.klass, spec.correction) == ("full", "validity", "report")
+    assert "notes_from_trash" not in AUTO_FIXABLE_CATEGORIES
 
 
 def test_cheap_checks_returns_only_cheap_tier() -> None:

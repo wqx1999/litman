@@ -677,6 +677,17 @@ def _saved_notes_name(repo_root: Path, data: bytes) -> str | None:
     raise AssertionError("unreachable")
 
 
+# Every name _saved_notes_name gives a note it puts beside another.
+_SAVED_NOTES_RE = re.compile(r"notes\.from-trash(?:-[0-9]+)?\.md")
+
+
+def is_saved_notes_name(name: str) -> bool:
+    """True if ``name`` is one a restore gives a saved note it put beside a
+    different ``notes.md`` (:func:`_saved_notes_name`): what ``lit
+    health-check`` lists until the user merges the two."""
+    return _SAVED_NOTES_RE.fullmatch(name) is not None
+
+
 def _restored_repo_meta(
     saved: str | bytes | None,
     repo_name: str,

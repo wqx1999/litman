@@ -5,7 +5,8 @@ but a clone does not bring back what you changed in the checkout. Each case
 makes one such change to a real shallow clone and checks that the repo is
 kept, untouched and named, and that a restore binds it again; the controls
 check that a clone git reads as clean still goes. Then the restore that used
-to delete a checkout it found back in place.
+to delete a checkout it found back in place, and the note a restore sets aside,
+which the health check lists until it goes.
 """
 
 from __future__ import annotations
@@ -21,6 +22,7 @@ from ruamel.yaml import YAML
 from litman.cli import cli
 from litman.commands.trash import _reclone_missing_repo
 from litman.core import code as code_mod
+from litman.core.checks import Issue, run_all_checks
 from litman.core.code import import_local_repo, repo_changes
 from litman.core.library import create_vault
 from litman.core.locking import rmtree
@@ -546,3 +548,132 @@ def test_a_failed_reclone_leaves_what_the_repo_folder_held(
 
     assert (root / "mine.txt").read_text(encoding="utf-8") == "mine\n"
     assert not (root / "repo").exists()
+
+
+# --- The note a restore set aside, in the health check -----------------------
+
+SET_ASIDE = "is the note saved when a paper was deleted; notes.md differs"
+MERGE = "merge it into notes.md, then delete it"
+
+
+def _set_aside(vault: Path, *names: str) -> None:
+    """``codes/Solo/`` holding a notes.md and, under each of ``names``, a note
+    as a restore leaves one it put beside it."""
+    root = vault / "codes" / "Solo"
+    root.mkdir(parents=True)
+    (root / "notes.md").write_text("# written since\n", encoding="utf-8")
+    for name in names:
+        (root / name).write_text("# Solo\n", encoding="utf-8")
+
+
+def _set_aside_findings(vault: Path) -> list[Issue]:
+    return [i for i in run_all_checks(vault, []) if i.category == "notes_from_trash"]
+
+
+def _finding(name: str) -> Issue:
+    return Issue(
+        category="notes_from_trash",
+        severity="info",
+        paper_id=None,
+        message=f"codes/Solo/{name} {SET_ASIDE}",
+        hint=MERGE,
+    )
+
+
+@pytest.mark.parametrize(
+    "names",
+    [["notes.from-trash.md"], ["notes.from-trash.md", "notes.from-trash-2.md"]],
+    ids=["one", "and one past a taken name"],
+)
+def test_health_check_lists_each_note_a_restore_set_aside(
+    vault: Path, names: list[str]
+) -> None:
+    _set_aside(vault, *names)
+
+    assert _set_aside_findings(vault) == [_finding(n) for n in sorted(names)]
+
+
+@pytest.mark.parametrize(
+    "names",
+    [[], ["notes.from-trash.md.bak"], ["notes.from-trash-old.md"]],
+    ids=["notes.md only", "a copy of one", "a name of your own"],
+)
+def test_health_check_lists_no_other_note(vault: Path, names: list[str]) -> None:
+    _set_aside(vault, *names)
+
+    assert _set_aside_findings(vault) == []
+
+
+def test_health_check_lists_none_without_a_codes_folder(vault: Path) -> None:
+    rmtree(vault / "codes")
+
+    assert _set_aside_findings(vault) == []
+
+
+def test_health_check_reads_past_a_file_in_the_codes_folder(vault: Path) -> None:
+    _set_aside(vault, "notes.from-trash.md")
+    (vault / "codes" / ".DS_Store").write_bytes(b"\0")
+
+    assert _set_aside_findings(vault) == [_finding("notes.from-trash.md")]
+
+
+def _health(vault: Path) -> str:
+    """``lit health-check --all``; its output with one space between words.
+    Not its exit code: the restore leaves the repo without a checkout, a
+    warning of its own."""
+    result = CliRunner().invoke(cli, ["health-check", "--all", "--library", str(vault)])
+    assert isinstance(result.exception, (SystemExit, type(None))), result.output
+    return " ".join(result.output.split())
+
+
+@pytest.mark.parametrize("taken", [False, True])
+def test_health_check_lists_the_note_a_restore_set_aside_until_it_goes(
+    vault: Path, tmp_path: Path, taken: bool
+) -> None:
+    root = _deleted_then_noted_again(vault, tmp_path, b"# written since\n")
+    names = ["notes.from-trash.md"]
+    if taken:
+        (root / names[0]).write_bytes(b"something else\n")
+        names.append("notes.from-trash-2.md")
+    _lit(vault, "trash", "restore", TARGET)
+
+    report = _health(vault)
+
+    n = len(names)
+    assert (
+        "Repo notes a restore set aside (notes.from-trash.md) "
+        f"({n} issue{'s' if n != 1 else ''})"
+    ) in report
+    for name in names:
+        assert f"info <vault> codes/Solo/{name} {SET_ASIDE}" in report
+    assert report.count(MERGE) == n
+    for name in names:
+        (root / name).unlink()
+    assert "notes.from-trash" not in _health(vault)
+
+
+def test_the_web_ui_health_panel_lists_the_note_its_restore_set_aside(
+    vault: Path, tmp_path: Path
+) -> None:
+    pytest.importorskip("fastapi")
+    from litman.server import create_app
+    from tests.server._client import TestClient
+
+    _deleted_then_noted_again(vault, tmp_path, b"# written since\n")
+    (entry,) = list_trash(vault)
+    client = TestClient(create_app(vault))
+    assert client.post(f"/api/trash/{entry.entry_name}/restore").status_code == 200
+
+    resp = client.get("/api/health")
+
+    assert resp.status_code == 200, resp.text
+    found = [i for i in resp.json() if i["category"] == "notes_from_trash"]
+    assert found == [
+        {
+            "category": "notes_from_trash",
+            "severity": "info",
+            "paper_id": None,
+            "message": f"codes/Solo/notes.from-trash.md {SET_ASIDE}",
+            "hint": MERGE,
+        }
+    ]

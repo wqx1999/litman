@@ -77,6 +77,7 @@ from litman.core.checks.links import (
 )
 from litman.core.checks.maintenance import (
     check_code_clone_integrity,
+    check_notes_from_trash,
     check_pdf_viewer,
     check_skill_drift,
     check_stale_staging,
@@ -181,6 +182,7 @@ __all__ = [
     "check_inbox_staleness",
     "check_index_vs_disk",
     "check_link_support",
+    "check_notes_from_trash",
     "check_paper_dir_validity",
     "check_pdf_viewer",
     "check_placeholder_id",

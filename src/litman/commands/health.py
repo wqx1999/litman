@@ -149,6 +149,7 @@ _CATEGORY_HEADERS: dict[str, str] = {
     "pdf_viewer": "PDF viewer availability (for `lit open`)",
     "skill_drift": "Agent skill freshness (installed vs bundled)",
     "code_clone_integrity": "Code clone integrity (clones vs metadata refs)",
+    "notes_from_trash": "Repo notes a restore set aside (notes.from-trash.md)",
     "vault_registry_drift": "Vault registry drift (registered path missing)",
     "supplementary_field": "SI records (the supplementary field in metadata.yaml)",
     "supplementary_missing": "SI files recorded but missing",

@@ -30,6 +30,7 @@ from litman.core.checks.links import (
 from litman.core.checks.maintenance import (
     _default_agent_skill_probe,
     check_code_clone_integrity,
+    check_notes_from_trash,
     check_pdf_viewer,
     check_skill_drift,
     check_stale_staging,
@@ -163,6 +164,10 @@ if TYPE_CHECKING:
 #       only, no per-paper metadata) → tier=cheap, klass=B-ext, resolve.
 #   inbox_staleness / stale_staging / trash_health / pdf_viewer — non-drift
 #       diagnostics, surface only → klass=validity, correction=report.
+#   notes_from_trash — a repo note a restore wrote beside a different
+#       notes.md (codes/<name>/notes.from-trash.md): two notes of the user's,
+#       nothing derived, nothing for litman to pick → klass=validity, report,
+#       severity=info, never --fix (the replaced_folders reasoning).
 #   supplementary (#13) — metadata `supplementary` records ↔ the files in
 #       papers/<id>/supplementary/ → klass=B-auth (both sides are authored
 #       truth), report; tier=full (the records are not in the INDEX
@@ -293,6 +298,9 @@ _CHECK_REGISTRY: tuple[CheckSpec, ...] = (
         "full",
         "B-ext",
         "resolve",
+    ),
+    CheckSpec(
+        "notes_from_trash", check_notes_from_trash, "full", "validity", "report"
     ),
     CheckSpec("supplementary", check_supplementary, "full", "B-auth", "report"),
     CheckSpec(

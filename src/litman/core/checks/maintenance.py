@@ -1,6 +1,6 @@
 """Library-level checks: the machine's vault registry, leftover staging,
 the PDF viewer, installed skill copies, the trash, supplementary files and
-their citations, and code clones.
+their citations, code clones, and the repo notes a restore set aside.
 """
 
 from __future__ import annotations
@@ -18,6 +18,7 @@ from litman.core.trash import (
     TRASH_DIRNAME,
     TRASH_MAX_ENTRIES,
     count_replaced_folders,
+    is_saved_notes_name,
     is_trash_entry_name,
 )
 from litman.core.undecodable import printable
@@ -1128,4 +1129,41 @@ def check_code_clone_integrity(
                     )
                 )
 
+    return out
+
+
+def check_notes_from_trash(
+    vault: Path, papers: list[dict[str, Any]]
+) -> list[Issue]:
+    """Repo notes a restore put beside a different ``notes.md``.
+
+    When a repo deleted with its paper has a ``notes.md`` back in
+    ``codes/<name>/`` that is not the one saved at the delete, a restore keeps
+    it and writes the saved one beside it as ``notes.from-trash.md`` (``-2``,
+    ``-3``, ... past a taken name). The CLI says so once; the web UI does not,
+    so this is where the file shows. One finding per file. Both notes are the
+    user's, so it is info, and never ``--fix``.
+    """
+    codes_dir = vault / CODES_DIRNAME
+    if not codes_dir.is_dir():
+        return []
+    out: list[Issue] = []
+    for repo_root in sorted(codes_dir.iterdir()):
+        try:
+            names = sorted(n for n in os.listdir(repo_root) if is_saved_notes_name(n))
+        except OSError:
+            continue  # a stray file, or a folder nothing can be read from
+        for name in names:
+            out.append(
+                Issue(
+                    category="notes_from_trash",
+                    severity="info",
+                    paper_id=None,
+                    message=(
+                        f"codes/{repo_root.name}/{name} is the note saved when a "
+                        "paper was deleted; notes.md differs"
+                    ),
+                    hint="merge it into notes.md, then delete it",
+                )
+            )
     return out
