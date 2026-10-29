@@ -3299,7 +3299,7 @@ def test_health_check_titles_an_unrecoverable_staging_leftover(vault: Path) -> N
     )
     result = CliRunner().invoke(cli, ["health-check", "--library", str(vault)])
     flat = " ".join(result.output.split())
-    assert ".litman-staging/ leftovers to settle by hand" in flat
+    assert ".litman-staging/ leftovers --fix cannot clean up" in flat
     assert "stale_staging_unrecoverable" not in result.output
     assert "Summary:" in flat
 
