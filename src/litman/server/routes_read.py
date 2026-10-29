@@ -169,7 +169,7 @@ def get_papers(
 
 
 @router.get("/version")
-def get_version(request: Request) -> dict[str, str | None]:
+def get_version(request: Request) -> dict[str, str | bool | None]:
     """Current litman version + the latest available release, if any.
 
     PURE READ (invariant #16): reads ONLY the local update-check cache — it never
@@ -180,6 +180,10 @@ def get_version(request: Request) -> dict[str, str | None]:
 
     ``selfUpdateFailed`` carries the message a failed one-click update left
     behind (consumed once at server startup by the lifespan), else ``null``.
+
+    ``checking`` is true while that startup refresh is still out on the network
+    — the page reads again until it is not, instead of guessing how long the
+    fetch can take.
     """
     from litman import __version__
     from litman.core.update_check import available_update
@@ -189,6 +193,7 @@ def get_version(request: Request) -> dict[str, str | None]:
         "current": __version__,
         "latest": upd[1] if upd else None,
         "selfUpdateFailed": getattr(request.app.state, "self_update_failed", None),
+        "checking": bool(getattr(request.app.state, "update_checking", False)),
     }
 
 

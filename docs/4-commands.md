@@ -1130,10 +1130,14 @@ lit self-update --yes
 |---|---|
 | `-y` / `--yes` | Skip the confirmation prompt. |
 
-**The daily check.** Once a day, any `lit` command may ask PyPI for the newest
-version number and print a line when yours is older. The answer is cached for
-24 hours at `<registry dir>/update-check.json`, the request times out after two
-seconds, and a failure — offline, slow, malformed — is swallowed silently.
+**The daily check.** Once a day, any `lit` command may ask for the newest
+version number and print a line when yours is older. It asks the package index
+litman was installed from — the Tsinghua mirror for the China installers — or
+PyPI when uv recorded none. The answer is cached for 24 hours at
+`<registry dir>/update-check.json`, the request times out after two seconds,
+and a failure — offline, slow, malformed — is swallowed silently. The web UI
+asks in the background, waits longer, retries a failure after an hour, and asks
+again every hour while it is open.
 
 That line appears once a day, so it cannot trail every command in a working
 session. `lit hello` is the exception: it reports a newer release every time
@@ -1141,5 +1145,5 @@ you run it, and it is the one command that reports it to a coding agent as
 well — so an agent working on your library can pass a new release on to you.
 
 Set `LITMAN_NO_UPDATE_CHECK=1` to switch it off, cache and all. litman sends no
-telemetry: the request asks PyPI for a version number and says nothing about
-you.
+telemetry: the request asks the index for litman's list of releases and says
+nothing about you.

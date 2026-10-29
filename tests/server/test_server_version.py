@@ -14,6 +14,9 @@ startup refresh never runs — nothing touches the network.
 
 from __future__ import annotations
 
+import threading
+import time
+from collections.abc import Callable
 from pathlib import Path
 
 import pytest
@@ -79,3 +82,73 @@ def test_version_route_does_not_fetch(
     monkeypatch.setattr(update_check, "_fetch_latest_version", _boom)
     resp = _client(tmp_path).get("/api/version")
     assert resp.status_code == 200
+
+
+# ---------------------------------------------------------------------------
+# the server's own background check
+# ---------------------------------------------------------------------------
+
+
+def _wait_for(cond: Callable[[], object], timeout: float = 5.0) -> bool:
+    end = time.monotonic() + timeout
+    while time.monotonic() < end:
+        if cond():
+            return True
+        time.sleep(0.01)
+    return bool(cond())
+
+
+def test_version_says_checking_until_the_startup_check_settles(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The page reads `checking` to know a null `latest` may still change:
+    true while the background check is out, false once it has an answer."""
+    release = threading.Event()
+    seen: list[dict[str, object]] = []
+
+    def _refresh(**kw: object) -> None:
+        seen.append(kw)
+        release.wait(5)
+        update_check._write_cache(
+            {"checked_at": "2999-01-01T00:00:00+00:00", "latest": "9.9.9"}
+        )
+
+    monkeypatch.setattr(update_check, "refresh_cache_if_stale", _refresh)
+    with _client(tmp_path) as client:
+        assert _wait_for(lambda: seen)
+        during = client.get("/api/version").json()
+        release.set()
+        assert _wait_for(lambda: not client.get("/api/version").json()["checking"])
+        after = client.get("/api/version").json()
+
+    assert during["checking"] is True and during["latest"] is None
+    assert after["checking"] is False and after["latest"] == "9.9.9"
+    # Off-thread, so it may wait on a slow link, and retries a failure hourly.
+    assert seen[0] == {
+        "timeout": update_check.GUI_NETWORK_TIMEOUT_SECONDS,
+        "retry_after": update_check.GUI_RETRY_SECONDS,
+    }
+    assert update_check.GUI_NETWORK_TIMEOUT_SECONDS > update_check.NETWORK_TIMEOUT_SECONDS
+    assert update_check.GUI_RETRY_SECONDS == 3600
+
+
+def test_the_server_asks_again_while_it_runs_and_stops_with_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A GUI left open for days still learns of a release: the check repeats
+    every GUI_RETRY_SECONDS (an hour; shortened here) until the server stops."""
+    calls: list[int] = []
+    monkeypatch.setattr(
+        update_check, "refresh_cache_if_stale", lambda **kw: calls.append(1)
+    )
+    monkeypatch.setattr(update_check, "GUI_RETRY_SECONDS", 0.02)
+    with _client(tmp_path):
+        assert _wait_for(lambda: len(calls) >= 3)
+    stopped_at = len(calls)
+    time.sleep(0.2)
+    assert len(calls) <= stopped_at + 1  # one already past the wait may land
+
+
+def test_a_bare_client_reports_not_checking(tmp_path: Path) -> None:
+    """No lifespan ran, so nothing is out on the network."""
+    assert _client(tmp_path).get("/api/version").json()["checking"] is False

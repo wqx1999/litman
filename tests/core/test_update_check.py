@@ -11,13 +11,20 @@ from ``registry_path().parent`` — lands there.
 from __future__ import annotations
 
 import json
+import sys
+import threading
 import urllib.error
+from collections.abc import Iterator
 from datetime import UTC, datetime, timedelta
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 import pytest
 
 from litman.core import update_check
+
+# Taken before the autouse fixture below replaces it, for the one test of it.
+_REAL_UV_RECEIPT_PATH = update_check.uv_receipt_path
 
 
 @pytest.fixture(autouse=True)
@@ -34,6 +41,16 @@ def _pin_version(monkeypatch: pytest.MonkeyPatch) -> None:
 def _clear_opt_out(monkeypatch: pytest.MonkeyPatch) -> None:
     """Ensure the opt-out env is off unless a test sets it explicitly."""
     monkeypatch.delenv(update_check.OPT_OUT_ENV, raising=False)
+
+
+@pytest.fixture(autouse=True)
+def _no_receipt(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Path:
+    """Point the uv receipt at a file that does not exist yet, so a test run
+    from inside a `uv tool` environment still takes the PyPI path. Tests that
+    want an install index write this file."""
+    receipt = tmp_path / "uv-receipt.toml"
+    monkeypatch.setattr(update_check, "uv_receipt_path", lambda: receipt)
+    return receipt
 
 
 class _FakeResp:
@@ -265,3 +282,252 @@ def test_cache_path_under_registry_dir(tmp_path: Path) -> None:
     from litman.core.vault_registry import registry_path
 
     assert update_check.cache_path() == registry_path().parent / "update-check.json"
+
+
+# ---------------------------------------------------------------------------
+# the index uv installed litman from
+# ---------------------------------------------------------------------------
+
+_TUNA = "https://pypi.tuna.tsinghua.edu.cn/simple"
+
+
+def _receipt(options: str) -> str:
+    return (
+        "[tool]\n"
+        'requirements = [{ name = "litman" }]\n'
+        "entrypoints = [\n"
+        '    { name = "lit", install-path = "/h/.local/bin/lit", from = "litman" },\n'
+        "]\n" + options
+    )
+
+
+@pytest.mark.parametrize(
+    "options, expected",
+    [
+        # What the China installers leave behind (UV_DEFAULT_INDEX), verbatim.
+        (
+            "\n[tool.options]\n"
+            f'index = [{{ url = "{_TUNA}", explicit = false, default = true, '
+            'format = "simple", authenticate = "auto" }]\n',
+            _TUNA,
+        ),
+        # Receipts written before uv had `index`.
+        (f'\n[tool.options]\nindex-url = "{_TUNA}"\n', _TUNA),
+        # A plain `uv tool install litman`: no options at all.
+        ("", None),
+        # An extra index is not where litman came from; PyPI stays the default.
+        (
+            "\n[tool.options]\n"
+            'index = [{ url = "https://example.org/simple", explicit = false, '
+            "default = false }]\n",
+            None,
+        ),
+    ],
+    ids=["default-index", "legacy-index-url", "no-options", "extra-index-only"],
+)
+def test_install_index_reads_the_receipt(
+    _no_receipt: Path, options: str, expected: str | None
+) -> None:
+    _no_receipt.write_text(_receipt(options), encoding="utf-8")
+    assert update_check.install_index() == expected
+
+
+def test_install_index_none_without_a_readable_receipt(_no_receipt: Path) -> None:
+    assert update_check.install_index() is None  # pipx, pip, a dev checkout
+    _no_receipt.write_text("this is [not toml", encoding="utf-8")
+    assert update_check.install_index() is None
+
+
+def test_the_receipt_is_looked_for_beside_the_interpreter() -> None:
+    """The real default behind the seam the other tests replace: uv writes the
+    receipt into the tool environment's root, which is sys.prefix there (seen
+    on Linux, and on Windows with a non-ASCII profile path)."""
+    assert _REAL_UV_RECEIPT_PATH() == Path(sys.prefix) / "uv-receipt.toml"
+
+
+_JSON_PAGE = json.dumps(
+    {
+        "name": "litman",
+        "files": [
+            {"filename": "litman-1.3.8-py3-none-any.whl", "yanked": False},
+            {"filename": "litman-1.3.9.tar.gz"},
+            {"filename": "litman-1.3.10-py3-none-any.whl"},
+            {"filename": "litman-1.4.0rc1-py3-none-any.whl"},
+            {"filename": "litman-1.5.0-py3-none-any.whl", "yanked": "broken"},
+        ],
+    }
+).encode("utf-8")
+
+_HTML_PAGE = (
+    b"<!DOCTYPE html>\n<html><body><h1>Links for litman</h1>\n"
+    b'<a href="../a/litman-1.3.8-py3-none-any.whl#sha256=00">'
+    b"litman-1.3.8-py3-none-any.whl</a><br/>\n"
+    b'<a href="../b/litman-1.3.10.tar.gz#sha256=11" data-requires-python="&gt;=3.12">'
+    b"litman-1.3.10.tar.gz</a><br/>\n"
+    b'<a href="../c/litman-1.4.0rc1-py3-none-any.whl#sha256=22">'
+    b"litman-1.4.0rc1-py3-none-any.whl</a><br/>\n"
+    b'<a href="../d/litman-1.5.0-py3-none-any.whl#sha256=33" data-yanked="">'
+    b"litman-1.5.0-py3-none-any.whl</a><br/>\n"
+    b"</body></html>\n"
+)
+
+
+@pytest.mark.parametrize("page", [_JSON_PAGE, _HTML_PAGE], ids=["json", "html"])
+def test_simple_page_versions_skip_yanked_and_prereleases(page: bytes) -> None:
+    versions = update_check._simple_page_versions(page)
+    assert max(versions, key=update_check._parse_version) == "1.3.10"
+    assert "1.5.0" not in versions
+    assert all("rc" not in v for v in versions)
+
+
+class _Index:
+    """A package index on 127.0.0.1: answers ``/simple/litman/`` with JSON when
+    asked for it (TUNA, PyPI) or HTML only (Aliyun), and records each request."""
+
+    def __init__(self, *, json_ok: bool) -> None:
+        self.requests: list[tuple[str, str]] = []
+        index = self
+
+        class _Handler(BaseHTTPRequestHandler):
+            def do_GET(self) -> None:
+                accept = self.headers.get("Accept", "")
+                index.requests.append((self.path, accept))
+                if self.path != "/simple/litman/":
+                    self.send_error(404)
+                    return
+                as_json = json_ok and "application/vnd.pypi.simple.v1+json" in accept
+                body = _JSON_PAGE if as_json else _HTML_PAGE
+                self.send_response(200)
+                self.send_header(
+                    "Content-Type",
+                    "application/vnd.pypi.simple.v1+json" if as_json else "text/html",
+                )
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+            def log_message(self, *args: object) -> None:
+                pass
+
+        self.server = ThreadingHTTPServer(("127.0.0.1", 0), _Handler)
+        self.url = f"http://127.0.0.1:{self.server.server_address[1]}/simple"
+        threading.Thread(target=self.server.serve_forever, daemon=True).start()
+
+    def close(self) -> None:
+        self.server.shutdown()
+        self.server.server_close()
+
+
+@pytest.fixture
+def no_proxy(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Reach 127.0.0.1 directly even where a proxy is configured."""
+    for var in ("http_proxy", "HTTP_PROXY", "https_proxy", "HTTPS_PROXY"):
+        monkeypatch.delenv(var, raising=False)
+    monkeypatch.setenv("no_proxy", "*")
+    monkeypatch.setenv("NO_PROXY", "*")
+
+
+@pytest.fixture(params=[True, False], ids=["json-index", "html-index"])
+def index(request: pytest.FixtureRequest, no_proxy: None) -> Iterator[_Index]:
+    served = _Index(json_ok=request.param)
+    yield served
+    served.close()
+
+
+def test_the_install_index_is_asked_not_pypi(
+    index: _Index, _no_receipt: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Nothing faked below urllib: the receipt names a mirror, the newest
+    release is read off its Simple API page, and PyPI is never asked."""
+    _no_receipt.write_text(
+        _receipt(f'\n[tool.options]\nindex = [{{ url = "{index.url}", default = true }}]\n'),
+        encoding="utf-8",
+    )
+    pypi = _Index(json_ok=True)
+    monkeypatch.setattr(update_check, "PYPI_JSON_URL", pypi.url + "/litman/json")
+    try:
+        update_check.refresh_cache_if_stale()
+    finally:
+        pypi.close()
+
+    cache = update_check.read_cache()
+    assert cache is not None and cache["latest"] == "1.3.10"
+    assert "failed" not in cache
+    assert [path for path, _ in index.requests] == ["/simple/litman/"]
+    assert "application/vnd.pypi.simple.v1+json" in index.requests[0][1]
+    assert pypi.requests == []
+    assert update_check.available_update() == ("1.1.0", "1.3.10")
+
+
+def test_an_unreachable_install_index_is_not_swapped_for_pypi(
+    _no_receipt: Path, monkeypatch: pytest.MonkeyPatch, no_proxy: None
+) -> None:
+    """A release the mirror cannot serve is one `lit self-update` cannot
+    install, so a mirror that does not answer means no answer, not PyPI's."""
+    gone = _Index(json_ok=True)
+    gone_url = gone.url
+    gone.close()  # nothing listens there any more
+    _no_receipt.write_text(
+        _receipt(f'\n[tool.options]\nindex = [{{ url = "{gone_url}", default = true }}]\n'),
+        encoding="utf-8",
+    )
+    pypi = _Index(json_ok=True)
+    monkeypatch.setattr(update_check, "PYPI_JSON_URL", pypi.url + "/litman/json")
+    try:
+        assert update_check._fetch_latest_version() is None
+    finally:
+        pypi.close()
+    assert pypi.requests == []
+
+
+# ---------------------------------------------------------------------------
+# a failed check is retried sooner when the caller asks
+# ---------------------------------------------------------------------------
+
+
+def test_a_failed_check_is_marked_and_a_success_clears_it(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _mock_urlopen_fail(monkeypatch)
+    update_check.refresh_cache_if_stale()
+    assert update_check.read_cache()["failed"] is True
+
+    update_check._write_cache(
+        {"checked_at": _iso_days_ago(2), "failed": True}
+    )
+    _mock_urlopen_ok(monkeypatch, "9.9.9")
+    update_check.refresh_cache_if_stale()
+    cache = update_check.read_cache()
+    assert cache["latest"] == "9.9.9"
+    assert "failed" not in cache
+
+
+def test_a_failed_check_is_retried_after_retry_after(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The GUI passes an hour; the CLI keeps the 24h TTL, so an offline machine
+    is not slowed by a 2s attempt on every command."""
+    update_check._write_cache({"checked_at": _iso_days_ago(2 / 24), "failed": True})
+
+    calls = _mock_urlopen_ok(monkeypatch, "9.9.9")
+    update_check.refresh_cache_if_stale()
+    assert calls == []  # CLI default: still inside the 24h TTL
+
+    update_check.refresh_cache_if_stale(retry_after=3600)
+    assert len(calls) == 1
+    assert update_check.read_cache()["latest"] == "9.9.9"
+
+
+def test_a_successful_check_keeps_the_full_ttl_whatever_retry_after(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    update_check._write_cache({"checked_at": _iso_days_ago(2 / 24), "latest": "1.1.0"})
+    calls = _mock_urlopen_ok(monkeypatch, "9.9.9")
+    update_check.refresh_cache_if_stale(retry_after=3600)
+    assert calls == []
+
+
+def test_the_timeout_reaches_the_request(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls = _mock_urlopen_ok(monkeypatch, "9.9.9")
+    update_check.refresh_cache_if_stale(timeout=10.0)
+    assert calls == [10.0]

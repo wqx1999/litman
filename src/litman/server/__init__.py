@@ -143,7 +143,7 @@ def _vaultless_allowed(method: str, path: str) -> bool:
 
 @asynccontextmanager
 async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
-    """On real server startup, refresh the PyPI update-check cache in the
+    """On real server startup, refresh the update-check cache in the
     background (silent-fail) so a GUI-only user's version badge can populate
     even if they never touch the CLI. The ``GET /api/version`` route only reads
     the cache — the network never touches the request path (task-self-update D4).
@@ -151,16 +151,29 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
     Fires only when the server actually starts (uvicorn / a `with TestClient`
     context), so a bare ``TestClient(create_app(...))`` used in tests never hits
     the network. The refresh helper is itself TTL-gated + opt-out-aware + fully
-    silent; the daemon thread just keeps startup non-blocking.
+    silent; the daemon thread keeps startup non-blocking, and asks again every
+    hour for as long as the server runs (a GUI left open for days still learns
+    of a release; the TTL decides whether that touches the network).
+    ``app.state.update_checking`` is true until the first attempt settles, so
+    the page knows to read the version again.
     """
+    stop_checking = threading.Event()
+    app.state.update_checking = True
 
     def _refresh() -> None:
-        try:
-            from litman.core.update_check import refresh_cache_if_stale
+        from litman.core import update_check
 
-            refresh_cache_if_stale()
-        except Exception:
-            pass
+        while True:
+            try:
+                update_check.refresh_cache_if_stale(
+                    timeout=update_check.GUI_NETWORK_TIMEOUT_SECONDS,
+                    retry_after=update_check.GUI_RETRY_SECONDS,
+                )
+            except Exception:
+                pass
+            app.state.update_checking = False
+            if stop_checking.wait(update_check.GUI_RETRY_SECONDS):
+                return
 
     # A failed one-click update leaves a flag beside the registry (written by
     # the detached helper — see core/self_update_helper.py). Consume it here so
@@ -213,6 +226,7 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
     try:
         yield
     finally:
+        stop_checking.set()
         if registration is not None:
             from litman.core.gui_registry import unregister_gui
 

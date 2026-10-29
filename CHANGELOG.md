@@ -13,6 +13,15 @@ own entry. Read those before you upgrade, whatever the number says.
 
 ### Fixed
 
+- **Users in mainland China now see when a new version is out.** litman
+  asked pypi.org for the newest version, which often does not answer there in
+  time, and after one failed try it did not ask again for a day, so no update
+  badge or tip appeared. It now asks the mirror litman was installed from (the
+  China installers use the Tsinghua mirror), so a version it shows is one
+  `lit self-update` can install. The web UI also waits for a slow answer, asks
+  again an hour after a failed try and every hour while it stays open. If you
+  are in mainland China and still on an older version, run `lit self-update`
+  once.
 - **`lit health-check` titles two more kinds of problem.** A `lit-config.yaml`
   it cannot read and a `.litman-staging/` leftover it cannot clean up were
   headed by internal names (`config_unreadable`, `stale_staging_unrecoverable`).

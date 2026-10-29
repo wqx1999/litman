@@ -107,8 +107,8 @@ upgrades, and reopens by itself.
 From a terminal, `lit self-update` does the same through whichever tool
 installed litman, uv or pipx. It prints `current → latest` and asks once.
 
-litman asks PyPI for the newest version number once a day, and mentions it when
-yours is older; `lit hello` tells you every time you ask.
+litman asks PyPI (or the mirror it was installed from) for the newest version
+number once a day, and mentions it when yours is older; `lit hello` tells you every time you ask.
 `LITMAN_NO_UPDATE_CHECK=1` switches all of it off —
 [what it checks](https://litman.dev/docs/4-commands/#lit-self-update).
 

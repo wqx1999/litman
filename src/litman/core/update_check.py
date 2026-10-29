@@ -1,20 +1,27 @@
 """PyPI update-check core.
 
-A silent, cached, non-blocking probe of the newest litman release on PyPI. The
-result feeds three surfaces: the interactive CLI nudge (``cli.py``), the
+A silent, cached, non-blocking probe of the newest litman release. The result
+feeds three surfaces: the interactive CLI nudge (``cli.py``), the
 ``lit self-update`` command, and the webUI version badge (``GET /api/version``).
+
+Where it asks: the package index this copy was installed from, when uv recorded
+one (``uv-receipt.toml`` beside the tool's interpreter — the China installers
+pin the Tsinghua mirror), else the public PyPI JSON. Asking the install index
+means a release is only announced once ``lit self-update`` can fetch it, and
+mainland users are not left asking pypi.org, which often does not answer there
+in time.
 
 Discipline baked in (task-self-update red lines):
 
 * **Standard library only** — ``urllib`` for the HTTP GET, no new dependency.
-* **Zero telemetry** — a plain GET of the public PyPI JSON; nothing is uploaded.
-* **Never blocks / never raises** — the network fetch has a ≤2s timeout and any
-  failure (offline, timeout, malformed JSON) resolves to ``None`` silently, not
-  even a warning.
+* **Zero telemetry** — a plain GET of a public index page; nothing is uploaded.
+* **Never blocks / never raises** — the CLI's fetch has a ≤2s timeout (the
+  GUI's runs off-thread and may wait longer) and any failure (offline, timeout,
+  malformed body) resolves to ``None`` silently, not even a warning.
 * **Cached with a 24h TTL** — a network request fires only when the cache is
-  stale; every other read touches the local JSON file. The attempt timestamp is
-  recorded even when the fetch fails, so an offline box does not re-hit the
-  network on every command.
+  stale; every other read touches the local JSON file. A failed attempt is
+  recorded too (``failed``), so an offline box does not re-hit the network on
+  every command; the GUI retries it after an hour, the CLI after the full TTL.
 * **Opt-out** — ``LITMAN_NO_UPDATE_CHECK=1`` skips everything, including reading
   the cache.
 
@@ -26,6 +33,9 @@ so tests isolate it via the same env override the registry uses.
 from __future__ import annotations
 
 import json
+import re
+import sys
+import tomllib
 import urllib.request
 from datetime import UTC, datetime
 from pathlib import Path
@@ -40,8 +50,22 @@ PYPI_JSON_URL = "https://pypi.org/pypi/litman/json"
 REFRESH_TTL_SECONDS = 24 * 3600
 NUDGE_TTL_SECONDS = 24 * 3600
 
-# Hard ceiling on the PyPI GET so the CLI nudge can never stall a command.
+# Hard ceiling on the GET so the CLI nudge can never stall a command.
 NETWORK_TIMEOUT_SECONDS = 2.0
+
+# The GUI asks from a background thread, so it can afford a slow link (a
+# mainland user reaching pypi.org), and retries a failure sooner than the CLI.
+GUI_NETWORK_TIMEOUT_SECONDS = 10.0
+GUI_RETRY_SECONDS = 3600
+
+# Written by `uv tool install` into the tool's environment root (= sys.prefix of
+# the interpreter litman runs on), on every platform.
+UV_RECEIPT_FILENAME = "uv-receipt.toml"
+
+# The Simple API page lists files; JSON (PEP 691) when the index speaks it,
+# HTML otherwise (Aliyun answers HTML only).
+_SIMPLE_ACCEPT = "application/vnd.pypi.simple.v1+json, text/html;q=0.1"
+_RELEASE_RE = re.compile(r"\d+(?:\.\d+)*")
 
 OPT_OUT_ENV = "LITMAN_NO_UPDATE_CHECK"
 
@@ -179,14 +203,86 @@ def _write_cache(data: dict[str, Any]) -> None:
     tmp.replace(path)
 
 
+def uv_receipt_path() -> Path:
+    """Where uv keeps this installation's receipt, if uv installed it."""
+    return Path(sys.prefix) / UV_RECEIPT_FILENAME
+
+
+def install_index() -> str | None:
+    """The default package index uv installed litman from, or ``None``.
+
+    ``None`` when litman was not installed by ``uv tool`` (pipx, pip, a dev
+    checkout), when the install named no index (plain PyPI), or when the
+    receipt cannot be read. Never raises.
+    """
+    try:
+        with uv_receipt_path().open("rb") as f:
+            options = tomllib.load(f)["tool"]["options"]
+        for entry in options.get("index", []):
+            if entry.get("default") and isinstance(entry.get("url"), str):
+                return str(entry["url"])
+        legacy = options.get("index-url")  # receipts from uv before `index`
+        return legacy if isinstance(legacy, str) else None
+    except Exception:
+        return None
+
+
+def _version_of(filename: str) -> str | None:
+    """``litman-1.3.9-py3-none-any.whl`` / ``litman-1.3.9.tar.gz`` → ``1.3.9``.
+
+    Only plain ``X.Y.Z`` releases count — what PyPI's ``info.version`` reports
+    too — so a pre-release is never announced.
+    """
+    name = filename.lower()
+    if not name.startswith("litman-"):
+        return None
+    rest = name[len("litman-"):]
+    if rest.endswith(".whl"):
+        version = rest.split("-", 1)[0]
+    else:
+        version = rest.removesuffix(".tar.gz").removesuffix(".zip")
+    return version if _RELEASE_RE.fullmatch(version) else None
+
+
+def _simple_page_versions(body: bytes) -> list[str]:
+    """Release versions on a Simple API project page, yanked files left out."""
+    text = body.decode("utf-8")
+    if text.lstrip().startswith("{"):
+        files = json.loads(text).get("files", [])
+        names = [f["filename"] for f in files if not f.get("yanked")]
+    else:
+        names = [
+            m.group(2)
+            for m in re.finditer(r"<a\b([^>]*)>([^<]+)</a>", text)
+            if "data-yanked" not in m.group(1)
+        ]
+    return [v for v in map(_version_of, names) if v is not None]
+
+
+def _fetch_from_index(index: str, *, timeout: float) -> str | None:
+    request = urllib.request.Request(
+        index.rstrip("/") + "/litman/", headers={"Accept": _SIMPLE_ACCEPT}
+    )
+    with urllib.request.urlopen(request, timeout=timeout) as resp:
+        versions = _simple_page_versions(resp.read())
+    return max(versions, key=_parse_version) if versions else None
+
+
 def _fetch_latest_version(*, timeout: float = NETWORK_TIMEOUT_SECONDS) -> str | None:
-    """Plain GET of the public PyPI JSON → ``info.version``.
+    """The newest release on the install index (:func:`install_index`), else
+    on PyPI (``info.version`` of its JSON).
+
+    Only the install index is asked when there is one: a release it does not
+    have yet is one ``lit self-update`` could not install.
 
     Any failure (network down, timeout, non-200, malformed body) returns
     ``None`` — never raises, never prints. This is the ONLY function that
     touches the network.
     """
     try:
+        index = install_index()
+        if index is not None:
+            return _fetch_from_index(index, timeout=timeout)
         with urllib.request.urlopen(PYPI_JSON_URL, timeout=timeout) as resp:
             payload = json.loads(resp.read().decode("utf-8"))
         version = payload["info"]["version"]
@@ -195,28 +291,38 @@ def _fetch_latest_version(*, timeout: float = NETWORK_TIMEOUT_SECONDS) -> str | 
         return None
 
 
-def refresh_cache_if_stale(*, now: datetime | None = None) -> None:
-    """Fire at most one PyPI request when the cache is older than the TTL.
+def refresh_cache_if_stale(
+    *,
+    now: datetime | None = None,
+    timeout: float = NETWORK_TIMEOUT_SECONDS,
+    retry_after: int = REFRESH_TTL_SECONDS,
+) -> None:
+    """Fire at most one request when the cache is older than the TTL.
 
-    No-op when opted out or when the cache is fresh. On any outcome (success or
-    failure) the attempt timestamp is recorded so the 24h TTL also throttles a
-    failed fetch — an offline machine will not re-hit the network every command.
-    Fully silent: a write failure is swallowed just like a fetch failure.
+    No-op when opted out or when the cache is fresh. On any outcome the attempt
+    timestamp is recorded; a failure also sets ``failed``, and is retried once
+    ``retry_after`` seconds have passed instead of the 24h TTL. The CLI keeps
+    the default (an offline machine does not re-hit the network every command);
+    the GUI's background thread passes an hour. Fully silent: a write failure
+    is swallowed just like a fetch failure.
     """
     if opt_out():
         return
     now = now or _utcnow()
     cache = read_cache()
-    if cache is not None and not _is_stale(
-        cache.get("checked_at"), now=now, ttl_seconds=REFRESH_TTL_SECONDS
-    ):
-        return
+    if cache is not None:
+        ttl = retry_after if cache.get("failed") else REFRESH_TTL_SECONDS
+        if not _is_stale(cache.get("checked_at"), now=now, ttl_seconds=ttl):
+            return
 
-    latest = _fetch_latest_version()
+    latest = _fetch_latest_version(timeout=timeout)
     updated = dict(cache or {})
     updated["checked_at"] = now.isoformat()
     if latest is not None:
         updated["latest"] = latest
+        updated.pop("failed", None)
+    else:
+        updated["failed"] = True
     try:
         _write_cache(updated)
     except OSError:

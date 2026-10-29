@@ -4020,7 +4020,7 @@ def test_gui_drops_the_record_even_when_the_server_raises(
 def _no_update_check(monkeypatch: pytest.MonkeyPatch) -> None:
     from litman.core import update_check
 
-    monkeypatch.setattr(update_check, "refresh_cache_if_stale", lambda: None)
+    monkeypatch.setattr(update_check, "refresh_cache_if_stale", lambda **kw: None)
 
 
 def test_lifespan_records_a_gui_with_a_port_and_drops_it_on_stop(

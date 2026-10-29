@@ -396,14 +396,17 @@ export function fetchVaults(): Promise<VaultsPayload> {
 
 /** Running litman version + the latest available release (or null when none /
  * unknown). PURE READ of the server's update-check cache — the request path
- * never hits PyPI; the server's startup task populates the cache. Backs the
- * TopBar update dot. */
+ * never hits the network; the server's background task populates the cache.
+ * Backs the TopBar update dot. */
 export interface VersionInfo {
   current: string
   latest: string | null
   /** Message a failed one-click update left behind (surfaced once per server
    * run), else null. */
   selfUpdateFailed?: string | null
+  /** True while the server's startup check is still out on the network: read
+   * again until it is false. */
+  checking?: boolean
 }
 
 export function fetchVersion(): Promise<VersionInfo> {

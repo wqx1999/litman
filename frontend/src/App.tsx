@@ -783,11 +783,23 @@ export default function App() {
     fetchFixedEnums().then(setFixedEnums).catch(classifyFetchError)
     // Update-check chip: pure cache read, best-effort (a failure just leaves
     // the chip off — this is a passive reminder, never blocking). A null
-    // `latest` on the FIRST read can also mean the server's background cache
-    // refresh (its network fetch is bounded at 2s) hasn't landed yet — without
-    // a retry the chip would always be one app start late. One re-read at 3s
-    // is strictly after that refresh has finished or given up.
+    // `latest` on the FIRST read can also mean the server's background check
+    // is still out on the network (a slow link can take many seconds) —
+    // `checking` says so, and the page reads again each second until it is
+    // done, rather than being one app start late.
     let versionRetry: ReturnType<typeof setTimeout> | undefined
+    const rereadWhileChecking = (tries: number) => {
+      versionRetry = setTimeout(() => {
+        fetchVersion()
+          .then((again) => {
+            setUpdateLatest(again.latest)
+            if (!again.latest && again.checking && tries > 1) {
+              rereadWhileChecking(tries - 1)
+            }
+          })
+          .catch(() => {})
+      }, 1000)
+    }
     fetchVersion()
       .then((v) => {
         setVersionCurrent(v.current)
@@ -822,12 +834,7 @@ export default function App() {
             if (w.bullets.length > 0) setWhatsNew(w)
           })
           .catch(() => {})
-        if (v.latest) return
-        versionRetry = setTimeout(() => {
-          fetchVersion()
-            .then((again) => setUpdateLatest(again.latest))
-            .catch(() => {})
-        }, 3000)
+        if (!v.latest && v.checking) rereadWhileChecking(60)
       })
       .catch(() => {})
     // Host capabilities: cheap (one cached probe server-side) so they run
@@ -891,6 +898,20 @@ export default function App() {
       })
     return () => clearTimeout(versionRetry)
   }, [served, loadTrash, classifyFetchError, notify])
+
+  // A window left open for days: the server asks again every hour, so read
+  // the cached answer whenever the page comes back into view.
+  useEffect(() => {
+    if (!served) return
+    const onVisible = () => {
+      if (document.visibilityState !== 'visible') return
+      fetchVersion()
+        .then((v) => setUpdateLatest(v.latest))
+        .catch(() => {})
+    }
+    document.addEventListener('visibilitychange', onVisible)
+    return () => document.removeEventListener('visibilitychange', onVisible)
+  }, [served])
 
   useEffect(() => {
     if (!served) return

@@ -238,8 +238,9 @@ def self_update_cmd(yes: bool) -> None:
         return
 
     # Before the version check, because that is where the promise is made: the
-    # advertised release comes from PyPI, while the upgrade would re-resolve
-    # the source this copy was installed from. Installer is non-None here.
+    # advertised release comes from the package index (PyPI or the install
+    # mirror), while the upgrade would re-resolve the source this copy was
+    # installed from. Installer is non-None here.
     origin = _install_origin()
     if origin is not None:
         # markup=False: the origin carries a revision string out of the
