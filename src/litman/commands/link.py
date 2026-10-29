@@ -275,6 +275,10 @@ def link_cmd(
     # of whatever the user put in it.
     for line in hub_settlement_lines(0, result.get("hub_moved_aside", [])):
         console.print(f"  {line}", soft_wrap=True)
+    if result["link_errors"]:
+        console.print(
+            project_folder_not_updated(result["link_errors"][0]), soft_wrap=True
+        )
     if tips:
         console.print()
         print_unwrapped(console, tips)
@@ -370,9 +374,14 @@ def unlink_cmd(
             )
     else:
         body_lines.append("[dim]Metadata:[/] unchanged (was not linked)")
+    removed = result["paper_link_removed"]
     body_lines.append(
-        f"[dim]Paper link:[/] "
-        f"{'removed' if result['paper_link_removed'] else 'absent (already)'}"
+        "[dim]Paper link:[/] "
+        + (
+            "removed" if removed
+            else "absent (already)" if removed is False
+            else "[yellow]not removed[/]"
+        )
     )
     if result["code_links_removed"]:
         body_lines.append(
@@ -389,3 +398,7 @@ def unlink_cmd(
     console.print(
         Panel.fit("\n".join(body_lines), title="lit unlink", border_style="green")
     )
+    if result["link_errors"]:
+        console.print(
+            project_folder_not_updated(result["link_errors"][0]), soft_wrap=True
+        )

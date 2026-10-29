@@ -211,3 +211,86 @@ def test_rename_finishes_when_chmod_took_read_access_from_a_hub(
 
     CliRunner().invoke(cli, ["health-check", "--fix", "--library", str(lib.vault)])
     assert _project_issues(lib) == []
+
+
+# ---------------------------------------------------------------------------
+# One paper's links: lit link / unlink / rm
+# ---------------------------------------------------------------------------
+
+SINGLE = {
+    "link": (
+        ["link", "p3", "--project", "pp"],
+        lambda lib: "pp" in (_meta(lib, "p3").get("projects") or []),
+        ["litman_reflib"],  # p3 has no repo: litman_code/ is not touched
+    ),
+    "unlink": (
+        ["unlink", "p2", "--project", "pp"],
+        lambda lib: "pp" not in (_meta(lib, "p2").get("projects") or []),
+        ["litman_reflib"],
+    ),
+    "rm": (["rm", "p1", "-y"], lambda lib: not _meta(lib, "p1"), HUBS),
+    "rm --purge": (
+        ["rm", "p1", "--purge", "-y"], lambda lib: not _meta(lib, "p1"), HUBS
+    ),
+}
+
+
+@pytest.mark.parametrize("hub", HUBS)
+@pytest.mark.parametrize("name", list(SINGLE))
+def test_a_one_paper_write_finishes_and_says_a_project_folder_was_not_updated(
+    lib: Library, monkeypatch: pytest.MonkeyPatch, name: str, hub: str
+) -> None:
+    argv, landed, meets = SINGLE[name]
+    with monkeypatch.context() as patch:
+        deny(patch, lib.hub(hub))
+        code, output, exc = _run(lib, argv)
+
+    assert code == 0, f"{output} {exc!r}"
+    assert output.count(LINE) == (1 if hub in meets else 0)
+    assert landed(lib)
+    assert lib.project_dir.joinpath("my_own_file.txt").is_file()
+
+    CliRunner().invoke(cli, ["health-check", "--fix", "--library", str(lib.vault)])
+    assert _project_issues(lib) == []
+
+
+def test_unlink_still_shows_the_relevance_it_drops(
+    lib: Library, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The dropped relevance- note is shown so it can be copied back from the
+    terminal; a crash after the commit used to lose it for good."""
+    _run(lib, ["link", "p2", "--project", "pp", "--relevance", "why it matters"])
+    with monkeypatch.context() as patch:
+        deny(patch, lib.reflib)
+        code, output, exc = _run(lib, ["unlink", "p2", "--project", "pp"])
+
+    assert code == 0, f"{output} {exc!r}"
+    assert "why it matters" in output
+    assert "Paper link: not removed" in output
+    assert output.count(LINE) == 1
+
+
+@posix_only
+@not_root
+@pytest.mark.parametrize("hub", HUBS)
+def test_rm_finishes_when_chmod_took_read_access_from_a_hub(
+    lib: Library, hub: str
+) -> None:
+    """The real failure, nothing injected."""
+    lib.hub(hub).chmod(0)
+    try:
+        code, output, exc = _run(lib, ["rm", "p1", "-y"])
+    finally:
+        lib.hub(hub).chmod(0o755)
+
+    assert code == 0, f"{output} {exc!r}"
+    assert output.count(
+        "warning: could not update a project folder (Permission denied). "
+        "Fix that, then run `lit health-check --fix`."
+    ) == 1
+    assert not _meta(lib, "p1")
+    # The rest of the delete ran: the trash entry is there.
+    assert any((lib.vault / ".trash").glob("p1-*"))
+
+    CliRunner().invoke(cli, ["health-check", "--fix", "--library", str(lib.vault)])
+    assert _project_issues(lib) == []

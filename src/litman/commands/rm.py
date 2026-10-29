@@ -70,6 +70,7 @@ import click
 from rich.console import Console
 from rich.markup import escape
 
+from litman.commands._hub_report import project_folder_not_updated
 from litman.commands._options import library_option, vault_option
 from litman.core.atomic import staged_write
 from litman.core.code import CODES_DIRNAME, REPO_META_FILENAME
@@ -263,6 +264,7 @@ def _teardown_project_links(
     target_id: str,
     registry: dict[str, str],
     surviving_papers: list[dict[str, Any]],
+    link_errors: list[OSError],
 ) -> None:
     """Remove A's project symlinks + re-render REFERENCES.md (post-stage).
 
@@ -275,6 +277,9 @@ def _teardown_project_links(
 
     Unregistered or missing project dirs are skipped silently — the metadata
     side of the delete already succeeded; symlinks are a convenience layer.
+    A project folder that cannot be listed or written is not skipped
+    silently: each step is tried on its own and its ``OSError`` lands in
+    ``link_errors``, for the caller to say so.
     """
     code_clones = [str(r) for r in (target_meta.get("code-clones") or [])]
     for project in target_meta.get("projects") or []:
@@ -287,18 +292,24 @@ def _teardown_project_links(
             continue
 
         paper_link = project_dir / LITERATURE_SUBDIR / target_id
-        remove_link_if_present(paper_link)
+        try:
+            remove_link_if_present(paper_link)
+        except OSError as err:
+            link_errors.append(err)
 
         for repo_name in code_clones:
             link_path = project_dir / CODE_SUBDIR / repo_name
-            if not is_portable_link(link_path):
-                continue
             still_used = _papers_using_repo_in_project(
                 surviving_papers, project, repo_name,
                 exclude_paper_id=target_id,
             )
-            if not still_used:
-                remove_link_if_present(link_path)
+            if still_used:
+                continue
+            try:
+                if is_portable_link(link_path):
+                    remove_link_if_present(link_path)
+            except OSError as err:
+                link_errors.append(err)
 
         # REFERENCES.md re-renders from the member-scoped list the caller
         # loaded; A is already in trash, so it drops out naturally.
@@ -308,6 +319,8 @@ def _teardown_project_links(
             )
         except FileNotFoundError:
             continue
+        except OSError as err:
+            link_errors.append(err)
 
 
 # ---------------------------------------------------------------------------
@@ -373,6 +386,9 @@ class RmResult:
     # Post-commit filesystem hiccups (locked dir, unremovable repo). Collected
     # rather than printed so the CLI and the route each surface them their way.
     warnings: list[str]
+    # A project folder the teardown could not change: the CLI ends with the
+    # one line every write command uses for it.
+    link_errors: list[OSError]
 
 
 def _si_name(record: dict[str, Any]) -> str:
@@ -662,6 +678,7 @@ def execute_rm(plan: RmPlan, *, purge: bool = False) -> RmResult:
                     )
 
     # ----- Phase 3b: project symlink teardown + REFERENCES re-render -----
+    link_errors: list[OSError] = []
     if plan.projects:
         # Full metadata is needed only for the victim's projects' members
         # (REFERENCES renders relevance-*, the repo check reads code-clones —
@@ -677,6 +694,7 @@ def execute_rm(plan: RmPlan, *, purge: bool = False) -> RmResult:
             load_project_member_metas(
                 vault, plan.projects, exclude_ids={paper_id}
             ),
+            link_errors,
         )
 
     # ----- Phase 3c: post-commit derived rebuild via the shared funnel -----
@@ -707,6 +725,7 @@ def execute_rm(plan: RmPlan, *, purge: bool = False) -> RmResult:
         note_files=sorted(plan.note_updates),
         evicted=evicted,
         warnings=warnings,
+        link_errors=link_errors,
     )
 
 
@@ -945,3 +964,7 @@ def rm_cmd(
             f"[dim](`[[{escape(paper_id)}]] (deleted)`)[/]"
         )
     console.print("[dim]INDEX.json + views/ refreshed.[/]")
+    if result.link_errors:
+        console.print(
+            project_folder_not_updated(result.link_errors[0]), soft_wrap=True
+        )

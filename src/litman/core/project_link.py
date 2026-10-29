@@ -694,6 +694,10 @@ def link_paper_to_project(
            symlink + per-code-clone symlinks under ``<project_dir>/litman_code/``.
         7. Regenerate ``<project_dir>/litman_reflib/REFERENCES.md``.
 
+    Steps 6-7 run after the metadata commit: an ``OSError`` from the project
+    folder (a hub that cannot be listed or written) does not undo the link,
+    and lands in the summary's ``link_errors`` for the caller to report.
+
     Returns:
         A summary dict for the CLI to render.
 
@@ -793,17 +797,21 @@ def link_paper_to_project(
     # whatever command moved it: unlike a deleted verbatim copy, whose original
     # is in the vault, this is the only copy of what was in it.
     hub_moved_aside: list[str] = []
-    settled = settle_hub_entry(
-        paper_link_path,
-        paper_target,
-        vault=vault,
-        project=project,
-        hub=LITERATURE_SUBDIR,
-    )
-    if settled.moved_to is not None:
-        hub_moved_aside.append(str(settled.moved_to))
-    if not settled.position_occupied:
-        make_portable_link(paper_link_path, paper_target)
+    link_errors: list[OSError] = []
+    try:
+        settled = settle_hub_entry(
+            paper_link_path,
+            paper_target,
+            vault=vault,
+            project=project,
+            hub=LITERATURE_SUBDIR,
+        )
+        if settled.moved_to is not None:
+            hub_moved_aside.append(str(settled.moved_to))
+        if not settled.position_occupied:
+            make_portable_link(paper_link_path, paper_target)
+    except OSError as err:
+        link_errors.append(err)
     code_links_created: list[str] = []
     code_links_missing_repo: list[str] = []
     code_links_unsupported: list[str] = []
@@ -814,13 +822,17 @@ def link_paper_to_project(
             # `lit code restore-all`, then `lit link --rebuild-all`.
             code_links_missing_repo.append(repo_name)
             continue
-        settled = settle_hub_entry(
-            link_path,
-            repo_target,
-            vault=vault,
-            project=project,
-            hub=CODE_SUBDIR,
-        )
+        try:
+            settled = settle_hub_entry(
+                link_path,
+                repo_target,
+                vault=vault,
+                project=project,
+                hub=CODE_SUBDIR,
+            )
+        except OSError as err:
+            link_errors.append(err)
+            continue
         if settled.moved_to is not None:
             hub_moved_aside.append(str(settled.moved_to))
         if settled.verdict == "blocked":
@@ -832,7 +844,12 @@ def link_paper_to_project(
             # hold folder links", which would be a false diagnosis. The folder
             # in the way has already been named on stderr.
             continue
-        if make_portable_link(link_path, repo_target):
+        try:
+            created = make_portable_link(link_path, repo_target)
+        except OSError as err:
+            link_errors.append(err)
+            continue
+        if created:
             code_links_created.append(repo_name)
         else:
             # review F31: the repo IS present; the filesystem refused the link
@@ -842,7 +859,11 @@ def link_paper_to_project(
             code_links_unsupported.append(repo_name)
 
     # 7) REFERENCES.md
-    refs_path = write_references_md(vault, project, project_dir)
+    refs_path = project_dir / LITERATURE_SUBDIR / REFERENCES_FILENAME
+    try:
+        write_references_md(vault, project, project_dir)
+    except OSError as err:
+        link_errors.append(err)
 
     return {
         "paper_id": paper_id,
@@ -858,6 +879,7 @@ def link_paper_to_project(
         "code_links_skipped_links_unsupported": code_links_unsupported,
         "hub_moved_aside": hub_moved_aside,
         "references_md": refs_path,
+        "link_errors": link_errors,
     }
 
 
@@ -888,6 +910,10 @@ def unlink_paper_from_project(
            project's code symlink ONLY if no other linked paper in the
            project still references that repo.
         8. Regenerate REFERENCES.md.
+
+    Steps 6-8 run after the metadata commit: an ``OSError`` from the project
+    folder does not undo the unlink, lands in the summary's ``link_errors``,
+    and leaves ``paper_link_removed`` ``None`` when it was that link's.
     """
     project_dir = _resolve_project_dir(project, registry)
     paper_meta_path = vault / "papers" / paper_id / "metadata.yaml"
@@ -958,7 +984,13 @@ def unlink_paper_from_project(
 
     # 6) Paper symlink
     paper_link_path = project_dir / LITERATURE_SUBDIR / paper_id
-    paper_link_removed = remove_link_if_present(paper_link_path)
+    link_errors: list[OSError] = []
+    paper_link_removed: bool | None
+    try:
+        paper_link_removed = remove_link_if_present(paper_link_path)
+    except OSError as err:
+        link_errors.append(err)
+        paper_link_removed = None
 
     # 7) Code symlinks — keep when another linked paper still uses the repo.
     # Member-scoped load: the predicate below filters to this project's
@@ -972,7 +1004,11 @@ def unlink_paper_from_project(
     code_links_kept = []
     for repo_name in code_clones:
         link_path = project_dir / CODE_SUBDIR / repo_name
-        if not is_portable_link(link_path):
+        try:
+            if not is_portable_link(link_path):
+                continue
+        except OSError as err:
+            link_errors.append(err)
             continue
         # Check fresh papers (excludes the just-unlinked paper). If another
         # paper tagged with this project still binds the repo, KEEP the
@@ -984,11 +1020,19 @@ def unlink_paper_from_project(
         if still_in_use:
             code_links_kept.append((repo_name, still_in_use))
         else:
-            remove_link_if_present(link_path)
+            try:
+                remove_link_if_present(link_path)
+            except OSError as err:
+                link_errors.append(err)
+                continue
             code_links_removed.append(repo_name)
 
     # 8) REFERENCES.md
-    refs_path = write_references_md(vault, project, project_dir)
+    refs_path = project_dir / LITERATURE_SUBDIR / REFERENCES_FILENAME
+    try:
+        write_references_md(vault, project, project_dir)
+    except OSError as err:
+        link_errors.append(err)
 
     return {
         "paper_id": paper_id,
@@ -1004,6 +1048,7 @@ def unlink_paper_from_project(
         "code_links_removed": code_links_removed,
         "code_links_kept": code_links_kept,
         "references_md": refs_path,
+        "link_errors": link_errors,
     }
 
 
