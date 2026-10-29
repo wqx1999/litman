@@ -1666,6 +1666,38 @@ def test_make_shortcut_linux_writes_desktop_file(
     assert "updated" in result2.output
 
 
+def _block_shortcut_folder(monkeypatch, tmp_path) -> Path:
+    """Put a file where the shortcut's folder belongs, on every platform: the
+    Desktop (Windows), the applications folder (Linux), both app homes
+    (macOS)."""
+    blocker = tmp_path / "Desktop"
+    blocker.write_text("not a folder\n", encoding="utf-8")
+    monkeypatch.setattr(gui, "shortcut_path", lambda: blocker / "litman.lnk")
+    monkeypatch.setattr(
+        gui,
+        "_darwin_bundle_locations",
+        lambda: (blocker / "litman.app", blocker / "user" / "litman.app"),
+    )
+    return blocker
+
+
+def test_make_shortcut_says_in_one_line_why_it_could_not(
+    monkeypatch, tmp_path, fake_lit_on_path
+) -> None:
+    # A file where the Desktop folder belongs (win-test, round 2) ended
+    # `lit gui --make-shortcut` in a whole FileExistsError traceback.
+    blocker = _block_shortcut_folder(monkeypatch, tmp_path)
+
+    result = CliRunner().invoke(gui_cmd, ["--make-shortcut"])
+
+    error = result.exception
+    assert type(error).__name__ == "LitmanError", result.output
+    message = str(error)
+    assert message.startswith(f"Could not create the desktop shortcut at {blocker}")
+    assert message.endswith(". Fix that, then re-run: lit gui --make-shortcut")
+    assert "\n" not in message and "Errno" not in message
+
+
 def test_app_window_flags_carry_the_wm_class_only_on_linux(monkeypatch) -> None:
     # X11 matches the window's WM_CLASS against StartupWMClass in
     # litman.desktop; Windows groups by AppUserModelID and macOS by owning

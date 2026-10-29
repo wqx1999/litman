@@ -22,6 +22,7 @@ from pathlib import Path
 
 import click
 from rich.console import Console
+from rich.markup import escape
 from rich.panel import Panel
 
 from litman.commands.gui import display_available, gui_cmd, shortcut_path
@@ -432,8 +433,15 @@ def _step_shortcut(
         "Create a desktop shortcut? (runs: lit gui --make-shortcut)",
         default=True,
     ):
-        ctx.invoke(gui_cmd, make_shortcut=True)
-        did.append("desktop shortcut")
+        try:
+            ctx.invoke(gui_cmd, make_shortcut=True)
+        except LitmanError as e:
+            # The steps before are done: say why this one is not, and still
+            # end on the summary.
+            console.print(f"[red]{escape(str(e))}[/]", soft_wrap=True)
+            skipped.append("shortcut (could not create it)")
+        else:
+            did.append("desktop shortcut")
     else:
         skipped.append("shortcut (declined)")
 

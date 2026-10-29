@@ -766,6 +766,44 @@ def test_setup_step5_prompt_names_underlying_command_and_declines(
     assert "shortcut (declined)" in result.output
 
 
+def test_setup_step5_a_refused_shortcut_still_ends_on_the_summary(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The four steps before it are done: a shortcut the filesystem refuses
+    # says why in one line and setup still finishes, rather than ending on
+    # an error (before: a whole traceback).
+    _force_tty(monkeypatch)
+    monkeypatch.setenv("SHELL", "/bin/bash")
+    # No rclone (step 4 auto-skips); `lit` found, so the shortcut gets as
+    # far as its folder.
+    monkeypatch.setattr(
+        "litman.commands.setup.shutil.which",
+        lambda name: "/opt/lit/bin/lit" if name == "lit" else None,
+    )
+    blocker = tmp_path / "Desktop"
+    blocker.write_text("not a folder\n", encoding="utf-8")
+    # A file where the shortcut's folder belongs, on every platform.
+    for module in ("litman.commands.setup", "litman.commands.gui"):
+        monkeypatch.setattr(
+            f"{module}.shortcut_path", lambda: blocker / "litman.lnk"
+        )
+    monkeypatch.setattr(
+        "litman.commands.gui._darwin_bundle_locations",
+        lambda: (blocker / "litman.app", blocker / "user" / "litman.app"),
+    )
+    monkeypatch.setattr(
+        "litman.commands.setup.display_available", lambda: True
+    )
+
+    result = CliRunner().invoke(cli, ["setup"], input="n\n\nn\nn\ny\n")
+    assert result.exit_code == 0, result.output
+    flat = " ".join(result.output.split())
+    assert "Could not create the desktop shortcut at" in flat
+    assert "shortcut (could not create it)" in flat
+    assert "Setup complete." in flat
+    assert "Traceback" not in result.output
+
+
 @pytest.mark.skipif(
     sys.platform != "linux",
     reason="the .desktop file is the Linux shortcut; macOS builds an .app "

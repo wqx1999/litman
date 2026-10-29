@@ -113,6 +113,12 @@ own entry. Read those before you upgrade, whatever the number says.
   it, and nothing looks at that folder again. It now names the folder and the
   reason, and the notice stays until you click it, as `lit project rm` already
   said.
+- **`lit gui --make-shortcut` says in one line why it could not.** When the
+  folder the shortcut goes in could not be written (a file named like the
+  Desktop folder, an applications folder without write access), it printed a
+  whole Python traceback, and `lit setup` stopped there. It now names the
+  folder and the reason, and `lit setup` lists the shortcut as skipped and
+  finishes.
 - **`lit rm` no longer deletes the only copy of a repo.** A folder added with
   `lit code add --move` exists only in the library. When the paper you deleted
   was the only one using it, `lit rm` deleted the repo too, and restoring the

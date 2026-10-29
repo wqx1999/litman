@@ -72,6 +72,7 @@ from litman.core import viewer
 from litman.core.gui_registry import unregister_gui
 from litman.core.library import find_vault, resolve_library_or_vault
 from litman.core.locking import rmtree as _rmtree
+from litman.core.portable_link import _os_error_reason
 from litman.core.presence import PresenceTracker
 from litman.core.vault_registry import REGISTRY_APP_NAME, REGISTRY_ENV_VAR
 from litman.exceptions import LibraryNotFoundError, LitmanError
@@ -1139,6 +1140,15 @@ def create_shortcut() -> tuple[Path, bool]:
     return target, existed
 
 
+def _shortcut_refused(err: OSError) -> str:
+    """The one line for a shortcut the filesystem would not take."""
+    where = f" at {err.filename}" if err.filename else ""
+    return (
+        f"Could not create the desktop shortcut{where}: "
+        f"{_os_error_reason(err)}. Fix that, then re-run: lit gui --make-shortcut"
+    )
+
+
 def _create_shortcut_darwin(lit: str) -> tuple[Path, bool]:
     """Write litman.app into the preferred home and leave exactly one copy.
 
@@ -1480,7 +1490,12 @@ def gui_cmd(
     _repair_launcher_stubs()
 
     if make_shortcut:
-        target, existed = create_shortcut()
+        try:
+            target, existed = create_shortcut()
+        except OSError as e:
+            # A Desktop that is a file, an applications folder that takes no
+            # writes: one line saying which and why, not a traceback.
+            raise LitmanError(_shortcut_refused(e)) from e
         console.print(
             f"[green]{'updated' if existed else 'created'}[/] desktop "
             f"shortcut: [bold]{target}[/]"
