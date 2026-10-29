@@ -1125,13 +1125,14 @@ def test_a_trash_entry_restores_only_the_two_repo_files(vault: Path) -> None:
     """The trash entry is a file anyone can edit: a restore writes no path it
     names besides repo-meta.yaml and notes.md."""
     _write_paper(vault, "2024_Target")
+    edited: dict[str, Any] = {
+        "notes.md": "kept", "../../evil.md": "x", "repo-meta.yaml": 7
+    }
     entry_path = trash_mod.move_to_trash(
         vault,
         "2024_Target",
         orphan_repos={"Solo": "https://example.org/solo.git"},
-        orphan_repo_files={
-            "Solo": {"notes.md": "kept", "../../evil.md": "x", "repo-meta.yaml": 7}
-        },
+        orphan_repo_files={"Solo": edited},
     )
 
     (entry,) = trash_mod.list_trash(vault)
