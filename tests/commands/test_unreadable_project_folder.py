@@ -97,3 +97,117 @@ def test_health_check_names_a_folder_chmod_took_read_access_from(
     assert code == 1
     assert isinstance(exc, SystemExit), exc
     assert "project 'pp' not checked" in output
+
+
+# ---------------------------------------------------------------------------
+# A write: it lands, the command finishes, one line says what to do
+# ---------------------------------------------------------------------------
+
+LINE = (
+    f"warning: could not update a project folder ({ACCESS_DENIED}). "
+    "Fix that, then run `lit health-check --fix`."
+)
+
+
+def _meta(lib: Library, paper_id: str) -> dict:
+    from ruamel.yaml import YAML
+
+    path = lib.vault / "papers" / paper_id / "metadata.yaml"
+    return YAML(typ="safe").load(path.read_text(encoding="utf-8")) if path.is_file() else {}
+
+
+def _projects(lib: Library) -> dict:
+    from litman.core.config import load_config
+
+    return dict(load_config(lib.vault).projects)
+
+
+# (argv, did the command's own write land, the hubs whose denial it meets)
+REBUILDS = {
+    "link --rebuild-all": (["link", "--rebuild-all"], None, HUBS),
+    "refresh-views": (["refresh-views"], None, HUBS),
+    "modify --add-tag projects": (
+        ["modify", "p3", "--add-tag", "projects=pp"],
+        lambda lib: "pp" in (_meta(lib, "p3").get("projects") or []),
+        HUBS,
+    ),
+    # A title is in REFERENCES.md only; litman_code/ is not touched.
+    "modify --set title": (
+        ["modify", "p2", "--set", "title=New title"],
+        lambda lib: _meta(lib, "p2").get("title") == "New title",
+        ["litman_reflib"],
+    ),
+    "rename": (
+        ["rename", "p2", "p2b"],
+        lambda lib: bool(_meta(lib, "p2b")) and not _meta(lib, "p2"),
+        HUBS,
+    ),
+    "project rename": (
+        ["project", "rename", "pp", "pp2"],
+        lambda lib: "pp2" in _projects(lib),
+        HUBS,
+    ),
+}
+
+
+@pytest.mark.parametrize("hub", HUBS)
+@pytest.mark.parametrize("name", list(REBUILDS))
+def test_a_rebuild_finishes_and_says_a_project_folder_was_not_updated(
+    lib: Library, monkeypatch: pytest.MonkeyPatch, name: str, hub: str
+) -> None:
+    argv, landed, meets = REBUILDS[name]
+    with monkeypatch.context() as patch:
+        deny(patch, lib.hub(hub))
+        code, output, exc = _run(lib, argv)
+
+    assert code == 0, f"{output} {exc!r}"
+    assert output.count(LINE) == (1 if hub in meets else 0)
+    if landed is not None:
+        assert landed(lib)
+    assert lib.project_dir.joinpath("my_own_file.txt").is_file()
+
+    # The way out it names.
+    CliRunner().invoke(cli, ["health-check", "--fix", "--library", str(lib.vault)])
+    assert _project_issues(lib) == []
+
+
+@pytest.mark.parametrize("hub", HUBS)
+def test_health_check_fix_does_not_claim_a_folder_it_could_not_change(
+    lib: Library, monkeypatch: pytest.MonkeyPatch, hub: str
+) -> None:
+    with monkeypatch.context() as patch:
+        deny(patch, lib.hub(hub))
+        code, output, exc = _run(lib, ["health-check", "--fix"])
+
+    assert isinstance(exc, SystemExit), exc
+    assert code == 1
+    assert "project_references: cleaned" not in output
+    assert output.count(LINE) == 1
+
+    # Fixed, the same command finishes the job.
+    code, output, exc = _run(lib, ["health-check", "--fix"])
+    assert _project_issues(lib) == []
+
+
+@posix_only
+@not_root
+@pytest.mark.parametrize("hub", HUBS)
+def test_rename_finishes_when_chmod_took_read_access_from_a_hub(
+    lib: Library, hub: str
+) -> None:
+    """The real failure, nothing injected."""
+    lib.hub(hub).chmod(0)
+    try:
+        code, output, exc = _run(lib, ["rename", "p2", "p2b"])
+    finally:
+        lib.hub(hub).chmod(0o755)
+
+    assert code == 0, f"{output} {exc!r}"
+    assert output.count(
+        "warning: could not update a project folder (Permission denied). "
+        "Fix that, then run `lit health-check --fix`."
+    ) == 1
+    assert _meta(lib, "p2b")
+
+    CliRunner().invoke(cli, ["health-check", "--fix", "--library", str(lib.vault)])
+    assert _project_issues(lib) == []

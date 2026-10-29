@@ -42,6 +42,7 @@ from litman.core.dates import now_iso
 from litman.core.document import list_papers, read_metadata_or_raise
 from litman.core.locking import rmtree
 from litman.core.portable_link import (
+    _os_error_reason,
     is_portable_link,
     links_supported,
     make_portable_link,
@@ -1201,7 +1202,11 @@ def remove_project(vault: Path, name: str) -> tuple[int, list[str]]:
 
 
 def rename_project(
-    vault: Path, old: str, new: str
+    vault: Path,
+    old: str,
+    new: str,
+    *,
+    link_errors: list[OSError] | None = None,
 ) -> tuple[int, list[str], list[str]]:
     """Rename a project across both truth sources + every referencing paper.
 
@@ -1223,7 +1228,9 @@ def rename_project(
         whose metadata was rewritten, the sorted ids that referenced ``old``
         before the rename, and any project-hub folders the rebuild had to
         preserve under ``.trash/`` (the caller reports those; they are the only
-        copy of what was in them).
+        copy of what was in them). A project folder the rebuild could not
+        change does not undo the rename; its ``OSError`` is appended to
+        ``link_errors`` (when given) for the caller to report.
 
     Raises:
         TaxonomyError: ``new`` is empty; ``old`` == ``new``; ``old`` is not
@@ -1232,7 +1239,11 @@ def rename_project(
     # Local import avoids a core import-cycle at module load (mirrors
     # remove_project): reconcile_derived → core.checks imports core.taxonomy, and
     # core.ripple imports core.taxonomy too.
-    from litman.core.correctors import moved_aside_from, reconcile_derived
+    from litman.core.correctors import (
+        link_errors_from,
+        moved_aside_from,
+        reconcile_derived,
+    )
     from litman.core.ripple import _ripple_replacements
 
     old = old.strip()
@@ -1293,7 +1304,8 @@ def rename_project(
     # because a rename touches the project side; the funnel reloads config (= the
     # just-committed new_projects) for the project side.
     derived = reconcile_derived(vault, project_refs=True)
-
+    if link_errors is not None:
+        link_errors.extend(link_errors_from(derived))
     return n_changed, referencing, moved_aside_from(derived)
 
 
@@ -1385,6 +1397,10 @@ def rebuild_all_project_links(
     ``papers`` reuses an already-loaded FULL metadata list (``list_papers``
     output — the downstream REFERENCES.md render reads
     ``relevance-<project>``, which INDEX projections lack); ``None`` scans.
+
+    Each project's entry has a ``status``: ``"rebuilt"``, ``"skipped"`` (its
+    directory is not here) or ``"error"`` (an ``OSError`` in one of its hubs,
+    carried in ``"error"``, with ``detail`` naming the path and the reason).
     """
     if papers is None:
         papers = list_papers(vault)
@@ -1409,68 +1425,31 @@ def rebuild_all_project_links(
             }
             continue
 
-        # Wipe the symlink hubs so stale entries from prior runs disappear.
-        # Whatever is NOT a link gets settled here (an expanded copy is
-        # deleted or preserved in .trash/), so the create loop below meets
-        # either an empty position or one it must leave alone.
-        blocked: set[Path] = set()
-        n_replaced_copies = 0
         aside_paths: list[str] = []
-        for sub in (LITERATURE_SUBDIR, CODE_SUBDIR):
-            sub_dir = project_dir / sub
-            if not sub_dir.exists():
-                sub_dir.mkdir(exist_ok=True)
-                continue
-            # sorted() drains the scandir generator before the settling
-            # starts removing entries out from under it.
-            for child in sorted(sub_dir.iterdir()):
-                if remove_link_if_present(child):
-                    continue
-                settled = settle_hub_entry(
-                    child,
-                    _hub_target(vault, sub, child.name),
-                    vault=vault,
-                    project=project,
-                    hub=sub,
-                )
-                if settled.verdict == "replaced-copy":
-                    n_replaced_copies += 1
-                elif settled.verdict == "moved-aside":
-                    aside_paths.append(str(settled.moved_to))
-                elif settled.position_occupied:
-                    # Still a real folder here. Skipping the upsert keeps the
-                    # create loop from adding a second warning about a
-                    # position the user has already been told about.
-                    blocked.add(child)
-        # Preserve REFERENCES.md across the wipe — it lives in
-        # litman_reflib/ alongside the symlinks but is content, not a link
-        # (settle_hub_entry leaves every real file where it is).
-
-        n_paper_links = 0
-        n_code_links = 0
-        for p in tagged_papers:
-            pid = p.get("id")
-            if not pid:
-                continue
-            paper_dir = (vault / "papers" / pid).resolve()
-            if not paper_dir.is_dir():
-                continue
-            paper_link = project_dir / LITERATURE_SUBDIR / pid
-            if paper_link not in blocked and make_portable_link(
-                paper_link, paper_dir
-            ):
-                n_paper_links += 1
-            for repo_name in p.get("code-clones") or []:
-                repo_target = (vault / "codes" / repo_name / "repo").resolve()
-                if not repo_target.exists():
-                    continue
-                code_link = project_dir / CODE_SUBDIR / repo_name
-                if code_link not in blocked and make_portable_link(
-                    code_link, repo_target
-                ):
-                    n_code_links += 1
-
-        write_references_md(vault, project, project_dir)
+        try:
+            n_paper_links, n_code_links, n_replaced_copies = _rebuild_project_hubs(
+                vault, project, project_dir, tagged_papers, aside_paths
+            )
+        except OSError as err:
+            # A hub that cannot be listed or changed (a litman_code/ with no
+            # read access, a read-only mount). The other projects still
+            # rebuild; the caller says which one did not, and a folder already
+            # moved aside is still reported.
+            out[project] = {
+                "status": "error",
+                "n_tagged": n_tagged,
+                "n_paper_links": 0,
+                "n_code_links": 0,
+                "n_replaced_copies": 0,
+                "n_moved_aside": len(aside_paths),
+                "aside_paths": aside_paths,
+                "detail": (
+                    f"could not update {err.filename or project_dir} "
+                    f"({_os_error_reason(err)})"
+                ),
+                "error": err,
+            }
+            continue
 
         out[project] = {
             "status": "rebuilt",
@@ -1484,3 +1463,82 @@ def rebuild_all_project_links(
         }
 
     return out
+
+
+def _rebuild_project_hubs(
+    vault: Path,
+    project: str,
+    project_dir: Path,
+    tagged_papers: list[dict[str, Any]],
+    aside_paths: list[str],
+) -> tuple[int, int, int]:
+    """:func:`rebuild_all_project_links` for one project whose directory is
+    there: wipe both hubs, re-create the links, re-render REFERENCES.md.
+
+    Returns ``(n_paper_links, n_code_links, n_replaced_copies)``. A folder it
+    moves out of the user's directory goes into ``aside_paths`` as it happens,
+    so the caller still reports it when an ``OSError`` cuts the rest short.
+    """
+    # Wipe the symlink hubs so stale entries from prior runs disappear.
+    # Whatever is NOT a link gets settled here (an expanded copy is
+    # deleted or preserved in .trash/), so the create loop below meets
+    # either an empty position or one it must leave alone.
+    blocked: set[Path] = set()
+    n_replaced_copies = 0
+    for sub in (LITERATURE_SUBDIR, CODE_SUBDIR):
+        sub_dir = project_dir / sub
+        if not sub_dir.exists():
+            sub_dir.mkdir(exist_ok=True)
+            continue
+        # sorted() drains the scandir generator before the settling
+        # starts removing entries out from under it.
+        for child in sorted(sub_dir.iterdir()):
+            if remove_link_if_present(child):
+                continue
+            settled = settle_hub_entry(
+                child,
+                _hub_target(vault, sub, child.name),
+                vault=vault,
+                project=project,
+                hub=sub,
+            )
+            if settled.verdict == "replaced-copy":
+                n_replaced_copies += 1
+            elif settled.verdict == "moved-aside":
+                aside_paths.append(str(settled.moved_to))
+            elif settled.position_occupied:
+                # Still a real folder here. Skipping the upsert keeps the
+                # create loop from adding a second warning about a
+                # position the user has already been told about.
+                blocked.add(child)
+    # Preserve REFERENCES.md across the wipe — it lives in
+    # litman_reflib/ alongside the symlinks but is content, not a link
+    # (settle_hub_entry leaves every real file where it is).
+
+    n_paper_links = 0
+    n_code_links = 0
+    for p in tagged_papers:
+        pid = p.get("id")
+        if not pid:
+            continue
+        paper_dir = (vault / "papers" / pid).resolve()
+        if not paper_dir.is_dir():
+            continue
+        paper_link = project_dir / LITERATURE_SUBDIR / pid
+        if paper_link not in blocked and make_portable_link(
+            paper_link, paper_dir
+        ):
+            n_paper_links += 1
+        for repo_name in p.get("code-clones") or []:
+            repo_target = (vault / "codes" / repo_name / "repo").resolve()
+            if not repo_target.exists():
+                continue
+            code_link = project_dir / CODE_SUBDIR / repo_name
+            if code_link not in blocked and make_portable_link(
+                code_link, repo_target
+            ):
+                n_code_links += 1
+
+    write_references_md(vault, project, project_dir)
+
+    return n_paper_links, n_code_links, n_replaced_copies

@@ -8,7 +8,10 @@ import click
 from rich.console import Console
 from rich.markup import escape
 
-from litman.commands._hub_report import hub_settlement_lines
+from litman.commands._hub_report import (
+    hub_settlement_lines,
+    project_folder_not_updated,
+)
 from litman.commands._options import library_option, vault_option
 from litman.core.config import load_config
 from litman.core.document import list_papers
@@ -96,3 +99,13 @@ def refresh_views_cmd(
         # registry has entries but rebuild returned nothing — should not happen
         console.print("[yellow]Project registry populated but no results.[/]")
     console.print(f"[dim]Vault: {vault}[/]")
+    # One line however many project folders refused (their own lines above
+    # name each one).
+    link_errors = [
+        info["error"]
+        for results in (link_results, project_results)
+        for info in results.values()
+        if info["status"] == "error"
+    ]
+    if link_errors:
+        console.print(project_folder_not_updated(link_errors[0]), soft_wrap=True)

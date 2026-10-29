@@ -32,7 +32,10 @@ import click
 from rich.console import Console
 from rich.markup import escape
 
-from litman.commands._hub_report import hub_settlement_lines
+from litman.commands._hub_report import (
+    hub_settlement_lines,
+    project_folder_not_updated,
+)
 from litman.commands._options import library_option, vault_option
 from litman.core import confirm as confirm_mod
 from litman.core.checks import (
@@ -47,7 +50,7 @@ from litman.core.checks import (
     klass_a_checks,
     run_all_checks,
 )
-from litman.core.correctors import regen
+from litman.core.correctors import link_errors_from, regen
 from litman.core.document import list_papers
 from litman.core.library import find_vault, resolve_library_or_vault
 from litman.core.locking import ensure_truth_locked
@@ -337,6 +340,7 @@ def health_check_cmd(
                     DIRTY_NOTES_UNREADABLE,
                     DIRTY_RENAMES,
                     UNFINISHED_RENAME_LEFT,
+                    _PROJECT_FOLDERS_LEFT,
                 ):
                     continue
                 if n > 0:
@@ -356,6 +360,13 @@ def health_check_cmd(
                 # The rebuild can settle hub folders while some OTHER klass-A
                 # category is what fired it.
                 _report_hub_settlements(applied)
+            # A project folder the rebuild could not change: the report above
+            # named it, this says what to do (one line however many).
+            left = applied.get(_PROJECT_FOLDERS_LEFT)
+            if isinstance(left, list) and left:
+                console.print(
+                    f"  {project_folder_not_updated(left[0])}", soft_wrap=True
+                )
             # Re-run checks so the post-fix summary is honest.
             papers = list_papers(vault)
             issues = run_all_checks(vault, papers)
@@ -526,6 +537,10 @@ def _si_fix_policy() -> SiFixPolicy:
     return SiFixPolicy(confirm_drop, confirm_unverified, on_rejected)
 
 
+# _apply_fixes' detail key for the project folders its regen could not change.
+_PROJECT_FOLDERS_LEFT = "project_folders_left"
+
+
 def _apply_fixes(vault: Path, issues: list[Issue]) -> dict[str, Any]:
     """Auto-fix the fixable subset: klass-A regen + legacy validity cleanups.
 
@@ -551,7 +566,8 @@ def _apply_fixes(vault: Path, issues: list[Issue]) -> dict[str, Any]:
     ``dirty_metadata_renames`` (``checks.DIRTY_NOTES_UNREADABLE`` /
     ``checks.DIRTY_RENAMES``) when it has notes.md files or ids to name, and
     ``unfinished_rename_left`` (``checks.UNFINISHED_RENAME_LEFT``) when a
-    folder could not be renamed.
+    folder could not be renamed, and ``project_folders_left`` (the ``OSError``
+    of each project folder the regen could not change) when there is one.
     """
     counts: dict[str, Any] = {}
     # The report's order, for the return below; read before unfinished_rename
@@ -574,10 +590,17 @@ def _apply_fixes(vault: Path, issues: list[Issue]) -> dict[str, Any]:
     }
     if klass_a_present or moved:
         regenerated = regen(vault, issues)
+        # A project folder the rebuild could not change (no read access, a
+        # read-only mount) is not healed: project_references is not claimed,
+        # and the errors go back for the one line that says what to do.
+        folders_left = link_errors_from(regenerated)
+        if folders_left:
+            counts[_PROJECT_FOLDERS_LEFT] = folders_left
         # A regen is a single wholesale rebuild; attribute one cleaned unit to
         # each fired klass-A category so the report names what was healed.
         for cat in klass_a_present:
-            counts[cat] = 1
+            if not (folders_left and cat == "project_references"):
+                counts[cat] = 1
         # Passed through, not counted: how many hub folder copies the rebuild
         # deleted, and which differing ones it kept. core does not print.
         for key in ("hub_replaced_copies", "hub_moved_aside"):

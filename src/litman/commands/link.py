@@ -9,7 +9,10 @@ from rich.console import Console
 from rich.markup import escape
 from rich.panel import Panel
 
-from litman.commands._hub_report import hub_settlement_lines
+from litman.commands._hub_report import (
+    hub_settlement_lines,
+    project_folder_not_updated,
+)
 from litman.commands._options import library_option, vault_option
 from litman.commands._path_lines import path_lines, print_unwrapped
 from litman.commands._usage import reject_second_positional
@@ -159,6 +162,9 @@ def link_cmd(
                     f"[yellow]○ {escape(proj)}: {status}[/] — "
                     f"{escape(info['detail'])}"
                 )
+        errors = [i["error"] for i in results.values() if i["status"] == "error"]
+        if errors:
+            console.print(project_folder_not_updated(errors[0]), soft_wrap=True)
         return
 
     has_id = paper_id is not None and paper_id != ""

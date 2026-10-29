@@ -29,6 +29,7 @@ from ruamel.yaml.error import YAMLError
 
 from litman.core.dates import now_iso
 from litman.core.document import list_papers, read_metadata
+from litman.core.portable_link import _os_error_reason
 from litman.core.views import load_index_papers
 
 REFERENCES_FILENAME = "REFERENCES.md"
@@ -315,7 +316,8 @@ def rebuild_all_project_refs(
         ``{project_name: {"status": "written" | "skipped" | "error",
                            "path": Path | None,
                            "n_papers": int,
-                           "detail": str}}``
+                           "detail": str}}``, plus ``"error"`` (the
+        ``OSError``) on an ``"error"`` entry.
     """
     if papers is None:
         papers = list_papers(vault)
@@ -335,13 +337,19 @@ def rebuild_all_project_refs(
             target = write_references_md(
                 vault, project, project_dir, now=now, papers=papers
             )
-        except Exception as e:
-            # defensive — write_references_md raises only FileNotFoundError currently
+        except OSError as e:
+            # The project folder is there but litman_reflib/ cannot be listed
+            # or written (no read access, a read-only mount). The other
+            # projects still get theirs; the caller says which did not.
             out[project] = {
                 "status": "error",
                 "path": None,
                 "n_papers": n_papers,
-                "detail": str(e),
+                "detail": (
+                    f"could not update {e.filename or project_dir} "
+                    f"({_os_error_reason(e)})"
+                ),
+                "error": e,
             }
             continue
         out[project] = {

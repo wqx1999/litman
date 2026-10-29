@@ -35,11 +35,19 @@ import click
 from rich.console import Console
 from rich.markup import escape
 
-from litman.commands._hub_report import PROJECTS_NOT_UPDATED, hub_settlement_lines
+from litman.commands._hub_report import (
+    PROJECTS_NOT_UPDATED,
+    hub_settlement_lines,
+    project_folder_not_updated,
+)
 from litman.commands._options import library_option, vault_option
 from litman.core.atomic import staged_write
 from litman.core.config import load_config
-from litman.core.correctors import moved_aside_from, reconcile_derived
+from litman.core.correctors import (
+    link_errors_from,
+    moved_aside_from,
+    reconcile_derived,
+)
 from litman.core.dates import date_ordering_violations, now_iso
 from litman.core.dedup import find_paper_by_doi
 from litman.core.document import (
@@ -930,6 +938,9 @@ def _apply_modify(
     # project, as reconcile_derived does above — the edit is committed, so the
     # command finishes and says the project folders were not updated.
     project_side_skipped = bool(derived["config_unreadable"])
+    # A project folder that could not be changed (no read access, a read-only
+    # mount): the edit is committed, so the command finishes and says so.
+    link_errors = link_errors_from(derived)
     if not projects_changed and refs_fields_changed and member_projects:
         try:
             registry = load_config(vault).projects
@@ -943,9 +954,12 @@ def _apply_modify(
             project_dir = Path(project_dir_str).expanduser()
             if not project_dir.is_dir():
                 continue
-            write_references_md(
-                vault, proj, project_dir, papers=all_papers
-            )
+            try:
+                write_references_md(
+                    vault, proj, project_dir, papers=all_papers
+                )
+            except OSError as err:
+                link_errors.append(err)
 
     # ----- Output -----
     console.print(f"[bold green]✓ Modified[/] {paper_id}")
@@ -972,11 +986,13 @@ def _apply_modify(
     refreshed = "INDEX.json + views/"
     if retitled_notes is not None:
         refreshed += " + notes.md heading"
-    if projects_changed and not project_side_skipped:
+    if projects_changed and not project_side_skipped and not link_errors:
         refreshed += " + project litman_reflib/REFERENCES.md"
     console.print(f"[dim]{refreshed} refreshed.[/]")
     if project_side_skipped:
         console.print(PROJECTS_NOT_UPDATED, soft_wrap=True)
+    elif link_errors:
+        console.print(project_folder_not_updated(link_errors[0]), soft_wrap=True)
     return True
 
 

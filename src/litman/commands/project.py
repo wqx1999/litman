@@ -37,7 +37,10 @@ from rich.console import Console
 from rich.markup import escape
 from rich.table import Table
 
-from litman.commands._hub_report import hub_settlement_lines
+from litman.commands._hub_report import (
+    hub_settlement_lines,
+    project_folder_not_updated,
+)
 from litman.commands._options import format_option, library_option, vault_option
 from litman.commands._paper_count import (
     duplicate_count,
@@ -309,7 +312,10 @@ def project_rename_cmd(
     # Single write path (invariant #16): validation + atomic dual-write +
     # derived rebuild all live in core.project_link.rename_project, shared with
     # the webUI's PUT /api/projects/{name}. The command only renders the result.
-    n_changed, referencing, hub_moved_aside = rename_project(vault, old, new)
+    link_errors: list[OSError] = []
+    n_changed, referencing, hub_moved_aside = rename_project(
+        vault, old, new, link_errors=link_errors
+    )
 
     console.print(
         f"[bold green]✓ Renamed[/] project {escape(old.strip())} → "
@@ -320,6 +326,8 @@ def project_rename_cmd(
     )
     for line in hub_settlement_lines(0, hub_moved_aside):
         console.print(f"  {line}", soft_wrap=True)
+    if link_errors:
+        console.print(project_folder_not_updated(link_errors[0]), soft_wrap=True)
 
 
 # ---------------------------------------------------------------------------
@@ -387,10 +395,15 @@ def project_set_path_cmd(
         }
         link_status = rebuild_all_project_links(vault, registry)
         rebuild_all_project_refs(vault, registry)
-        if link_status.get(name_str, {}).get("status") == "rebuilt":
+        status = link_status.get(name_str, {})
+        if status.get("status") == "rebuilt":
             console.print(
                 f"[green]✓ Rebuilt[/] {escape(name_str)}'s links at the new "
                 "location."
+            )
+        elif status.get("status") == "error":
+            console.print(
+                project_folder_not_updated(status["error"]), soft_wrap=True
             )
         else:
             console.print(

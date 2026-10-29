@@ -60,7 +60,10 @@ from typing import TYPE_CHECKING, cast
 import click
 from rich.console import Console
 
-from litman.commands._hub_report import hub_settlement_lines
+from litman.commands._hub_report import (
+    hub_settlement_lines,
+    project_folder_not_updated,
+)
 from litman.core.confirm import is_interactive
 from litman.core.vault_registry import (
     VaultRegistryError,
@@ -505,6 +508,13 @@ def check_and_prompt_project_drift(
                 f"and rebuilt its litman_reflib.",
                 soft_wrap=True,
             )
+        elif info.get("status") == "error":
+            console.print(
+                f"[green]✓ Updated[/] {name} → {healed[name]}", soft_wrap=True
+            )
+            console.print(
+                f"  {project_folder_not_updated(info['error'])}", soft_wrap=True
+            )
         else:
             console.print(
                 f"[green]✓ Updated[/] {name} → {healed[name]}[dim] (config only "
@@ -672,4 +682,7 @@ def check_and_prompt_bridge_drift(
     ]
     for line in hub_settlement_lines(n_replaced, aside):
         console.print(f"  {line}", soft_wrap=True)
+    errors = [i["error"] for i in link_status.values() if i.get("status") == "error"]
+    if errors:
+        console.print(f"  {project_folder_not_updated(errors[0])}", soft_wrap=True)
     console.print()
