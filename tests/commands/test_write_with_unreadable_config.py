@@ -7,10 +7,15 @@ run. The change is saved all the same, so the command must finish — exit 0, it
 usual success line — and say the project folders were not updated, and how to
 catch up. The way out it names has to work: once the file is fixed,
 ``lit health-check`` reports the stale folders and ``--fix`` repairs them.
+
+The ``lit code`` commands follow the same rule when the config reads fine but
+a project's ``litman_code/`` folder cannot be changed.
 """
 
 from __future__ import annotations
 
+import os
+import sys
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
@@ -309,3 +314,99 @@ def test_code_rm_cascade_deletes_the_repo_when_a_project_link_fails(
     assert "Removed: repo1" in output
     assert not (lib.vault / "codes" / "repo1").exists()
     assert lib.meta("p1")["code-clones"] == []
+
+
+# ---------------------------------------------------------------------------
+# A project's litman_code/ that cannot be changed: the write finishes and says so
+# ---------------------------------------------------------------------------
+
+LINK_WARNING = (
+    "warning: could not update a project's litman_code/ folder (Access is "
+    "denied). Fix that, then run `lit health-check --fix`."
+)
+CODE_CASES = [c for c in CASES if c.name.startswith("code-")]
+
+
+def _refuse(vault: Path, paper_id: str) -> dict:
+    raise PermissionError(13, "Access is denied")
+
+
+@pytest.mark.parametrize("case", CODE_CASES, ids=[c.name for c in CODE_CASES])
+def test_a_code_write_says_when_a_project_link_could_not_be_updated(
+    lib: Library, case: Case, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The binding is committed before the links are touched, so the command
+    finishes — `lit code add` keeps its repo, `rm --cascade` deletes it — and
+    says in one line that a project folder was left behind."""
+    if case.setup is not None:
+        case.setup(lib)
+
+    with monkeypatch.context() as m:
+        m.setattr(project_link_mod, "refresh_project_code_links", _refuse)
+        code, output, shown = _run(lib, case.argv(lib))
+
+    assert code == 0, shown
+    assert case.success in output
+    assert output.count(LINK_WARNING) == 1
+    assert WARNING not in output
+    assert case.written(lib)
+
+    # The way out it names: once the folder can be changed again,
+    # health-check sees what was left behind and --fix repairs it.
+    assert _drift(lib)
+    CliRunner().invoke(cli, ["health-check", "--fix", "--library", str(lib.vault)])
+    assert _drift(lib) == []
+    assert case.repaired(lib)
+
+
+@pytest.mark.parametrize("case", CODE_CASES, ids=[c.name for c in CODE_CASES])
+def test_an_unreadable_config_is_the_only_line_said(
+    lib: Library, case: Case, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """With the config unreadable no link was tried, so its line is the one
+    said, even when a link would have failed too."""
+    if case.setup is not None:
+        case.setup(lib)
+    _damage_config(lib.vault, "unparsable")
+    monkeypatch.setattr(project_link_mod, "refresh_project_code_links", _refuse)
+
+    code, output, shown = _run(lib, case.argv(lib))
+
+    assert code == 0, shown
+    assert WARNING in output
+    assert "litman_code/ folder" not in output
+
+
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="chmod does not take read access away from a folder on Windows",
+)
+@pytest.mark.skipif(
+    hasattr(os, "geteuid") and os.geteuid() == 0,
+    reason="root reads a folder whatever its permission bits",
+)
+def test_code_rm_cascade_says_so_when_litman_code_cannot_be_read(lib: Library) -> None:
+    """The real failure, nothing injected: the project's litman_code/ cannot
+    be read, so the link to the clone being deleted stays behind."""
+    bind_paper_to_repo(lib.vault, "p1", "repo1")
+    code_dir = lib.project_dir / "litman_code"
+    assert lib.code_link("repo1")
+
+    code_dir.chmod(0)
+    try:
+        code, output, shown = _run(lib, ["code", "rm", "repo1", "--cascade", "--yes"])
+    finally:
+        code_dir.chmod(0o755)
+
+    assert code == 0, shown
+    assert "Removed: repo1" in output
+    assert (
+        "warning: could not update a project's litman_code/ folder (Permission "
+        "denied). Fix that, then run `lit health-check --fix`."
+    ) in output
+    assert not (lib.vault / "codes" / "repo1").exists()
+    assert lib.code_link("repo1")
+
+    CliRunner().invoke(cli, ["health-check", "--fix", "--library", str(lib.vault)])
+    assert _drift(lib) == []
+    assert not lib.code_link("repo1")

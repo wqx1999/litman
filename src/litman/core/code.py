@@ -581,7 +581,13 @@ def write_notes(repo_dir: Path, name: str, upstream: str | None) -> Path:
 # ---------------------------------------------------------------------------
 
 
-def bind_paper_to_repo(vault: Path, paper_id: str, repo_name: str) -> bool:
+def bind_paper_to_repo(
+    vault: Path,
+    paper_id: str,
+    repo_name: str,
+    *,
+    link_errors: list[OSError] | None = None,
+) -> bool:
     """Atomically bind a paper ↔ repo on BOTH sides.
 
     Writes both ``papers/<paper_id>/metadata.yaml`` (appends ``<repo_name>`` to
@@ -594,6 +600,10 @@ def bind_paper_to_repo(vault: Path, paper_id: str, repo_name: str) -> bool:
     Idempotent on both sides: if both sides already record the binding,
     returns ``False`` and no file is touched. If only one side is missing,
     only that side is rewritten.
+
+    The project folders' ``litman_code/`` links are refreshed after the bind
+    commits; an ``OSError`` there does not undo it, and is appended to
+    ``link_errors`` (when given) for the command to report.
 
     Returns:
         ``True`` if any side was written, ``False`` for the no-op.
@@ -679,18 +689,26 @@ def bind_paper_to_repo(vault: Path, paper_id: str, repo_name: str) -> bool:
 
     try:
         refresh_project_code_links(vault, paper_id)
-    except OSError:
+    except OSError as err:
         # Best-effort convenience symlinks: the paper↔repo bind is already
         # committed (staged_write above). A symlink fs fault must NOT propagate
         # — code_add's except would otherwise roll back by rmtree'ing the
         # just-cloned repo, leaving the committed code-clones entry dangling. A
         # stale/missing symlink self-heals on the next bind/link, and
-        # `lit health-check` surfaces any project-symlink drift.
-        pass
+        # `lit health-check` surfaces any project-symlink drift; the command
+        # says so in one line (link_errors).
+        if link_errors is not None:
+            link_errors.append(err)
     return changed
 
 
-def unbind_paper_from_repo(vault: Path, paper_id: str, repo_name: str) -> bool:
+def unbind_paper_from_repo(
+    vault: Path,
+    paper_id: str,
+    repo_name: str,
+    *,
+    link_errors: list[OSError] | None = None,
+) -> bool:
     """Atomically drop a single paper ↔ repo binding from BOTH sides.
 
     The inverse of :func:`bind_paper_to_repo`: removes ``<repo_name>`` from the
@@ -709,6 +727,9 @@ def unbind_paper_from_repo(vault: Path, paper_id: str, repo_name: str) -> bool:
     Idempotent on both sides: if the paper does not list the repo AND the
     repo-meta (when present) does not list the paper, returns ``False`` and no
     file is touched.
+
+    ``link_errors`` collects an ``OSError`` from the ``litman_code/`` refresh
+    that follows, as in :func:`bind_paper_to_repo`.
 
     Raises:
         PaperNotFoundError: paper missing.
@@ -788,22 +809,26 @@ def unbind_paper_from_repo(vault: Path, paper_id: str, repo_name: str) -> bool:
 
     try:
         refresh_project_code_links(vault, paper_id)
-    except OSError:
+    except OSError as err:
         # Best-effort symlink teardown: the unbind is already committed
         # (staged_write above). A symlink fs fault must not propagate — the
         # metadata change stands and a stale symlink self-heals / is surfaced
-        # by `lit health-check`.
-        pass
+        # by `lit health-check`; the command says so (link_errors).
+        if link_errors is not None:
+            link_errors.append(err)
     return changed
 
 
-def unbind_repo_from_all_papers(vault: Path, repo_name: str) -> list[str]:
+def unbind_repo_from_all_papers(
+    vault: Path, repo_name: str, *, link_errors: list[OSError] | None = None
+) -> list[str]:
     """Remove ``<repo_name>`` from every paper's ``code-clones`` list.
 
     Used by ``lit code rm --cascade``. Single ``staged_write`` covers all
     affected papers + ``INDEX.json``. Does NOT touch the repo's own
     ``repo-meta.yaml`` because the caller is about to delete the repo
-    directory.
+    directory. ``link_errors`` collects an ``OSError`` from the
+    ``litman_code/`` refresh that follows, as in :func:`bind_paper_to_repo`.
 
     Returns:
         Ordered list of paper ids whose metadata.yaml was rewritten.
@@ -869,12 +894,13 @@ def unbind_repo_from_all_papers(vault: Path, repo_name: str) -> list[str]:
     for pid, _ in affected:
         try:
             refresh_project_code_links(vault, pid)
-        except OSError:
+        except OSError as err:
             # Best-effort, as in bind/unbind above: the strip is already
             # committed, and propagating would stop `lit code rm` before it
             # deletes the clone. A symlink left behind is surfaced by
-            # `lit health-check`.
-            pass
+            # `lit health-check`, and the command says so (link_errors).
+            if link_errors is not None:
+                link_errors.append(err)
     return [pid for pid, _ in affected]
 
 

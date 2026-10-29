@@ -28,7 +28,9 @@ own; `lit health-check` surfaces anything it parked.
 The other thing said here is that a rebuild did not run at all: the write was
 committed, but ``lit-config.yaml`` cannot be read, so no project folder could be
 brought up to date. ``lit modify``, ``lit rename`` and the ``lit code`` commands
-that bind or unbind a paper end with :data:`PROJECTS_NOT_UPDATED` then.
+that bind or unbind a paper end with :data:`PROJECTS_NOT_UPDATED` then. Those
+``lit code`` commands end with :func:`code_links_not_updated` instead when the
+config reads fine but a project's ``litman_code/`` folder cannot be changed.
 """
 
 from __future__ import annotations
@@ -37,10 +39,23 @@ from collections.abc import Sequence
 
 from rich.markup import escape
 
+from litman.core.portable_link import _os_error_reason
+
 PROJECTS_NOT_UPDATED = (
     "[yellow]warning:[/] lit-config.yaml cannot be read, so the project "
     "folders were not updated. Fix it, then run `lit health-check --fix`."
 )
+
+
+def code_links_not_updated(err: OSError) -> str:
+    """The line for a ``litman_code/`` refresh that failed after the write
+    committed. ``err`` is the first failure; the OS's own words for it say
+    what to fix, and ``--fix`` rebuilds every project's links once it is."""
+    return (
+        "[yellow]warning:[/] could not update a project's litman_code/ folder "
+        f"({escape(_os_error_reason(err))}). Fix that, then run "
+        "`lit health-check --fix`."
+    )
 
 
 def hub_settlement_lines(
