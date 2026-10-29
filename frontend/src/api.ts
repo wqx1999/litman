@@ -1306,7 +1306,8 @@ interface RestoreResultWire {
 /** Restore a trashed paper through the `lit trash restore` backend
  * (resolve → restore_from_trash → reconcile_derived). The endpoint never
  * re-clones a hard-deleted 1:1 repo (decision b): those surface in
- * `missingRepos` for the CLI / health-check. Throws the backend's verbatim
+ * `missingRepos`, their records back on disk for `lit code restore-all` to
+ * clone. Throws the backend's verbatim
  * message — 409 when a live paper already holds the id slot, 404 when the entry
  * is gone. */
 export async function restorePaper(entryName: string): Promise<RestoreResult> {

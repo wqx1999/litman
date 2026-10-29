@@ -725,7 +725,7 @@ lit code restore-all [--dry-run]
 | `list` | List repos and their paper bindings. `--format json` emits each repo's `repo-meta.yaml`, so the bindings come out as ids rather than a summary cell. |
 | `update <repo-name>` | `git pull --ff-only` inside the repo. |
 | `rm <repo-name>` | Permanently delete `codes/<repo-name>/`. Hard delete (re-clonable from the recorded upstream). |
-| `restore-all` | Re-clone every repo whose `repo/` checkout is missing (cross-machine recovery). |
+| `restore-all` | Re-clone every repo whose `repo/` checkout is missing (cross-machine recovery, or a restored paper's repo), and link it into its papers' projects. A `local:<path>` repo is copied from that folder again. |
 
 Per-subcommand flags:
 
@@ -890,7 +890,7 @@ lit trash empty [--dry-run] [-y]
 | Subcommand | What it does |
 |---|---|
 | `list` | Show trash entries, newest first. `--format json` adds each entry's path and the repos a restore would re-clone. Kept project folders are not listed. |
-| `restore <id-or-entry>` | Restore a trashed paper to `papers/<id>/` and rebuild its relations (opposite papers' reverse edges, surviving repo bindings, project links + `REFERENCES.md`). A 1:1 repo hard-deleted at `rm` time is re-cloned (`-y` to auto-attempt without prompting); with no terminal and no `-y` it is skipped, and the `lit code add` that clones it is printed. |
+| `restore <id-or-entry>` | Restore a trashed paper to `papers/<id>/` and rebuild its relations (opposite papers' reverse edges, surviving repo bindings, project links + `REFERENCES.md`). A 1:1 repo hard-deleted at `rm` time comes back as its `repo-meta.yaml` and is re-cloned (`-y` to auto-attempt without prompting); with no terminal and no `-y`, after a "no", or when the clone fails, it stays without a checkout and `lit code restore-all` clones it later. A restore from the web UI never clones. |
 | `empty` | Permanently delete every trash entry and every kept project folder. `--dry-run` lists the entries and counts the folders; `-y` skips the prompt. |
 
 ### `lit sync`

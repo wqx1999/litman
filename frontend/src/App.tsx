@@ -2137,13 +2137,13 @@ export default function App() {
           parts.push(`${res.projectsRebuilt.length} project(s)`)
         let msg = `Restored “${res.paperId}”`
         if (parts.length) msg += ` · rebuilt ${parts.join(', ')}`
-        const missing = Object.keys(res.missingRepos).length
-        if (missing) {
+        const missing = Object.keys(res.missingRepos)
+        if (missing.length) {
           // The 1:1 code repo(s) were hard-deleted on rm and the GUI deliberately
-          // does NOT re-clone (decision b) — warn prominently and don't auto-
-          // dismiss, since the code-clones link now dangles until the CLI
-          // re-clones it.
-          msg += ` · ⚠ ${missing} code repo(s) were deleted and NOT re-cloned — finish in the CLI: lit trash restore -y (or lit health-check)`
+          // does NOT re-clone (decision b). The restore put each one's record
+          // (upstream included) back, so one CLI command clones them all —
+          // warn prominently and don't auto-dismiss until it has been run.
+          msg += ` · ⚠ code not cloned again: ${missing.join(', ')} — run lit code restore-all`
           notify(msg, 'warning', { sticky: true })
         } else {
           notify(msg, 'success')

@@ -891,6 +891,8 @@ def code_restore_all_cmd(
         f"[bold]{len(report.orphan_refs)}[/] orphan ref(s)."
     )
     console.print(summary)
+    if report.link_errors:
+        console.print(code_links_not_updated(report.link_errors[0]), soft_wrap=True)
 
     if not report.is_clean:
         sys.exit(1)

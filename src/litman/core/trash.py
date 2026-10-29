@@ -48,7 +48,13 @@ from typing import Any
 from ruamel.yaml.error import YAMLError
 
 from litman.core.atomic import staged_write
-from litman.core.code import CODES_DIRNAME, REPO_DIRNAME, REPO_META_FILENAME
+from litman.core.code import (
+    CODES_DIRNAME,
+    REPO_DIRNAME,
+    REPO_META_FILENAME,
+    make_repo_meta,
+    repo_meta_text,
+)
 from litman.core.dates import now_iso
 from litman.core.document import load_yaml_or_raise
 from litman.core.locking import rmtree
@@ -515,7 +521,14 @@ def _build_restore_code_updates(
           (idempotent), staged for the transaction.
         * absent and listed in the sidecar's ``orphan_repos`` → a 1:1
           hard-deleted repo; defer to the caller's POST-transaction re-clone.
-          The binding on A's side is KEPT (decision #2/#3).
+          The binding on A's side is KEPT (decision #2/#3), and when the
+          sidecar has its upstream, ``codes/<repo>/repo-meta.yaml`` comes back
+          in the same transaction — name, upstream, ``papers: [A]``, no
+          ``repo/`` checkout. The sidecar is its only other record and goes
+          with this restore, so without it a restore that does not re-clone
+          (the web UI's, or a "no") loses the address for good; with it the
+          repo is in the state a sync without checkouts leaves, which
+          ``lit health-check`` reports and ``lit code restore-all`` re-clones.
         * absent and NOT in ``orphan_repos`` → already-orphan ref; health-check
           backstops. Binding kept; nothing staged.
 
@@ -531,7 +544,19 @@ def _build_restore_code_updates(
         )
         if not repo_meta_path.is_file():
             if repo_name in orphan_repos:
-                missing[repo_name] = orphan_repos[repo_name]
+                upstream = orphan_repos[repo_name]
+                missing[repo_name] = upstream
+                if upstream:
+                    staged[f"{CODES_DIRNAME}/{repo_name}/{REPO_META_FILENAME}"] = (
+                        repo_meta_text(
+                            make_repo_meta(
+                                name=repo_name,
+                                upstream=upstream,
+                                papers=[paper_id],
+                                now=now,
+                            )
+                        )
+                    )
             continue
         try:
             rt = _yaml_rt.load(repo_meta_path.read_text(encoding="utf-8"))

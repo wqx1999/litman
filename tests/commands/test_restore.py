@@ -41,7 +41,6 @@ from litman.core.checks import check_project_references
 from litman.core.document import list_papers
 from litman.core.library import create_vault
 from litman.core.portable_link import is_portable_link
-from litman.core.supplementary import shell_path
 from litman.core.trash import TRASH_DIRNAME
 from litman.exceptions import TrashError
 
@@ -377,10 +376,14 @@ def test_restore_reclone_refused_keeps_binding(
         input="n\n",
     )
     assert result.exit_code == 0, result.output
-    # Repo NOT re-cloned, binding on the paper KEPT.
-    assert not (vault / "codes" / "RepoY").exists()
+    # Repo NOT re-cloned, binding on the paper KEPT — and its record is back,
+    # upstream included, so the clone can still be made later.
+    assert not (vault / "codes" / "RepoY" / "repo").exists()
+    assert _read_repo_meta(vault, "RepoY")["upstream"] == str(upstream)
+    assert _read_repo_meta(vault, "RepoY")["papers"] == ["2024_Target"]
     assert _read_meta(vault, "2024_Target")["code-clones"] == ["RepoY"]
     assert "Kept binding" in result.output
+    assert "lit code restore-all" in " ".join(result.output.split())
 
 
 def test_restore_without_a_terminal_skips_the_clone_and_prints_it(
@@ -388,8 +391,8 @@ def test_restore_without_a_terminal_skips_the_clone_and_prints_it(
 ) -> None:
     """Nobody to ask: the paper is restored (exit 0), the clone is skipped as on
     a "no" — a stray "y" on stdin is not an answer — and the line names the
-    upstream, which is now on record nowhere else, in the command that clones
-    it."""
+    upstream and the command that clones it from the record the restore put
+    back."""
     upstream = _git_local_upstream(tmp_path, "upstream-nt")
     _write_paper(vault, "2024_Target", code_clones=["RepoNT"])
     _make_fake_repo(
@@ -407,34 +410,29 @@ def test_restore_without_a_terminal_skips_the_clone_and_prints_it(
     assert result.exit_code == 0, result.output
     assert (vault / "papers" / "2024_Target").is_dir()
     assert "re-clone from" not in result.output  # the question was not asked
-    assert not (vault / "codes" / "RepoNT").exists()
+    assert not (vault / "codes" / "RepoNT" / "repo").exists()
     assert _read_meta(vault, "2024_Target")["code-clones"] == ["RepoNT"]
-    clone = f"lit code add {shell_path(upstream)} --paper 2024_Target --name RepoNT"
-    assert clone in result.output
+    flat = " ".join(result.output.split())
+    assert str(upstream) in flat
+    assert "(run `lit code restore-all`)" in flat
 
     # The printed command does the clone that was skipped.
-    added = runner.invoke(
-        cli,
-        [
-            "code", "add", str(upstream),
-            "--paper", "2024_Target",
-            "--name", "RepoNT",
-            "--library", str(vault),
-        ],
-    )
-    assert added.exit_code == 0, added.output
+    restored = runner.invoke(cli, ["code", "restore-all", "--library", str(vault)])
+    assert restored.exit_code == 0, restored.output
     assert (vault / "codes" / "RepoNT" / "repo" / "README.md").is_file()
     assert _read_repo_meta(vault, "RepoNT")["papers"] == ["2024_Target"]
     assert _read_meta(vault, "2024_Target")["code-clones"] == ["RepoNT"]
 
 
-def test_restore_without_a_terminal_prints_the_path_of_a_local_import(
+def test_a_local_import_comes_back_through_restore_all(
     vault: Path, tmp_path: Path
 ) -> None:
-    """A repo added from a local folder is recorded as ``local:<path>``; the
-    printed command takes the path, quoted when it holds a space."""
+    """A repo added from a folder without git is recorded as ``local:<path>``,
+    which git cannot clone: `lit code restore-all` copies the folder again,
+    as `lit code add` did."""
     source = tmp_path / "my code"
     source.mkdir()
+    (source / "run.py").write_text("print('hi')\n", encoding="utf-8")
     _write_paper(vault, "2024_Target", code_clones=["RepoL"])
     _make_fake_repo(
         vault, "RepoL", papers=["2024_Target"], upstream=f"local:{source}"
@@ -445,10 +443,13 @@ def test_restore_without_a_terminal_prints_the_path_of_a_local_import(
     result = runner.invoke(
         cli, ["trash", "restore", "2024_Target", "--library", str(vault)]
     )
-
     assert result.exit_code == 0, result.output
-    assert f'lit code add "{source}" --paper 2024_Target --name RepoL' in result.output
-    assert "local:" not in result.output
+    assert "(run `lit code restore-all`)" in " ".join(result.output.split())
+    assert _read_repo_meta(vault, "RepoL")["upstream"] == f"local:{source}"
+
+    restored = runner.invoke(cli, ["code", "restore-all", "--library", str(vault)])
+    assert restored.exit_code == 0, restored.output
+    assert (vault / "codes" / "RepoL" / "repo" / "run.py").is_file()
 
 
 def test_restore_reclone_failure_keeps_binding(vault: Path) -> None:
@@ -468,12 +469,14 @@ def test_restore_reclone_failure_keeps_binding(vault: Path) -> None:
         cli, ["trash", "restore", "2024_Target", "-y", "--library", str(vault)]
     )
     assert result.exit_code == 0, result.output
-    assert not (vault / "codes" / "RepoZ").exists()
+    # The failed clone is rolled back; the record the restore put back stays.
+    assert not (vault / "codes" / "RepoZ" / "repo").exists()
+    assert _read_repo_meta(vault, "RepoZ")["upstream"] == "/nonexistent/path/to/repo.git"
     assert _read_meta(vault, "2024_Target")["code-clones"] == ["RepoZ"]
     assert "failed" in result.output.lower()
-    # Review F20: the upstream URL must be echoed on failure (the sidecar — its
-    # only on-disk record — is already gone), or it is lost for good.
+    # Review F20: the upstream URL is echoed on failure too.
     assert "/nonexistent/path/to/repo.git" in result.output
+    assert "lit code restore-all" in " ".join(result.output.split())
 
 
 def test_restore_tolerates_non_utf8_note_elsewhere(vault: Path) -> None:
@@ -927,3 +930,72 @@ def test_restore_finishes_when_litman_code_cannot_be_read(
     assert _drift(vault) == []
     assert is_portable_link(code_dir / "Shared")
     assert is_portable_link(code_dir / "Solo")
+
+
+# ===========================================================================
+# A restore that does not re-clone keeps the upstream on disk (web UI)
+# ===========================================================================
+
+
+def test_a_web_ui_restore_keeps_the_upstream_of_a_repo_it_did_not_clone(
+    vault: Path, tmp_path: Path
+) -> None:
+    """The web UI restores without cloning. Solo's upstream was recorded only
+    in the trash entry, which the restore consumes; it must come back with the
+    paper, as codes/Solo/repo-meta.yaml without a checkout, so that
+    health-check names the fix and `lit code restore-all` clones it — and
+    links it into the paper's project again."""
+    pytest.importorskip("fastapi")
+    from litman.server import create_app
+    from tests.server._client import TestClient
+
+    project_dir = _paper_with_both_repos(vault, tmp_path)
+    upstream = str(tmp_path / "upstream-solo")
+    (entry,) = trash_mod.list_trash(vault)
+
+    resp = TestClient(create_app(vault)).post(
+        f"/api/trash/{entry.entry_name}/restore"
+    )
+
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["missing_repos"] == {"Solo": upstream}
+    assert trash_mod.list_trash(vault) == []
+    meta = _read_repo_meta(vault, "Solo")
+    assert (meta["name"], meta["upstream"], meta["papers"]) == (
+        "Solo", upstream, ["2024_Target"]
+    )
+    assert not (vault / "codes" / "Solo" / "repo").exists()
+
+    health = CliRunner().invoke(cli, ["health-check", "--library", str(vault)])
+    flat = " ".join(health.output.split())
+    assert "codes/Solo/ has repo-meta.yaml but no repo/ checkout" in flat
+    assert "`lit code restore-all` to re-clone Solo" in flat
+
+    restored = CliRunner().invoke(
+        cli, ["code", "restore-all", "--library", str(vault)]
+    )
+    assert restored.exit_code == 0, restored.output
+    assert (vault / "codes" / "Solo" / "repo" / "README.md").is_file()
+    assert is_portable_link(project_dir / "litman_code" / "Solo")
+    assert _drift(vault) == []
+
+
+def test_restore_all_says_when_it_cannot_link_a_restored_repo(
+    vault: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The clone is back but a project's litman_code/ could not take the link:
+    restore-all still reports the clone, and says so in one line."""
+    _paper_with_both_repos(vault, tmp_path)
+    runner = CliRunner()
+    runner.invoke(cli, ["trash", "restore", "2024_Target", "--library", str(vault)])
+    monkeypatch.setattr(project_link_mod, "refresh_project_code_links", _refuse)
+
+    result = runner.invoke(cli, ["code", "restore-all", "--library", str(vault)])
+
+    flat = " ".join(result.output.split())
+    assert result.exit_code == 0, flat
+    assert (vault / "codes" / "Solo" / "repo").is_dir()
+    assert flat.count(
+        "warning: could not update a project's litman_code/ folder (Access is "
+        "denied). Fix that, then run `lit health-check --fix`."
+    ) == 1

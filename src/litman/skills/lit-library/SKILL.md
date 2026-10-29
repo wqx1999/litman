@@ -151,7 +151,7 @@ Give a `[CLI only]` row a one-line cue from the PDF when you can — **never dro
 
 ## [I] Restore a trashed paper
 
-Only the paper lit-reading B13 confirmed with the user — never on your own, never picking the candidate yourself. Read `lit trash list --format json` first: an entry's `orphan_repos` are what a restore would re-clone — tell the user. `lit trash restore <id> -y` restores and re-clones; without `-y` it skips the re-clone and prints the `lit code add` for later. Relay the result verbatim, a `kept N folder(s)` line included ([H]). The same id trashed twice → the CLI lists the `<id>-<UTC-timestamp>` entries: ask which, don't guess. A live paper already holds `papers/<id>/` → the restore refuses: relay it; don't force. An SI file deleted with `lit rm <id> --si` was never in the trash ([L]).
+Only the paper lit-reading B13 confirmed with the user — never on your own, never picking the candidate yourself. Read `lit trash list --format json` first: an entry's `orphan_repos` are what a restore would re-clone — tell the user. `lit trash restore <id> -y` restores and re-clones; without `-y` it skips the re-clone, keeps the repo's record, and names `lit code restore-all` for later. Relay the result verbatim, a `kept N folder(s)` line included ([H]). The same id trashed twice → the CLI lists the `<id>-<UTC-timestamp>` entries: ask which, don't guess. A live paper already holds `papers/<id>/` → the restore refuses: relay it; don't force. An SI file deleted with `lit rm <id> --si` was never in the trash ([L]).
 
 ## [J] Vocabulary governance
 

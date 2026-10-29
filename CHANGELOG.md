@@ -48,6 +48,15 @@ own entry. Read those before you upgrade, whatever the number says.
   out of the project without a word. It now finishes, clones the repo, and
   says the project folder was not updated; once the folder is fixed,
   `lit health-check --fix` brings it up to date.
+- **Restoring a paper keeps the address of a repo it does not clone again.**
+  When `lit rm` deleted a repo only that paper used, its address was kept only
+  in the trash. Restoring the paper from the web UI, which never clones,
+  lost it for good, and the web UI pointed to `lit trash restore -y`, which
+  no longer had anything to restore. The repo now comes back with the paper,
+  without its files: `lit code restore-all` clones it again and links it into
+  the paper's projects. The same holds when `lit trash restore` skips or fails
+  the clone. `lit code restore-all` also copies a repo added from a folder
+  without git again, instead of failing on it.
 
 ### Security
 

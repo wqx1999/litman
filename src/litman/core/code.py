@@ -556,6 +556,13 @@ def write_repo_meta(repo_dir: Path, meta: dict[str, Any]) -> Path:
     return target
 
 
+def repo_meta_text(meta: dict[str, Any]) -> str:
+    """``meta`` as :func:`write_repo_meta` writes it, for a staged write."""
+    buf = io.StringIO()
+    _yaml.dump(meta, buf)
+    return buf.getvalue()
+
+
 _NOTES_TEMPLATE = """\
 # {name}
 
@@ -1120,10 +1127,13 @@ class RestoreReport:
     ``code-clones`` field names a repo whose ``codes/<name>/repo-meta.yaml``
     is itself missing — we have no upstream URL to clone from, so the user
     must restore the metadata from backup or drop the dangling reference.
+    ``link_errors`` holds each ``OSError`` from linking a restored repo into
+    its papers' project ``litman_code/`` folders, for the command to report.
     """
 
     items: list[RestoreItem] = field(default_factory=list)
     orphan_refs: list[tuple[str, str]] = field(default_factory=list)
+    link_errors: list[OSError] = field(default_factory=list)
 
     @property
     def restored(self) -> int:
@@ -1167,6 +1177,24 @@ def find_orphan_code_refs(vault: Path) -> list[tuple[str, str]]:
     return sorted(seen)
 
 
+def fetch_repo(
+    upstream: str, target_path: Path, depth: int = DEFAULT_CLONE_DEPTH
+) -> None:
+    """Re-create a ``repo/`` checkout from its recorded ``upstream``.
+
+    ``git clone`` it, or — for a folder that was imported without git and so
+    recorded as ``local:<path>`` — copy that folder again, as ``lit code add``
+    did the first time.
+
+    Raises:
+        CodeError: the clone or the copy failed, or ``target_path`` exists.
+    """
+    if upstream.startswith("local:"):
+        import_local_repo(Path(upstream.removeprefix("local:")), target_path)
+        return
+    clone_repo(upstream, target_path, depth=depth)
+
+
 def restore_missing_repos(
     vault: Path,
     depth: int = DEFAULT_CLONE_DEPTH,
@@ -1197,6 +1225,7 @@ def restore_missing_repos(
         references.
     """
     items: list[RestoreItem] = []
+    link_errors: list[OSError] = []
     for meta in list_repos(vault):
         name = str(meta.get("name") or meta["_path"].name)
         upstream = str(meta.get("upstream") or "")
@@ -1236,7 +1265,7 @@ def restore_missing_repos(
             continue
 
         try:
-            clone_repo(upstream, repo_dir, depth=depth)
+            fetch_repo(upstream, repo_dir, depth=depth)
         except CodeError as e:
             first_line = str(e).splitlines()[0] if str(e) else "git clone failed"
             items.append(
@@ -1256,6 +1285,18 @@ def restore_missing_repos(
                 detail=f"cloned from {upstream}",
             )
         )
+        # The checkout is back, so its papers' projects can link to it again
+        # (a project's litman_code/ skips a repo with no repo/). Lazy import,
+        # as in bind_paper_to_repo.
+        from litman.core.project_link import refresh_project_code_links
+
+        for paper_id in meta.get("papers") or []:
+            try:
+                refresh_project_code_links(vault, str(paper_id))
+            except OSError as err:
+                link_errors.append(err)
 
     orphan_refs = find_orphan_code_refs(vault)
-    return RestoreReport(items=items, orphan_refs=orphan_refs)
+    return RestoreReport(
+        items=items, orphan_refs=orphan_refs, link_errors=link_errors
+    )
