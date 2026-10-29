@@ -363,6 +363,8 @@ export interface RmPreview {
   reposUnbound: string[]
   /** Cloned repos no other paper uses — their `codes/<repo>/` dir is deleted. */
   reposRemoved: string[]
+  /** Repos no other paper uses with no copy to clone again — unbound, kept. */
+  reposKept: string[]
   /** Projects this paper is unlinked from (reflib symlink + REFERENCES.md). */
   projects: string[]
   /** Referencing notes/discussion that get a `(deleted)` tag. */

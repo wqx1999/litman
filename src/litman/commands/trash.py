@@ -156,8 +156,9 @@ def _reclone_missing_repo(
     POST-transaction (step 3): reuses the INTERNAL clone + repo-meta + bind
     logic of ``core.code`` for the single repo A needs, NOT the vault-level
     ``restore_missing_repos``. The restore already put back
-    ``codes/<repo>/repo-meta.yaml`` (papers:[A]); this fetches ``repo/`` into
-    it, adds ``notes.md``, and binds via ``bind_paper_to_repo``, which also
+    ``codes/<repo>/repo-meta.yaml`` (papers:[A]) and the saved ``notes.md``;
+    this fetches ``repo/`` into it, adds a ``notes.md`` when there was none to
+    put back, and binds via ``bind_paper_to_repo``, which also
     links the repo into A's projects. A project ``litman_code/`` the bind
     could not update lands in ``link_errors``.
 

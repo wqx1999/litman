@@ -368,8 +368,9 @@ def _rm_impact_summary(plan: RmPlan) -> dict[str, object]:
 
     Lists every external link the delete would break so the GUI can warn before
     removing: which papers' references get cleared, which repos are unbound
-    (1:N) vs deleted as now-orphaned clones (1:1), which projects are unlinked,
-    and which referencing notes get tagged ``(deleted)``.
+    (1:N) vs deleted as now-orphaned clones (1:1) vs kept because nothing could
+    clone them again, which projects are unlinked, and which referencing notes
+    get tagged ``(deleted)``.
     """
     return {
         "id": plan.paper_id,
@@ -377,6 +378,7 @@ def _rm_impact_summary(plan: RmPlan) -> dict[str, object]:
         "references": sorted(plan.touched_ref_ids),
         "reposUnbound": plan.repos_unbound,
         "reposRemoved": sorted(plan.orphan_repos),
+        "reposKept": plan.kept_repos,
         "projects": sorted(plan.projects),
         "notes": sorted(plan.note_updates),
     }
@@ -436,6 +438,7 @@ async def delete_paper(request: Request, paper_id: str) -> dict[str, object]:
         "references": sorted(result.touched_ref_ids),
         "reposUnbound": result.repos_unbound,
         "reposRemoved": result.orphan_repos,
+        "reposKept": result.kept_repos,
         "projects": result.projects,
         "notes": result.note_files,
         "warnings": result.warnings,

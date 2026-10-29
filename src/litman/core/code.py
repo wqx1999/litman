@@ -1195,6 +1195,20 @@ def fetch_repo(
     clone_repo(upstream, target_path, depth=depth)
 
 
+def can_fetch_again(upstream: str) -> bool:
+    """Whether :func:`fetch_repo` has a source to re-create a checkout from.
+
+    A clone URL has one (when the network allows); ``local:<path>`` only while
+    that folder exists — ``lit code add --move`` consumed it, so the vault holds
+    the only copy; an empty upstream never has one.
+    """
+    if not upstream:
+        return False
+    if upstream.startswith("local:"):
+        return Path(upstream.removeprefix("local:")).is_dir()
+    return True
+
+
 def restore_missing_repos(
     vault: Path,
     depth: int = DEFAULT_CLONE_DEPTH,

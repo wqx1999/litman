@@ -42,7 +42,7 @@ from litman.core.document import list_papers
 from litman.core.library import create_vault
 from litman.core.portable_link import is_portable_link
 from litman.core.trash import TRASH_DIRNAME
-from litman.exceptions import TrashError
+from litman.exceptions import RmError, TrashError
 
 _yaml = YAML(typ="safe")
 
@@ -999,3 +999,241 @@ def test_restore_all_says_when_it_cannot_link_a_restored_repo(
         "warning: could not update a project's litman_code/ folder (Access is "
         "denied). Fix that, then run `lit health-check --fix`."
     ) == 1
+
+
+# ===========================================================================
+# What a re-clone cannot bring back: the repo's notes and fields, and code
+# that exists only in the vault
+# ===========================================================================
+
+_REPO_NOTES = "# Solo\r\n\r\nconda env: torch 2.3 — run `make train` first\r\n".encode()
+
+
+def _fill_in_solo(vault: Path, notes: bytes = _REPO_NOTES) -> None:
+    """Give Solo what only the user wrote: a field, a comment, a note."""
+    repo_root = vault / "codes" / "Solo"
+    meta_path = repo_root / "repo-meta.yaml"
+    meta_path.write_text(
+        meta_path.read_text(encoding="utf-8").replace(
+            "framework:", "# tested on the lab GPU\nframework: pytorch"
+        ),
+        encoding="utf-8",
+    )
+    (repo_root / "notes.md").write_bytes(notes)
+
+
+def _rm_solo(vault: Path, tmp_path: Path, notes: bytes = _REPO_NOTES) -> str:
+    """Target alone binds Solo, which has a clone URL: rm deletes Solo."""
+    upstream = str(_git_local_upstream(tmp_path, "upstream-solo"))
+    _write_paper(vault, "2024_Target", code_clones=["Solo"])
+    _make_fake_repo(vault, "Solo", papers=["2024_Target"], upstream=upstream)
+    _fill_in_solo(vault, notes)
+    result = CliRunner().invoke(
+        cli, ["rm", "2024_Target", "-y", "--library", str(vault)]
+    )
+    assert result.exit_code == 0, result.output
+    assert not (vault / "codes" / "Solo").exists()
+    return upstream
+
+
+def test_restore_brings_back_the_notes_and_fields_of_a_deleted_repo(
+    vault: Path, tmp_path: Path
+) -> None:
+    """The web UI restores without cloning: Solo comes back with the notes and
+    the fields its user wrote, not blank ones — comments and line endings
+    kept, bound to the restored paper."""
+    pytest.importorskip("fastapi")
+    from litman.server import create_app
+    from tests.server._client import TestClient
+
+    _rm_solo(vault, tmp_path)
+    (entry,) = trash_mod.list_trash(vault)
+
+    resp = TestClient(create_app(vault)).post(
+        f"/api/trash/{entry.entry_name}/restore"
+    )
+
+    assert resp.status_code == 200, resp.text
+    repo_root = vault / "codes" / "Solo"
+    assert (repo_root / "notes.md").read_bytes() == _REPO_NOTES
+    meta_text = (repo_root / "repo-meta.yaml").read_text(encoding="utf-8")
+    assert "# tested on the lab GPU" in meta_text
+    meta = _read_repo_meta(vault, "Solo")
+    assert (meta["framework"], meta["papers"]) == ("pytorch", ["2024_Target"])
+    assert meta["updated-at"] != "2026-04-28T10:00:00+02:00"
+    assert not (repo_root / "repo").exists()
+
+
+def test_restore_brings_back_a_repo_note_that_is_not_utf8(
+    vault: Path, tmp_path: Path
+) -> None:
+    """A note saved in another encoding cannot be text in the trash entry; it
+    comes back byte for byte all the same."""
+    notes = "# Solo\r\n环境: torch\r\n".encode("gbk")
+    _rm_solo(vault, tmp_path, notes)
+
+    result = CliRunner().invoke(
+        cli, ["trash", "restore", "2024_Target", "--library", str(vault)]
+    )
+
+    assert result.exit_code == 0, result.output
+    assert (vault / "codes" / "Solo" / "notes.md").read_bytes() == notes
+
+
+def test_a_reclone_keeps_the_restored_repo_notes(
+    vault: Path, tmp_path: Path
+) -> None:
+    """`-y` clones Solo again into the restored record: the clone adds repo/
+    and leaves the user's notes and fields as they came back."""
+    _rm_solo(vault, tmp_path)
+
+    code, output, why = _restore(vault)
+
+    assert code == 0, why
+    assert "Re-cloned" in output
+    repo_root = vault / "codes" / "Solo"
+    assert (repo_root / "repo" / "README.md").is_file()
+    assert (repo_root / "notes.md").read_bytes() == _REPO_NOTES
+    assert _read_repo_meta(vault, "Solo")["framework"] == "pytorch"
+
+
+def test_restore_of_an_entry_that_saved_no_repo_files_rebuilds_the_record(
+    vault: Path, tmp_path: Path
+) -> None:
+    """A paper trashed before rm saved the repo's files: its restore still
+    puts back the repo's address, as before."""
+    upstream = _rm_solo(vault, tmp_path)
+    (entry,) = trash_mod.list_trash(vault)
+    sidecar = entry.entry_path.parent / f"{entry.entry_name}.meta.yaml"
+    data = _yaml.load(sidecar.read_text(encoding="utf-8"))
+    del data["orphan_repo_files"]
+    sidecar.write_text(json.dumps(data), encoding="utf-8")
+
+    result = CliRunner().invoke(
+        cli, ["trash", "restore", "2024_Target", "--library", str(vault)]
+    )
+
+    assert result.exit_code == 0, result.output
+    meta = _read_repo_meta(vault, "Solo")
+    assert (meta["upstream"], meta["papers"], meta["framework"]) == (
+        upstream, ["2024_Target"], None
+    )
+    assert not (vault / "codes" / "Solo" / "notes.md").exists()
+
+
+def test_a_trash_entry_restores_only_the_two_repo_files(vault: Path) -> None:
+    """The trash entry is a file anyone can edit: a restore writes no path it
+    names besides repo-meta.yaml and notes.md."""
+    _write_paper(vault, "2024_Target")
+    entry_path = trash_mod.move_to_trash(
+        vault,
+        "2024_Target",
+        orphan_repos={"Solo": "https://example.org/solo.git"},
+        orphan_repo_files={
+            "Solo": {"notes.md": "kept", "../../evil.md": "x", "repo-meta.yaml": 7}
+        },
+    )
+
+    (entry,) = trash_mod.list_trash(vault)
+
+    assert entry.entry_path == entry_path
+    assert entry.orphan_repo_files == {"Solo": {"notes.md": "kept"}}
+
+
+@pytest.mark.parametrize("source", ["none", "moved folder"])
+def test_rm_keeps_a_repo_it_has_nothing_to_clone_again_from(
+    vault: Path, tmp_path: Path, source: str
+) -> None:
+    """`lit code add --move` leaves the vault holding the only copy of the
+    code; a repo with no upstream has nothing to clone from either. rm only
+    unbinds it, says so, and a restore binds it again."""
+    upstream = "" if source == "none" else f"local:{tmp_path / 'moved away'}"
+    _write_paper(vault, "2024_Target", code_clones=["Only"])
+    repo_root = _make_fake_repo(
+        vault, "Only", papers=["2024_Target"], upstream=upstream
+    )
+    runner = CliRunner()
+
+    preview = runner.invoke(
+        cli, ["rm", "2024_Target", "--dry-run", "--library", str(vault)]
+    )
+    result = runner.invoke(
+        cli, ["rm", "2024_Target", "-y", "--library", str(vault)]
+    )
+
+    assert "Would keep repos with no copy to clone again: Only" in " ".join(
+        preview.output.split()
+    )
+    assert "orphan" not in preview.output
+    assert result.exit_code == 0, result.output
+    assert "Kept 1 repo with no copy to clone again (Only;" in " ".join(
+        result.output.split()
+    )
+    assert "Removed" not in result.output
+    assert (repo_root / "repo" / "README.md").is_file()
+    assert _read_repo_meta(vault, "Only")["papers"] == []
+    (entry,) = trash_mod.list_trash(vault)
+    assert entry.orphan_repos == {}
+
+    restored = runner.invoke(
+        cli, ["trash", "restore", "2024_Target", "--library", str(vault)]
+    )
+
+    assert restored.exit_code == 0, restored.output
+    assert _read_repo_meta(vault, "Only")["papers"] == ["2024_Target"]
+    assert (repo_root / "repo" / "README.md").is_file()
+
+
+def test_the_web_ui_delete_names_a_repo_it_keeps(vault: Path, tmp_path: Path) -> None:
+    """The delete dialog and its result list the kept repo apart from the ones
+    the delete removes."""
+    pytest.importorskip("fastapi")
+    from litman.server import create_app
+    from tests.server._client import TestClient
+
+    _write_paper(vault, "2024_Target", code_clones=["Only", "Solo"])
+    _make_fake_repo(vault, "Only", papers=["2024_Target"], upstream="")
+    _make_fake_repo(vault, "Solo", papers=["2024_Target"])
+    client = TestClient(create_app(vault))
+
+    preview = client.get("/api/paper/2024_Target/rm-preview").json()
+    deleted = client.delete("/api/paper/2024_Target").json()
+
+    assert (preview["reposKept"], preview["reposRemoved"]) == (["Only"], ["Solo"])
+    assert preview["reposUnbound"] == []
+    assert (deleted["reposKept"], deleted["reposRemoved"]) == (["Only"], ["Solo"])
+    assert deleted["reposUnbound"] == 0
+    assert (vault / "codes" / "Only" / "repo").is_dir()
+    assert not (vault / "codes" / "Solo").exists()
+
+
+def test_rm_stops_when_it_cannot_read_a_repo_note(
+    vault: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A note rm cannot read is one it cannot keep for a restore: nothing is
+    deleted, and the message names the file."""
+    _write_paper(vault, "2024_Target", code_clones=["Solo"])
+    repo_root = _make_fake_repo(vault, "Solo", papers=["2024_Target"])
+    notes = repo_root / "notes.md"
+    notes.write_text("mine\n", encoding="utf-8")
+    real_read_bytes = Path.read_bytes
+
+    def read_bytes(self: Path) -> bytes:
+        # By name: rm reaches the file through the vault path it resolved.
+        if (self.parent.name, self.name) == ("Solo", "notes.md"):
+            raise PermissionError(13, "Permission denied")
+        return real_read_bytes(self)
+
+    monkeypatch.setattr(Path, "read_bytes", read_bytes)
+
+    result = CliRunner().invoke(
+        cli, ["rm", "2024_Target", "-y", "--library", str(vault)]
+    )
+
+    assert isinstance(result.exception, RmError)
+    message = str(result.exception)
+    assert message.startswith("Cannot read ") and "notes.md: " in message
+    assert message.endswith("Fix its permissions, then retry.")
+    assert (vault / "papers" / "2024_Target").is_dir()
+    assert (repo_root / "repo").is_dir()
+    assert trash_mod.list_trash(vault) == []

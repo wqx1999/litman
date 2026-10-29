@@ -78,6 +78,17 @@ own entry. Read those before you upgrade, whatever the number says.
   brings it up to date. `lit project rm` names the folder to clear by hand,
   since nothing looks at it after. `lit health-check` and the web UI's health
   panel, which failed the same way, now name the folder they could not read.
+- **`lit rm` no longer deletes the only copy of a repo.** A folder added with
+  `lit code add --move` exists only in the library. When the paper you deleted
+  was the only one using it, `lit rm` deleted the repo too, and restoring the
+  paper could not bring it back. `lit rm` now keeps a repo it has nothing to
+  clone again from, unbound, and says so; `lit code rm` deletes it if you want.
+- **Restoring a paper brings back its repo's notes.** When `lit rm` deleted a
+  repo only that paper used, the repo's `notes.md` and the fields you filled
+  in its `repo-meta.yaml` (framework, runs-on, status) went with it, and a
+  restore put back blank ones. They now wait in the trash with the paper and
+  come back when you restore it. A paper deleted before this version cannot
+  get them back.
 
 ### Security
 

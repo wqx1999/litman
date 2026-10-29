@@ -54,7 +54,7 @@ export default function RemovePaperConfirm({
   // references the paper.
   const lines: string[] = []
   if (preview) {
-    const { references, reposUnbound, reposRemoved, projects, notes } = preview
+    const { references, reposUnbound, reposRemoved, reposKept, projects, notes } = preview
     if (references.length)
       lines.push(
         `Clears it from ${count(references.length, 'paper')}: ${references.join(', ')}`,
@@ -66,6 +66,10 @@ export default function RemovePaperConfirm({
     if (reposUnbound.length)
       lines.push(
         `Unbinds ${count(reposUnbound.length, 'repo')} (kept — still used elsewhere): ${reposUnbound.join(', ')}`,
+      )
+    if (reposKept.length)
+      lines.push(
+        `Unbinds ${count(reposKept.length, 'repo')} (kept — no copy to clone it again): ${reposKept.join(', ')}`,
       )
     if (projects.length)
       lines.push(`Unlinks from ${count(projects.length, 'project')}: ${projects.join(', ')}`)

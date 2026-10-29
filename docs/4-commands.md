@@ -556,8 +556,11 @@ Remove a paper. By default moves `papers/<id>/`, SI files included, to
 `<vault>/.trash/` (recoverable via `lit trash restore`); `--purge` deletes
 permanently. All external links to the paper (other papers' relation fields,
 repo bindings, project links) are torn down atomically; the paper's own fields
-ride into trash so a later restore can rebuild them. A `y/N` prompt guards the
-delete (default N). With `--si`, it deletes one or more of the paper's SI files
+ride into trash so a later restore can rebuild them. A repo no other paper
+uses is deleted with the paper, its `repo-meta.yaml` and `notes.md` kept in the
+trash for a restore; one with nothing to clone it again from (a folder added
+with `lit code add --move`, or no upstream) is kept and only unbound. A `y/N`
+prompt guards the delete (default N). With `--si`, it deletes one or more of the paper's SI files
 instead — see below.
 
 ```
@@ -890,7 +893,7 @@ lit trash empty [--dry-run] [-y]
 | Subcommand | What it does |
 |---|---|
 | `list` | Show trash entries, newest first. `--format json` adds each entry's path and the repos a restore would re-clone. Kept project folders are not listed. |
-| `restore <id-or-entry>` | Restore a trashed paper to `papers/<id>/` and rebuild its relations (opposite papers' reverse edges, surviving repo bindings, project links + `REFERENCES.md`). A 1:1 repo hard-deleted at `rm` time comes back as its `repo-meta.yaml` and is re-cloned (`-y` to auto-attempt without prompting); with no terminal and no `-y`, after a "no", or when the clone fails, it stays without a checkout and `lit code restore-all` clones it later. A restore from the web UI never clones. |
+| `restore <id-or-entry>` | Restore a trashed paper to `papers/<id>/` and rebuild its relations (opposite papers' reverse edges, surviving repo bindings, project links + `REFERENCES.md`). A 1:1 repo hard-deleted at `rm` time comes back as its `repo-meta.yaml` and `notes.md` and is re-cloned (`-y` to auto-attempt without prompting); with no terminal and no `-y`, after a "no", or when the clone fails, it stays without a checkout and `lit code restore-all` clones it later. A restore from the web UI never clones. |
 | `empty` | Permanently delete every trash entry and every kept project folder. `--dry-run` lists the entries and counts the folders; `-y` skips the prompt. |
 
 ### `lit sync`
