@@ -25,6 +25,8 @@ from litman.core.checks import check_views_vs_metadata
 from litman.core.document import list_papers
 from litman.core.portable_link import (
     is_portable_link,
+    link_points_at,
+    make_portable_link,
     remove_link_if_present,
     reset_warning_state,
 )
@@ -335,3 +337,58 @@ def test_health_check_fix_says_it_once_however_many_fixes_rebuild(
     assert not paper_meta(lib, "p1").get("extends")
     assert output.count("could not update views") == 1, output
     assert views_line() in output
+
+
+@pytest.mark.parametrize(
+    "wrong",
+    ["another paper", pytest.param("an absolute path", marks=posix_only)],
+)
+def test_a_link_to_the_wrong_place_in_a_bucket_is_made_again(
+    lib: Library, wrong: str
+) -> None:
+    """Kept only when it points at its own paper the way litman makes it: a
+    library moved on Windows leaves junctions to where it was before."""
+    link = _inbox(lib) / "p1"
+    assert remove_link_if_present(link)
+    if wrong == "another paper":
+        assert make_portable_link(link, lib.vault / "papers" / "p3")
+    else:
+        link.symlink_to(lib.vault / "papers" / "p1")
+    code, output, exc = run_lit(lib, ["refresh-views"])
+
+    assert code == 0, f"{output} {exc!r}"
+    assert link_points_at(link, lib.vault / "papers" / "p1")
+    assert view_issues(lib) == []
+
+
+def test_a_stale_bucket_that_takes_no_change_is_said(
+    lib: Library, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A bucket no paper is in any more, holding a link it will not give up:
+    something stale is left, so it is said, and `lit health-check` sees it."""
+    stale = lib.vault / "views" / "by-status" / "skim"
+    stale.mkdir()
+    assert make_portable_link(stale / "p2", lib.vault / "papers" / "p2")
+    with monkeypatch.context() as patch:
+        deny_writes(patch, stale)
+        code, output, exc = run_lit(lib, ["refresh-views"])
+
+    assert code == 0, f"{output} {exc!r}"
+    assert output.count(views_line()) == 1, output
+    assert is_portable_link(stale / "p2")
+    assert view_issues(lib)
+
+
+def test_a_real_folder_where_a_link_belongs_is_cleared_without_a_word(
+    lib: Library,
+) -> None:
+    spot = _inbox(lib) / "p2"
+    assert remove_link_if_present(spot)
+    spot.mkdir()
+    (spot / "x.txt").write_text("x", encoding="utf-8")
+    code, output, exc = run_lit(lib, ["refresh-views"])
+
+    assert code == 0, f"{output} {exc!r}"
+    assert "could not update views" not in output
+    assert link_points_at(spot, lib.vault / "papers" / "p2")
+    assert view_issues(lib) == []
