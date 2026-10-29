@@ -40,6 +40,7 @@ command keeps working without them.
 from __future__ import annotations
 
 import os
+import secrets
 import shutil
 import subprocess
 import sys
@@ -252,6 +253,12 @@ def make_portable_link(link_path: Path, target_path: Path) -> bool:
 
     Returns:
         ``True`` on success, ``False`` on graceful degrade.
+
+    Raises:
+        OSError: nothing at all can be created in the link's folder (no
+            write permission, a read-only mount, a full disk) — a fact about
+            the folder, not the drive, so the caller reports the folder it
+            could not update instead of this module blaming the filesystem.
     """
     if link_points_at(link_path, target_path):
         # Nothing to write. A rebuild passes every link of a project folder
@@ -276,11 +283,37 @@ def make_portable_link(link_path: Path, target_path: Path) -> bool:
             link_path.symlink_to(os.path.relpath(target_path, link_path.parent))
         return True
     except OSError as err:
+        if not isinstance(obstruction, IsADirectoryError) and not (
+            _can_create_entry(link_path.parent)
+        ):
+            raise (obstruction if obstruction is not None else err) from None
         if obstruction is not None:
             _warn_link_obstructed(link_path, obstruction)
         else:
             _warn_links_unsupported(link_path, err)
         return False
+
+
+def _can_create_entry(directory: Path) -> bool:
+    """Can a plain file be created in ``directory``?
+
+    Tells a folder litman cannot write to (permissions, a read-only mount, a
+    full disk) from a drive that cannot hold links (FAT32 / exFAT, network
+    shares): the second takes a file but refuses the link. Asked of the
+    folder rather than read off the error number, which each platform and
+    filesystem spells its own way. Only reached once a link has failed.
+    """
+    probe = directory / f".litman-write-probe-{os.getpid()}-{secrets.token_hex(4)}"
+    try:
+        fd = os.open(probe, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+    except OSError:
+        return False
+    os.close(fd)
+    try:
+        probe.unlink()
+    except OSError:
+        pass
+    return True
 
 
 def link_points_at(link_path: Path, target_path: Path) -> bool:
@@ -343,19 +376,31 @@ def remove_link_if_present(link_path: Path) -> bool:
     (graceful degrade above), this is a silent no-op returning ``False``.
 
     Returns:
-        ``True`` if a link was removed, ``False`` otherwise.
+        ``True`` if a link was removed, ``False`` if there was none.
+
+    Raises:
+        OSError: a link is there but cannot be removed (no write permission
+            on its folder, a read-only mount). Left in place without a word,
+            it would outlive the paper or project it stood for.
     """
     if not is_portable_link(link_path):
         return False
     try:
         link_path.unlink()
         return True
-    except OSError:
-        try:
-            link_path.rmdir()
-            return True
-        except OSError:
-            return False
+    except FileNotFoundError:
+        return False
+    except OSError as err:
+        unlink_error = err
+    try:
+        link_path.rmdir()
+        return True
+    except FileNotFoundError:
+        return False
+    except OSError as err:
+        # rmdir is the call that fits a junction; to a symlink it only says
+        # "not a directory".
+        raise (err if link_path.is_junction() else unlink_error) from None
 
 
 def reset_warning_state() -> None:

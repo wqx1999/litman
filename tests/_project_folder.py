@@ -2,11 +2,11 @@
 
 ``deny`` does to one hub folder what ``chmod 000`` does on POSIX, on every
 platform: the folder can still be seen from its parent, but nothing in it can
-be listed, read or changed. ``deny_writes`` is ``chmod 555`` or a read-only
-mount: everything in the folder can be listed and read, nothing can be
-created, removed, renamed or written. Both work at the ``os`` / ``io`` layer
-every filesystem call in litman goes through, so the code under test runs
-unchanged — no litman function is patched.
+be listed, read or changed. ``deny_writes`` is ``chmod 555``: everything in the
+folder can be listed and read, nothing can be added, removed or renamed (a file
+already there can still be rewritten — unless it is a read-only mount). Both
+work at the ``os`` / ``io`` layer every filesystem call in litman goes through,
+so the code under test runs unchanged — no litman function is patched.
 """
 
 from __future__ import annotations
@@ -82,11 +82,12 @@ def deny(monkeypatch: pytest.MonkeyPatch, hub: Path) -> None:
 _WRITE_FLAGS = os.O_WRONLY | os.O_RDWR | os.O_CREAT | os.O_TRUNC | os.O_APPEND
 
 
-def deny_writes(monkeypatch: pytest.MonkeyPatch, folder: Path) -> None:
-    """Refuse every change to a path inside ``folder``; reads go through.
-
-    Stricter than ``chmod 555`` in one way, as a read-only mount is: a file
-    already in the folder cannot be rewritten either.
+def deny_writes(
+    monkeypatch: pytest.MonkeyPatch, folder: Path, *, mount: bool = False
+) -> None:
+    """Refuse every new entry, removal and rename inside ``folder``, as
+    ``chmod 555`` does; reads go through, and so does rewriting a file that is
+    already there. ``mount=True`` refuses that too, as a read-only mount does.
     """
     root = os.path.normcase(os.path.abspath(folder))
 
@@ -114,17 +115,21 @@ def deny_writes(monkeypatch: pytest.MonkeyPatch, folder: Path) -> None:
     ):
         monkeypatch.setattr(os, name, guard(getattr(os, name)))
 
+    def refused_write(path: Any) -> bool:
+        # A new entry is refused either way; an existing file only on a mount.
+        return inside(path) and (mount or not os.path.lexists(os.fspath(path)))
+
     real_os_open = os.open
 
     def os_open(path: Any, flags: int, *args: Any, **kwargs: Any) -> int:
-        if flags & _WRITE_FLAGS and inside(path):
+        if flags & _WRITE_FLAGS and refused_write(path):
             refuse(path)
         return real_os_open(path, flags, *args, **kwargs)
 
     real_io_open = io.open
 
     def io_open(file: Any, mode: str = "r", *args: Any, **kwargs: Any) -> Any:
-        if any(c in mode for c in "wax+") and inside(file):
+        if any(c in mode for c in "wax+") and refused_write(file):
             refuse(file)
         return real_io_open(file, mode, *args, **kwargs)
 

@@ -555,8 +555,9 @@ def update_views_for_paper(
 
     Same graceful-degrade contract as ``rebuild_views``: on a filesystem
     without links, creations no-op with the one-shot warning and removals
-    find nothing to remove. Returns ``{view_name: n_links_created}``
-    (creations only, mirroring ``rebuild_views``' counting).
+    find nothing to remove; a bucket that cannot be changed is skipped. Returns
+    ``{view_name: n_links_created}`` (creations only, mirroring
+    ``rebuild_views``' counting).
     """
     views_dir = vault / "views"
     target = vault / "papers" / paper_id
@@ -575,7 +576,13 @@ def update_views_for_paper(
         n = 0
         for bucket_name in sorted(old_buckets - new_buckets):
             bucket = views_dir / view_name / bucket_name
-            remove_link_if_present(bucket / paper_id)
+            try:
+                remove_link_if_present(bucket / paper_id)
+            except OSError:
+                # A views/ folder that cannot be changed: the write this
+                # follows is committed, and `lit health-check` reports the
+                # view out of date.
+                pass
             try:
                 # Only succeeds when the bucket is now empty — matching the
                 # full rebuild, which never materializes an empty bucket.
@@ -585,7 +592,10 @@ def update_views_for_paper(
         for bucket_name in sorted(new_buckets - old_buckets):
             bucket = views_dir / view_name / bucket_name
             bucket.mkdir(parents=True, exist_ok=True)
-            if make_portable_link(bucket / paper_id, target):
-                n += 1
+            try:
+                if make_portable_link(bucket / paper_id, target):
+                    n += 1
+            except OSError:
+                pass  # as for the removal above
         counts[view_name] = n
     return counts

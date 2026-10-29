@@ -27,6 +27,7 @@ from litman.core.portable_link import (
     remove_link_if_present,
     reset_warning_state,
 )
+from tests._project_folder import deny_writes
 
 
 @pytest.fixture(autouse=True)
@@ -645,3 +646,96 @@ def test_os_error_reason_is_capped_whatever_it_is() -> None:
     assert reason.endswith("…")
     # A bare OSError with no strerror still says something.
     assert portable_link._os_error_reason(OSError("boom")) == "boom"
+
+
+# ---------------------------------------------------------------------------
+# A folder litman can read but not write: said, not blamed on the drive
+# ---------------------------------------------------------------------------
+
+
+def _record_warnings(monkeypatch: pytest.MonkeyPatch) -> list[tuple[object, ...]]:
+    calls: list[tuple[object, ...]] = []
+
+    class _RecordingConsole:
+        def print(self, *args: object, **_kw: object) -> None:
+            calls.append(args)
+
+    monkeypatch.setattr(portable_link, "_console", _RecordingConsole())
+    return calls
+
+
+def test_a_link_a_folder_takes_no_entry_for_is_raised_not_blamed_on_the_drive(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    target = _dir_with(tmp_path, "target", "x")
+    hub = tmp_path / "hub"
+    hub.mkdir()
+    warnings = _record_warnings(monkeypatch)
+    with monkeypatch.context() as patch:
+        deny_writes(patch, hub)
+        with pytest.raises(PermissionError):
+            make_portable_link(hub / "link", target)
+
+    assert warnings == []
+    assert not (hub / "link").exists()
+    assert list(hub.iterdir()) == []  # no probe file left behind
+
+
+def test_a_link_that_cannot_be_replaced_is_raised_not_called_an_obstruction(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    old = _dir_with(tmp_path, "old", "o")
+    new = _dir_with(tmp_path, "new", "n")
+    hub = tmp_path / "hub"
+    make_portable_link(hub / "link", old)
+    warnings = _record_warnings(monkeypatch)
+    with monkeypatch.context() as patch:
+        deny_writes(patch, hub)
+        with pytest.raises(PermissionError):
+            make_portable_link(hub / "link", new)
+
+    assert warnings == []
+    assert link_points_at(hub / "link", old)
+
+
+def test_a_drive_without_links_still_gets_the_drive_warning(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The folder takes a plain file, only the link is refused: that is the
+    drive, and the drive is what the warning names."""
+    target = _dir_with(tmp_path, "target", "x")
+    _refuse_links(monkeypatch)
+    warnings = _record_warnings(monkeypatch)
+
+    assert make_portable_link(tmp_path / "hub" / "link", target) is False
+    assert "cannot hold folder links" in str(warnings)
+    assert sorted(p.name for p in (tmp_path / "hub").iterdir()) == []
+
+
+def test_a_link_that_cannot_be_removed_is_raised(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    target = _dir_with(tmp_path, "target", "x")
+    hub = tmp_path / "hub"
+    make_portable_link(hub / "link", target)
+    with monkeypatch.context() as patch:
+        deny_writes(patch, hub)
+        with pytest.raises(PermissionError):
+            remove_link_if_present(hub / "link")
+
+    assert link_points_at(hub / "link", target)
+
+
+def test_a_link_gone_before_it_could_be_removed_counts_as_none(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    target = _dir_with(tmp_path, "target", "x")
+    link = tmp_path / "hub" / "link"
+    make_portable_link(link, target)
+
+    def gone(*_a: object, **_k: object) -> None:
+        raise FileNotFoundError(2, "No such file or directory")
+
+    monkeypatch.setattr(os, "unlink", gone)
+    monkeypatch.setattr(os, "rmdir", gone)
+    assert remove_link_if_present(link) is False

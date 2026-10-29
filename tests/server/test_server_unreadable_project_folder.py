@@ -1,8 +1,9 @@
-"""The web UI with a project folder litman cannot read.
+"""The web UI with a project folder litman cannot read, or cannot change.
 
-The server half of tests/commands/test_unreadable_project_folder.py: the health
-panel lists the folder it could not read (200, the finding in the list) instead
-of failing as a whole, and a write finishes instead of answering 500.
+The server half of tests/commands/test_unreadable_project_folder.py and
+test_readonly_project_folder.py: the health panel lists the folder it could not
+read (200, the finding in the list) instead of failing as a whole, and a write
+finishes instead of answering 500.
 """
 
 from __future__ import annotations
@@ -14,7 +15,13 @@ import pytest
 pytest.importorskip("fastapi")
 
 from litman.server import create_app
-from tests._project_folder import ACCESS_DENIED, Library, deny, make_library
+from tests._project_folder import (
+    ACCESS_DENIED,
+    Library,
+    deny,
+    deny_writes,
+    make_library,
+)
 from tests.server._client import TestClient
 
 HUBS = ["litman_reflib", "litman_code"]
@@ -68,6 +75,22 @@ def test_a_write_finishes_with_a_project_folder_it_cannot_read(
     client = TestClient(create_app(lib.vault), raise_server_exceptions=False)
     with monkeypatch.context() as patch:
         deny(patch, lib.hub(hub))
+        resp = getattr(client, method)(url, **({"json": body} if body else {}))
+        health = client.get("/api/health")
+
+    assert resp.status_code == 200, resp.text
+    assert health.status_code == 200, health.text
+
+
+@pytest.mark.parametrize("hub", HUBS)
+@pytest.mark.parametrize("route", list(ROUTES))
+def test_a_write_finishes_with_a_project_folder_it_cannot_change(
+    lib: Library, monkeypatch: pytest.MonkeyPatch, route: str, hub: str
+) -> None:
+    method, url, body = ROUTES[route]
+    client = TestClient(create_app(lib.vault), raise_server_exceptions=False)
+    with monkeypatch.context() as patch:
+        deny_writes(patch, lib.hub(hub))
         resp = getattr(client, method)(url, **({"json": body} if body else {}))
         health = client.get("/api/health")
 
