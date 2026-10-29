@@ -355,6 +355,24 @@ def test_gui_no_browser_suppresses_open(
     assert opened == [] and procs == []
 
 
+def test_gui_takes_no_client_address_from_proxy_headers(
+    monkeypatch, gui_harness, vault_with_paper
+) -> None:
+    """The guard looks up who owns the connection's other end. uvicorn's
+    default would let any local client name that end in X-Forwarded-For."""
+    vault, _pid = vault_with_paper
+    configs: list[dict[str, Any]] = []
+    monkeypatch.setattr("uvicorn.Config", lambda *a, **k: configs.append(k))
+
+    result = CliRunner().invoke(
+        gui_cmd, ["--library", str(vault), "--no-browser"]
+    )
+
+    assert result.exit_code == 0, result.output
+    assert len(configs) == 1
+    assert configs[0]["proxy_headers"] is False
+
+
 def test_gui_headless_linux_never_opens(
     monkeypatch, gui_harness, vault_with_paper
 ) -> None:

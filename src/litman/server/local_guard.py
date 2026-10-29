@@ -33,8 +33,18 @@ Host has already passed as a loopback name, and the two agreeing is exactly
 "same origin" — whichever port the server walked up to, and whichever local
 port an ``ssh -L`` tunnel forwards. A page served on another local port is
 refused like any other site. A request with no Origin (curl, a script) or no
-Host is not from a browser, which is the only thing this guards against, and
-passes.
+Host is not from a browser, and passes both checks.
+
+Binding ``127.0.0.1`` does not keep out the other users of the same machine
+either: on a shared server (an HPC login node) anyone logged in can connect
+to the port. On Linux the kernel says which user owns the client's end of the
+connection, and a request that has passed the two checks above is refused
+when that is someone else (``peer_owner``, ADR-029). The server's own user
+and root pass. So does a client nobody can identify, which is every client
+on Windows and macOS: litman does not look there, and the guard stays as it
+was. A client that hung up before it could be identified is refused: its
+request would still run, and that is how another user would send a write
+blind.
 
 A pure ASGI middleware rather than ``@app.middleware("http")``: that kind never
 sees WebSocket traffic, and pages reach ``/api/presence`` too.
@@ -42,10 +52,13 @@ sees WebSocket traffic, and pages reach ``/api/presence`` too.
 
 from __future__ import annotations
 
-from typing import cast
+from collections.abc import Callable
+from typing import Any, cast
 
 from starlette.responses import JSONResponse
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
+
+from litman.server import peer_owner
 
 _LOOPBACK_NAMES = frozenset({"127.0.0.1", "localhost", "::1"})
 
@@ -122,11 +135,18 @@ def refusal(scope: Scope) -> str | None:
 
 
 class LocalPageGuard:
-    """Refuse requests that did not come from the litman page, and keep every
-    response out of other pages' frames (module docstring)."""
+    """Refuse requests that did not come from the litman page or came from
+    another user, and keep every response out of other pages' frames (module
+    docstring). ``owner`` tells who sent a request (``peer_owner.owner``)."""
 
-    def __init__(self, app: ASGIApp) -> None:
+    def __init__(
+        self,
+        app: ASGIApp,
+        *,
+        owner: Callable[[Any, Any], peer_owner.Owner] = peer_owner.owner,
+    ) -> None:
         self.app = app
+        self.owner = owner
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         if scope["type"] not in ("http", "websocket"):
@@ -135,6 +155,10 @@ class LocalPageGuard:
         if scope["type"] == "http":
             send = _unframed(send)
         reason = refusal(scope)
+        if reason is None and not peer_owner.allowed(
+            self.owner(scope.get("client"), scope.get("server"))
+        ):
+            reason = "user"
         if reason is None:
             await self.app(scope, receive, send)
             return
@@ -148,8 +172,13 @@ class LocalPageGuard:
             port = server[1] if server else None
             address = f"http://127.0.0.1:{port}" if port else "http://127.0.0.1"
             detail = f"litman answers only at 127.0.0.1 or localhost. Open {address}."
-        else:
+        elif reason == "origin":
             detail = "Only the litman page itself can send this request, not another website."
+        else:
+            detail = (
+                "This litman server belongs to another user on this machine. "
+                "Run `lit gui` to start your own."
+            )
         response = JSONResponse(
             status_code=403,
             content={"detail": detail},

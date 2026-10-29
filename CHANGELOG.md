@@ -35,6 +35,14 @@ own entry. Read those before you upgrade, whatever the number says.
   `lit health-check --fix`. `lit code rm --cascade` also no longer stops before
   deleting the repo when a link in a project folder cannot be removed.
 
+### Security
+
+- **Other users of the same machine can no longer use your `lit gui`.** On a
+  shared Linux machine, such as an HPC login node, anyone logged in could send
+  requests to the web UI's port and read or change your library. litman now
+  refuses requests from other users' programs. The web UI, the command line
+  and `ssh -L` tunnels work as before. Windows and macOS are unchanged.
+
 ## 1.3.9 — 2026-10-28
 
 ### Added

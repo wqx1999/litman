@@ -1580,7 +1580,9 @@ def gui_cmd(
     # off app.state (created unconditionally by create_app).
     app = create_app(vault)
     server = uvicorn.Server(
-        uvicorn.Config(app, host="127.0.0.1", port=actual_port)
+        # No proxy headers: the guard identifies the connection's real other
+        # end, which an X-Forwarded-For line would otherwise replace.
+        uvicorn.Config(app, host="127.0.0.1", port=actual_port, proxy_headers=False)
     )
     # Config() just (re)configured logging; silence the live-refresh poll's
     # access lines now that the loggers are in their final shape.
