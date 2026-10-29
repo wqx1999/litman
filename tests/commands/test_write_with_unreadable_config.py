@@ -37,6 +37,7 @@ WARNING = (
     "warning: lit-config.yaml cannot be read, so the project folders were not "
     "updated. Fix it, then run `lit health-check --fix`."
 )
+REFS_REFRESHED = "REFERENCES.md refreshed"
 KINDS = ["unparsable", "invalid"]
 
 
@@ -235,6 +236,8 @@ def test_a_write_finishes_and_warns_when_the_config_cannot_be_read(
     assert code == 0, shown
     assert case.success in output
     assert WARNING in output
+    # The project folders were left as they were, so no line may say otherwise.
+    assert REFS_REFRESHED not in output
     assert case.written(lib)
 
     # The way out the warning names: with the file fixed, health-check sees
@@ -244,6 +247,16 @@ def test_a_write_finishes_and_warns_when_the_config_cannot_be_read(
     CliRunner().invoke(cli, ["health-check", "--fix", "--library", str(lib.vault)])
     assert _drift(lib) == []
     assert case.repaired(lib)
+
+
+def test_a_projects_change_with_a_readable_config_reports_the_refresh(lib: Library) -> None:
+    """Control for ``REFS_REFRESHED not in output`` above: with the file intact
+    the same command does print it, so its absence there means something."""
+    code, output, shown = _run(lib, ["modify", "p2", "--add-tag", "projects=pepcodec"])
+
+    assert code == 0, shown
+    assert REFS_REFRESHED in output
+    assert WARNING not in output
 
 
 # ---------------------------------------------------------------------------
