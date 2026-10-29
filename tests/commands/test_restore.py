@@ -23,7 +23,10 @@ from __future__ import annotations
 
 import contextlib
 import json
+import os
 import subprocess
+import sys
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -32,6 +35,10 @@ from click.testing import CliRunner
 from ruamel.yaml import YAML
 
 from litman.cli import cli
+from litman.core import project_link as project_link_mod
+from litman.core import trash as trash_mod
+from litman.core.checks import check_project_references
+from litman.core.document import list_papers
 from litman.core.library import create_vault
 from litman.core.portable_link import is_portable_link
 from litman.core.supplementary import shell_path
@@ -757,3 +764,166 @@ def test_restore_reports_a_moved_aside_folder(
     assert len(kept) == 1
     assert str(kept[0]) in flat
     assert (kept[0] / "MY_NOTES.md").is_file()
+
+
+# ===========================================================================
+# A project folder that cannot be changed: the restore finishes and says so
+# ===========================================================================
+
+RESTORE_WARNING = (
+    "warning: could not update a project folder (Access is denied). "
+    "Fix that, then run `lit health-check --fix`."
+)
+
+
+def _paper_with_both_repos(vault: Path, tmp_path: Path) -> Path:
+    """Target in project myproj, binding Shared (Keeper binds it too, so rm
+    keeps it) and Solo (Target's alone, so rm deletes the clone and only the
+    trash entry remembers where it came from). Target is in the trash on
+    return; the project folder is returned."""
+    project_dir = tmp_path / "myproj"
+    project_dir.mkdir()
+    config_path = vault / "lit-config.yaml"
+    config_path.write_text(
+        config_path.read_text().replace(
+            "projects: {}", f"projects:\n  myproj: {project_dir}"
+        ),
+        encoding="utf-8",
+    )
+    upstream = _git_local_upstream(tmp_path, "upstream-solo")
+    _write_paper(
+        vault, "2024_Target", projects=["myproj"], code_clones=["Shared", "Solo"]
+    )
+    _write_paper(vault, "2024_Keeper", code_clones=["Shared"])
+    _make_fake_repo(vault, "Shared", papers=["2024_Target", "2024_Keeper"])
+    _make_fake_repo(vault, "Solo", papers=["2024_Target"], upstream=str(upstream))
+    runner = CliRunner()
+    runner.invoke(
+        cli, ["link", "2024_Target", "--project", "myproj", "--library", str(vault)]
+    )
+    assert is_portable_link(project_dir / "litman_code" / "Shared")
+    assert is_portable_link(project_dir / "litman_code" / "Solo")
+
+    runner.invoke(cli, ["rm", "2024_Target", "-y", "--library", str(vault)])
+    assert (vault / "codes" / "Shared" / "repo").is_dir()
+    assert not (vault / "codes" / "Solo").exists()
+    assert not (project_dir / "litman_code" / "Shared").exists()
+    return project_dir
+
+
+def _restore(vault: Path) -> tuple[int, str, str]:
+    """Exit code, output with one space between words (so a line Rich wrapped
+    still matches), and what to show when the exit code is wrong."""
+    result = CliRunner().invoke(
+        cli, ["trash", "restore", "2024_Target", "-y", "--library", str(vault)]
+    )
+    output = " ".join(result.output.split())
+    return result.exit_code, output, f"{output} {result.exception!r}"
+
+
+def _drift(vault: Path) -> list[str]:
+    return [i.message for i in check_project_references(vault, list_papers(vault))]
+
+
+def _refuse(*args: object, **kwargs: object) -> None:
+    raise PermissionError(13, "Access is denied")
+
+
+def _refusing_hub(hub: str) -> Callable[..., Any]:
+    """settle_hub_entry, except that one hub folder of the project refuses."""
+    real = trash_mod.settle_hub_entry
+
+    def settle(link: Path, target: Path, **kwargs: Any) -> Any:
+        if kwargs["hub"] == hub:
+            _refuse()
+        return real(link, target, **kwargs)
+
+    return settle
+
+
+REFUSALS = {
+    # The re-link of the repo that survived (the step that crashed before).
+    "relink-code": (trash_mod, "settle_hub_entry", _refusing_hub("litman_code")),
+    "relink-reflib": (
+        trash_mod, "settle_hub_entry", _refusing_hub("litman_reflib")
+    ),
+    "references": (trash_mod, "write_references_md", _refuse),
+    # The link to the clone made again (the step that was silent before).
+    "reclone-code": (project_link_mod, "refresh_project_code_links", _refuse),
+}
+
+
+@pytest.mark.parametrize("refusal", list(REFUSALS))
+def test_restore_says_when_a_project_folder_could_not_be_updated(
+    vault: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, refusal: str
+) -> None:
+    project_dir = _paper_with_both_repos(vault, tmp_path)
+    module, name, fake = REFUSALS[refusal]
+
+    with monkeypatch.context() as patch:
+        patch.setattr(module, name, fake)
+        code, output, shown = _restore(vault)
+
+    assert code == 0, shown
+    assert "Restored 2024_Target" in output
+    assert output.count(RESTORE_WARNING) == 1
+    # A project is claimed re-linked only when its re-link all went through.
+    assert ("Re-linked into 1 project (myproj)" in output) == (
+        refusal == "reclone-code"
+    )
+    # The rest of the restore still ran: the clone only the trash entry knew
+    # the address of is back.
+    assert "Re-cloned 'Solo'" in output
+    assert (vault / "codes" / "Solo" / "repo").is_dir()
+    assert (vault / "papers" / "2024_Target" / "metadata.yaml").is_file()
+
+    # The way out it names.
+    CliRunner().invoke(cli, ["health-check", "--fix", "--library", str(vault)])
+    assert _drift(vault) == []
+    assert is_portable_link(project_dir / "litman_reflib" / "2024_Target")
+    assert is_portable_link(project_dir / "litman_code" / "Shared")
+    assert is_portable_link(project_dir / "litman_code" / "Solo")
+
+
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="chmod does not take read access away from a folder on Windows",
+)
+@pytest.mark.skipif(
+    hasattr(os, "geteuid") and os.geteuid() == 0,
+    reason="root reads a folder whatever its permission bits",
+)
+def test_restore_finishes_when_litman_code_cannot_be_read(
+    vault: Path, tmp_path: Path
+) -> None:
+    """The real failure, nothing injected: both the re-link of Shared and the
+    link to the new Solo clone meet a litman_code/ that cannot be read."""
+    project_dir = _paper_with_both_repos(vault, tmp_path)
+    code_dir = project_dir / "litman_code"
+
+    code_dir.chmod(0)
+    try:
+        code, output, shown = _restore(vault)
+    finally:
+        code_dir.chmod(0o755)
+
+    assert code == 0, shown
+    assert output.count(
+        "warning: could not update a project folder (Permission denied). "
+        "Fix that, then run `lit health-check --fix`."
+    ) == 1
+    assert "Re-cloned 'Solo'" in output
+    assert "Re-linked into" not in output
+    assert (vault / "codes" / "Solo" / "repo").is_dir()
+    # The parts of the project outside litman_code/ were brought up to date.
+    assert is_portable_link(project_dir / "litman_reflib" / "2024_Target")
+    refs = (project_dir / "litman_reflib" / "REFERENCES.md").read_text(
+        encoding="utf-8"
+    )
+    assert "2024_Target" in refs
+    assert not (code_dir / "Shared").exists()
+
+    CliRunner().invoke(cli, ["health-check", "--fix", "--library", str(vault)])
+    assert _drift(vault) == []
+    assert is_portable_link(code_dir / "Shared")
+    assert is_portable_link(code_dir / "Solo")

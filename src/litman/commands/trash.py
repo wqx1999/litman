@@ -23,7 +23,10 @@ from rich.console import Console
 from rich.markup import escape
 from rich.table import Table
 
-from litman.commands._hub_report import hub_settlement_lines
+from litman.commands._hub_report import (
+    hub_settlement_lines,
+    project_folder_not_updated,
+)
 from litman.commands._options import format_option, library_option, vault_option
 from litman.core import confirm as confirm_mod
 from litman.core.code import (
@@ -139,14 +142,20 @@ def trash_list_cmd(
 
 
 def _reclone_missing_repo(
-    vault: Path, paper_id: str, repo_name: str, upstream: str
+    vault: Path,
+    paper_id: str,
+    repo_name: str,
+    upstream: str,
+    *,
+    link_errors: list[OSError],
 ) -> None:
     """Re-clone a 1:1 hard-deleted repo and re-bind it to ``paper_id``.
 
     POST-transaction (step 3): reuses the INTERNAL clone + repo-meta + bind
     logic of ``core.code`` for the single repo A needs, NOT the vault-level
     ``restore_missing_repos``. Builds ``codes/<repo>/{repo, repo-meta.yaml,
-    notes.md}`` then binds via ``bind_paper_to_repo`` (papers:[A]).
+    notes.md}`` then binds via ``bind_paper_to_repo`` (papers:[A]). A project
+    ``litman_code/`` the bind could not update lands in ``link_errors``.
 
     Raises:
         CodeError: empty upstream, clone failure, or bind failure. The caller
@@ -166,7 +175,7 @@ def _reclone_missing_repo(
         write_notes(repo_root, repo_name, upstream)
         # Bind INSIDE the guard so a bind failure also rolls back the
         # half-built dir (invariant #12: no clone without link).
-        bind_paper_to_repo(vault, paper_id, repo_name)
+        bind_paper_to_repo(vault, paper_id, repo_name, link_errors=link_errors)
     except Exception as e:
         # Roll back the half-built codes/<repo>/ so a failed re-clone (clone,
         # repo-meta, OR bind) leaves no dangling dir — the binding on the
@@ -191,6 +200,7 @@ def _handle_missing_repos(
     result: RestoreResult,
     *,
     skip_confirm: bool,
+    link_errors: list[OSError],
 ) -> None:
     """Step 3: re-clone any 1:1 hard-deleted repo A still binds.
 
@@ -243,7 +253,8 @@ def _handle_missing_repos(
                 continue
         try:
             _reclone_missing_repo(
-                vault, result.paper_id, repo_name, upstream
+                vault, result.paper_id, repo_name, upstream,
+                link_errors=link_errors,
             )
         except CodeError as e:
             first_line = str(e).splitlines()[0] if str(e) else "clone failed"
@@ -345,13 +356,19 @@ def trash_restore_cmd(
 
     # Step 3: re-clone any 1:1 hard-deleted repo (POST-transaction, may fail
     # without rolling back the restore).
-    _handle_missing_repos(vault, result, skip_confirm=skip_confirm)
+    link_errors = list(result.link_errors)
+    _handle_missing_repos(
+        vault, result, skip_confirm=skip_confirm, link_errors=link_errors
+    )
 
     # TAXONOMY drift is intentionally left to health-check — restore never
     # edits TAXONOMY (invariant #2). The `[[A]] (deleted)` de-annotation is
     # done inside restore_from_trash's transaction (M24).
 
     console.print("[dim]INDEX.json + views/ refreshed.[/]")
+    # One line however many project folders refused, from either step.
+    if link_errors:
+        console.print(project_folder_not_updated(link_errors[0]), soft_wrap=True)
 
 
 # ---------------------------------------------------------------------------

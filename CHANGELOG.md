@@ -40,6 +40,14 @@ own entry. Read those before you upgrade, whatever the number says.
   before deleting the repo when the folder could not be read. They now finish
   and say so; once the folder is fixed, `lit health-check --fix` brings it up
   to date.
+- **`lit trash restore` finishes when it cannot update a project folder.**
+  When a folder of one of the paper's projects could not be read, the restore
+  stopped with a Python error after the paper was already back, and the web UI
+  said only "Internal Server Error". The address of a repo it still had to
+  clone again was then lost for good, and a repo it did clone again was left
+  out of the project without a word. It now finishes, clones the repo, and
+  says the project folder was not updated; once the folder is fixed,
+  `lit health-check --fix` brings it up to date.
 
 ### Security
 

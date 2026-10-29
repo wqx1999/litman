@@ -173,6 +173,10 @@ class RestoreResult:
     # project-hub folders the re-link had to preserve under .trash/ — the only
     # copy of whatever was in them, so the caller reports the paths.
     hub_moved_aside: list[str] = field(default_factory=list)
+    # OSErrors from a project folder the re-link could not change (a
+    # litman_code/ that cannot be read, ...). The restore stands; the caller
+    # says so in one line and `lit health-check --fix` finishes the folder.
+    link_errors: list[OSError] = field(default_factory=list)
     # The post-restore paper list INDEX.json was rendered from — the caller
     # hands it to reconcile_derived so the derived rebuild does not re-scan
     # the vault (task-write-perf). May mix INDEX projections with the
@@ -556,7 +560,7 @@ def _rebuild_project_links(
     restored_meta: dict[str, Any],
     paper_id: str,
     registry: dict[str, str],
-) -> tuple[set[str], list[str]]:
+) -> tuple[set[str], list[str], list[OSError]]:
     """Re-create A's project symlinks + re-render REFERENCES.md (post-stage).
 
     Inverse of rm's ``_teardown_project_links``. For each project A names:
@@ -566,12 +570,18 @@ def _rebuild_project_links(
     A project not registered or whose dir is missing on disk is skipped
     (decision: P missing → skip) — A's own ``projects`` field is untouched.
 
-    Returns the set of project names actually rebuilt, plus any hub folders
-    that had to be preserved under ``.trash/`` to free a link position.
+    Each link and the REFERENCES.md render is tried on its own: an
+    ``OSError`` from one (a hub folder that cannot be read) is collected and
+    the rest still run, since the restore has already committed.
+
+    Returns the set of project names fully rebuilt, any hub folders that had
+    to be preserved under ``.trash/`` to free a link position, and every
+    ``OSError`` collected.
     """
     code_clones = [str(r) for r in (restored_meta.get("code-clones") or [])]
     rebuilt: set[str] = set()
     moved_aside: list[str] = []
+    link_errors: list[OSError] = []
     for project in restored_meta.get("projects") or []:
         project = str(project)
         project_dir_str = registry.get(project)
@@ -581,19 +591,23 @@ def _rebuild_project_links(
         if not project_dir.is_dir():
             continue
 
+        errors_before = len(link_errors)
         paper_link = project_dir / LITERATURE_SUBDIR / paper_id
         paper_target = (vault / "papers" / paper_id).resolve()
-        settled = settle_hub_entry(
-            paper_link,
-            paper_target,
-            vault=vault,
-            project=project,
-            hub=LITERATURE_SUBDIR,
-        )
-        if settled.moved_to is not None:
-            moved_aside.append(str(settled.moved_to))
-        if not settled.position_occupied:
-            make_portable_link(paper_link, paper_target)
+        try:
+            settled = settle_hub_entry(
+                paper_link,
+                paper_target,
+                vault=vault,
+                project=project,
+                hub=LITERATURE_SUBDIR,
+            )
+            if settled.moved_to is not None:
+                moved_aside.append(str(settled.moved_to))
+            if not settled.position_occupied:
+                make_portable_link(paper_link, paper_target)
+        except OSError as err:
+            link_errors.append(err)
         for repo_name in code_clones:
             repo_target = (
                 vault / CODES_DIRNAME / repo_name / REPO_DIRNAME
@@ -601,23 +615,29 @@ def _rebuild_project_links(
             if not repo_target.exists():
                 continue
             code_link = project_dir / CODE_SUBDIR / repo_name
-            settled = settle_hub_entry(
-                code_link,
-                repo_target,
-                vault=vault,
-                project=project,
-                hub=CODE_SUBDIR,
-            )
-            if settled.moved_to is not None:
-                moved_aside.append(str(settled.moved_to))
-            if not settled.position_occupied:
-                make_portable_link(code_link, repo_target)
+            try:
+                settled = settle_hub_entry(
+                    code_link,
+                    repo_target,
+                    vault=vault,
+                    project=project,
+                    hub=CODE_SUBDIR,
+                )
+                if settled.moved_to is not None:
+                    moved_aside.append(str(settled.moved_to))
+                if not settled.position_occupied:
+                    make_portable_link(code_link, repo_target)
+            except OSError as err:
+                link_errors.append(err)
         try:
             write_references_md(vault, project, project_dir)
         except FileNotFoundError:
             continue
-        rebuilt.add(project)
-    return rebuilt, moved_aside
+        except OSError as err:
+            link_errors.append(err)
+        if len(link_errors) == errors_before:
+            rebuilt.add(project)
+    return rebuilt, moved_aside, link_errors
 
 
 def restore_from_trash(
@@ -645,7 +665,10 @@ def restore_from_trash(
            for restore success (decision #2).
 
     Project symlink + REFERENCES re-render run after the staged commit
-    (filesystem-only, recoverable). TAXONOMY drift is left for health-check
+    (filesystem-only, recoverable): an ``OSError`` there does not undo the
+    restore, and is handed back in ``link_errors``. It must not escape either:
+    the sidecar is gone by then, and the step 3 that echoes a missing repo's
+    upstream would never run. TAXONOMY drift is left for health-check
     (decision #5; invariant #2 — restore never edits TAXONOMY).
 
     Raises:
@@ -769,7 +792,7 @@ def restore_from_trash(
         pass
 
     # Post-stage filesystem rebuild: project symlinks + REFERENCES.md.
-    projects_rebuilt, hub_moved_aside = _rebuild_project_links(
+    projects_rebuilt, hub_moved_aside, link_errors = _rebuild_project_links(
         vault, sealed_meta, paper_id, registry
     )
 
@@ -783,6 +806,7 @@ def restore_from_trash(
         repos_rebound=repos_rebound,
         projects_rebuilt=projects_rebuilt,
         hub_moved_aside=hub_moved_aside,
+        link_errors=link_errors,
         surviving_papers=surviving,
         restored_view_fields=view_fields_snapshot(sealed_meta),
     )
