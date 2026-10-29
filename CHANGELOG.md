@@ -22,18 +22,24 @@ own entry. Read those before you upgrade, whatever the number says.
   follow the order of the report above them.
 - **The web UI keeps up when `lit-config.yaml` or `TAXONOMY.md` cannot be
   read.** It stopped showing changes made from the terminal or by an agent
-  until the page was reloaded, and adding a project or restoring a paper said
-  only "Internal Server Error". It now stays up to date, and those actions say
-  that `lit-config.yaml` needs fixing; the health panel says what is wrong.
+  until the page was reloaded, and adding a project, restoring a paper or
+  removing one said only "Internal Server Error". It now stays up to date, and
+  those actions say that `lit-config.yaml` needs fixing; the health panel says
+  `lit-config.yaml` cannot be read.
 - **Changing a paper while `lit-config.yaml` cannot be read now finishes.**
   `lit modify`, `lit code link`, `lit code unlink`, `lit code add --paper` and
   `lit code rm --cascade` saved the change and then stopped with an error —
   `lit code add` also removed the repo it had just added — and the web UI said
   the edit had failed. `lit rename` and changing a paper's projects left the
-  project folders behind without a word. They all now finish and say the
+  project folders behind without a word. These commands now finish and say the
   project folders were not updated: fix the file, then run
-  `lit health-check --fix`. `lit code rm --cascade` also no longer stops before
-  deleting the repo when a link in a project folder cannot be removed.
+  `lit health-check --fix`. The web UI now saves the edit without an error.
+- **`lit code` says when it cannot update a project's `litman_code/` folder.**
+  `lit code add --paper`, `lit code link` and `lit code unlink` left the
+  folder out of date without a word, and `lit code rm --cascade` stopped
+  before deleting the repo when the folder could not be read. They now finish
+  and say so; once the folder is fixed, `lit health-check --fix` brings it up
+  to date.
 
 ### Security
 
