@@ -53,6 +53,7 @@ ROUTES = {
     "DELETE paper project": ("delete", "/api/paper/p2/project/pp", None),
     "PUT metadata title": ("put", "/api/paper/p2/metadata", {"set": {"title": "New"}}),
     "PUT project (rename)": ("put", "/api/projects/pp", {"new": "pp2"}),
+    "DELETE project": ("delete", "/api/projects/pp", None),
 }
 
 

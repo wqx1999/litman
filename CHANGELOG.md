@@ -57,6 +57,18 @@ own entry. Read those before you upgrade, whatever the number says.
   the paper's projects. The same holds when `lit trash restore` skips or fails
   the clone. `lit code restore-all` also copies a repo added from a folder
   without git again, instead of failing on it.
+- **A project folder that cannot be read no longer stops a command halfway.**
+  When a project's `litman_reflib/` or `litman_code/` could not be read,
+  `lit link`, `lit unlink`, `lit rm`, `lit rename`, `lit modify`,
+  `lit project rename`, `lit project rm`, `lit refresh-views` and
+  `lit health-check --fix` made their change and then stopped with a Python
+  error, the project folder half updated; in the web UI the same actions said
+  only "Internal Server Error". `lit unlink` also lost the relevance note it
+  removes, which it shows so you can copy it back. They now finish and say the
+  project folder was not updated; once it is fixed, `lit health-check --fix`
+  brings it up to date. `lit project rm` names the folder to clear by hand,
+  since nothing looks at it after. `lit health-check` and the web UI's health
+  panel, which failed the same way, now name the folder they could not read.
 
 ### Security
 

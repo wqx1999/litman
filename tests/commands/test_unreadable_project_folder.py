@@ -294,3 +294,51 @@ def test_rm_finishes_when_chmod_took_read_access_from_a_hub(
 
     CliRunner().invoke(cli, ["health-check", "--fix", "--library", str(lib.vault)])
     assert _project_issues(lib) == []
+
+
+# ---------------------------------------------------------------------------
+# lit project rm: nothing looks at the folder again, so it names what is left
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("hub", HUBS)
+def test_project_rm_names_the_folder_it_could_not_clean_up(
+    lib: Library, monkeypatch: pytest.MonkeyPatch, hub: str
+) -> None:
+    other = lib.code_dir if hub == "litman_reflib" else lib.reflib
+    what = "its links and REFERENCES.md" if hub == "litman_reflib" else "its links"
+    with monkeypatch.context() as patch:
+        deny(patch, lib.hub(hub))
+        code, output, exc = _run(lib, ["project", "rm", "pp", "-y"])
+
+    assert code == 0, f"{output} {exc!r}"
+    assert "pp" not in _projects(lib)
+    assert output.count(
+        f"warning: could not clean up {lib.hub(hub)} ({ACCESS_DENIED}). "
+        f"Delete {what} by hand: lit no longer looks there."
+    ) == 1
+    assert LINE not in output  # --fix cannot reach it: not offered
+    # The hub that could be read was cleaned up as usual.
+    assert not other.exists()
+    assert lib.project_dir.joinpath("my_own_file.txt").is_file()
+
+
+@posix_only
+@not_root
+def test_project_rm_finishes_when_chmod_took_read_access_from_a_hub(
+    lib: Library,
+) -> None:
+    """The real failure, nothing injected."""
+    lib.code_dir.chmod(0)
+    try:
+        code, output, exc = _run(lib, ["project", "rm", "pp", "-y"])
+    finally:
+        lib.code_dir.chmod(0o755)
+
+    assert code == 0, f"{output} {exc!r}"
+    assert (
+        f"warning: could not clean up {lib.code_dir} (Permission denied). "
+        "Delete its links by hand: lit no longer looks there."
+    ) in output
+    assert "pp" not in _projects(lib)
+    assert not lib.reflib.exists()

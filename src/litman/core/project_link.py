@@ -1126,7 +1126,12 @@ def add_project(vault: Path, name: str, path: Path) -> dict[str, Any]:
     return {"name": name, "path": str(path)}
 
 
-def remove_project(vault: Path, name: str) -> tuple[int, list[str]]:
+def remove_project(
+    vault: Path,
+    name: str,
+    *,
+    hubs_left: dict[Path, OSError] | None = None,
+) -> tuple[int, list[str]]:
     """Delete a project: cascade-untag papers + drop from both truth sources.
 
     The single backend for the WRITE half of both ``lit project rm`` and the
@@ -1143,7 +1148,11 @@ def remove_project(vault: Path, name: str) -> tuple[int, list[str]]:
     Post-commit teardown unlinks the project's ``litman_reflib/`` paper symlinks,
     its ``litman_code/`` repo symlinks, and deletes REFERENCES.md. It NEVER
     removes the project directory itself (preserving the CLI's behavior exactly):
-    only the litman-managed children inside it are torn down.
+    only the litman-managed children inside it are torn down. A hub the
+    teardown cannot list or change does not undo the removal; it goes into
+    ``hubs_left`` (when given) with its ``OSError``. Nothing will ever look at
+    that folder again — the project is gone from the config — so the caller
+    names it for the user to clear by hand.
 
     Confirm-free by design: the cascade-with-confirm gate (``_confirm_destructive``)
     and console output stay in the ``lit project rm`` command; the GUI's confirm
@@ -1219,12 +1228,16 @@ def remove_project(vault: Path, name: str) -> tuple[int, list[str]]:
     # unlink pattern: filesystem-mutating, cheap to redo, recoverable.
     if project_dir is not None and project_dir.is_dir():
         literature_dir = project_dir / LITERATURE_SUBDIR
-        if literature_dir.is_dir():
-            for child in literature_dir.iterdir():
-                remove_link_if_present(child)
-            refs = literature_dir / REFERENCES_FILENAME
-            if refs.exists():
-                refs.unlink()
+        try:
+            if literature_dir.is_dir():
+                for child in literature_dir.iterdir():
+                    remove_link_if_present(child)
+                refs = literature_dir / REFERENCES_FILENAME
+                if refs.exists():
+                    refs.unlink()
+        except OSError as err:
+            if hubs_left is not None:
+                hubs_left[literature_dir] = err
         # Symmetric teardown of litman_code/ (parallel to rm.py's
         # _teardown_project_links). The project is gone, so every
         # litman_code/<repo> link is an orphan — no shared-lib retention
@@ -1232,9 +1245,13 @@ def remove_project(vault: Path, name: str) -> tuple[int, list[str]]:
         # orphans that no later rebuild_all_project_links revisits (the project
         # is already out of the registry), violating invariant #14.
         code_dir = project_dir / CODE_SUBDIR
-        if code_dir.is_dir():
-            for child in code_dir.iterdir():
-                remove_link_if_present(child)
+        try:
+            if code_dir.is_dir():
+                for child in code_dir.iterdir():
+                    remove_link_if_present(child)
+        except OSError as err:
+            if hubs_left is not None:
+                hubs_left[code_dir] = err
         # The hubs themselves were litman's litter too: rmdir only when
         # empty, so anything the user parked inside survives untouched.
         for hub in (literature_dir, code_dir):

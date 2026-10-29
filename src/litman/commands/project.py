@@ -52,6 +52,7 @@ from litman.core.config import config_to_yaml_dict, load_config
 from litman.core.confirm import _confirm_destructive, is_interactive
 from litman.core.document import list_papers
 from litman.core.library import find_vault, resolve_library_or_vault
+from litman.core.portable_link import _os_error_reason
 from litman.core.project_link import (
     add_project,
     rebuild_all_project_links,
@@ -523,7 +524,8 @@ def project_rm_cmd(
     # rebuild, then symlink/REFERENCES teardown) lives in the core so the webUI
     # DELETE endpoint shares the exact write path (invariant #16). The command
     # keeps only the confirm gate + console output.
-    n_changed, removed_from = remove_project(vault, name)
+    hubs_left: dict[Path, OSError] = {}
+    n_changed, removed_from = remove_project(vault, name, hubs_left=hubs_left)
 
     console.print(
         f"[bold green]✓ Removed[/] project {escape(name)}."
@@ -531,3 +533,17 @@ def project_rm_cmd(
     console.print(
         f"  Untagged {paper_count(n_changed, duplicate_count(removed_from))}."
     )
+    # Not `lit health-check --fix`: the project is out of the config, so no
+    # later command looks at this folder again. Name it, with what to remove.
+    for hub, err in hubs_left.items():
+        what = (
+            f"its links and {REFERENCES_FILENAME}"
+            if hub.name == LITERATURE_SUBDIR
+            else "its links"
+        )
+        console.print(
+            f"[yellow]warning:[/] could not clean up {escape(str(hub))} "
+            f"({escape(_os_error_reason(err))}). Delete {what} by hand: "
+            "lit no longer looks there.",
+            soft_wrap=True,
+        )
