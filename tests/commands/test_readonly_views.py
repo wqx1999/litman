@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import re
 import shutil
+import stat
 from collections.abc import Callable
 from pathlib import Path
 
@@ -307,3 +308,30 @@ def test_a_stale_bucket_in_a_view_chmod_made_read_only_is_emptied(
     assert "could not update views" not in output
     assert stale.is_dir() and not any(stale.iterdir())
     assert view_issues(lib) == []
+
+
+def _edit_meta(lib: Library, paper_id: str, edit: Callable[[str], str]) -> None:
+    path = lib.vault / "papers" / paper_id / "metadata.yaml"
+    path.chmod(path.stat().st_mode | stat.S_IWRITE)  # the TRUTH lock
+    path.write_text(edit(path.read_text(encoding="utf-8")), encoding="utf-8")
+
+
+def test_health_check_fix_says_it_once_however_many_fixes_rebuild(
+    lib: Library, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The regen rebuilds views/, then the dangling-relation fix rebuilds them
+    again: one run, one line."""
+    _edit_meta(
+        lib, "p2",
+        lambda t: t.replace("status: inbox", "status: skim") + "related: [ghost]\n",
+    )
+    _edit_meta(lib, "p1", lambda t: t + "extends: [ghost2]\n")
+    with monkeypatch.context() as patch:
+        deny_writes(patch, _inbox(lib))
+        _code, output, exc = run_lit(lib, ["health-check", "--fix"])
+
+    assert isinstance(exc, SystemExit), exc
+    assert not paper_meta(lib, "p2").get("related")  # the second rebuild ran
+    assert not paper_meta(lib, "p1").get("extends")
+    assert output.count("could not update views") == 1, output
+    assert views_line() in output

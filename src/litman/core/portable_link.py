@@ -44,6 +44,9 @@ import secrets
 import shutil
 import subprocess
 import sys
+from collections.abc import Iterator
+from contextlib import contextmanager
+from contextvars import ContextVar
 from pathlib import Path
 
 from rich.console import Console
@@ -531,16 +534,44 @@ def warn_hub_entry_unmovable(path: Path, err: OSError) -> None:
     )
 
 
+# Set inside views_line_once(): whether the views line was already said there.
+_VIEWS_LINE_SAID: ContextVar[list[bool] | None] = ContextVar(
+    "_VIEWS_LINE_SAID", default=None
+)
+
+
+@contextmanager
+def views_line_once() -> Iterator[None]:
+    """Say :func:`warn_views_not_updated`'s line at most once inside the block.
+
+    For a command that rebuilds views/ more than once in one run: ``lit
+    health-check --fix`` regenerates, then each ripple fix rebuilds again.
+    Scoped rather than once per process, so ``lit gui``'s server still says
+    it for every write that hits the folder.
+    """
+    token = _VIEWS_LINE_SAID.set([False])
+    try:
+        yield
+    finally:
+        _VIEWS_LINE_SAID.reset(token)
+
+
 def warn_views_not_updated(view_name: str, err: OSError) -> None:
     """Warn that a ``views/`` folder could not be brought up to date.
 
     One line per rebuild, however many buckets refused: the caller passes the
-    first. A view folder made read-only by hand — views/ lives in the library,
-    and a library that takes no change at all is refused before any command
-    gets this far. The write before it is committed; ``lit health-check``
-    reports the view out of date until the folder is fixed. Lives here for the
-    same reason as :func:`warn_hub_entry_unmovable`.
+    first (and inside :func:`views_line_once`, one per block). A view folder
+    made read-only by hand — views/ lives in the library, and a library that
+    takes no change at all is refused before any command gets this far. The
+    write before it is committed; ``lit health-check`` reports the view out
+    of date until the folder is fixed. Lives here for the same reason as
+    :func:`warn_hub_entry_unmovable`.
     """
+    said = _VIEWS_LINE_SAID.get()
+    if said is not None:
+        if said[0]:
+            return
+        said[0] = True
     _console.print(
         f"[yellow]warning:[/] could not update views/{escape(view_name)}/ "
         f"({escape(_os_error_reason(err))}). Fix that, then run "

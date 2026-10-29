@@ -54,6 +54,7 @@ from litman.core.correctors import link_errors_from, regen
 from litman.core.document import list_papers
 from litman.core.library import find_vault, resolve_library_or_vault
 from litman.core.locking import ensure_truth_locked
+from litman.core.portable_link import views_line_once
 
 if TYPE_CHECKING:
     from litman.core.supplementary import SiFixPolicy
@@ -326,7 +327,10 @@ def health_check_cmd(
     # directories the check deliberately does not probe). With nothing to
     # do, _apply_fixes returns {} and this block is output-silent.
     if do_fix:
-        applied = _apply_fixes(vault, issues)
+        # The regen and each ripple fix rebuild views/ in turn: a view folder
+        # that takes no change is said once for the run, not once each.
+        with views_line_once():
+            applied = _apply_fixes(vault, issues)
         if applied:
             console.print("\n[bold]Auto-fix:[/]")
             hub_reported = False
