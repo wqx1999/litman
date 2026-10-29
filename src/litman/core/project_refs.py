@@ -22,6 +22,7 @@ on a fresh machine before the user runs ``lit link --rebuild-all``.
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 from typing import Any
 
@@ -34,6 +35,7 @@ from litman.core.views import load_index_papers
 
 REFERENCES_FILENAME = "REFERENCES.md"
 LITERATURE_SUBDIR = "litman_reflib"
+_LAST_UPDATED = re.compile(r"<!-- Last updated: (.*?) -->")
 
 
 def load_project_member_metas(
@@ -284,6 +286,20 @@ def write_references_md(
     literature_dir = project_dir / LITERATURE_SUBDIR
     literature_dir.mkdir(exist_ok=True)
     target = literature_dir / REFERENCES_FILENAME
+    try:
+        existing: str | None = target.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        existing = None
+    if existing is not None:
+        # Only the timestamp would change: leave the file as it is, so a
+        # project folder litman can read but not change goes through a
+        # rebuild with nothing to change untouched. "Last updated" is when
+        # the list last changed.
+        stamp = _LAST_UPDATED.search(existing)
+        if stamp and existing == render_references_md(
+            vault, project, now=stamp.group(1), papers=papers
+        ):
+            return target
     target.write_text(
         render_references_md(vault, project, now=now, papers=papers),
         encoding="utf-8",

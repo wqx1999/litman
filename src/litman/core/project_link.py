@@ -44,6 +44,7 @@ from litman.core.locking import rmtree
 from litman.core.portable_link import (
     _os_error_reason,
     is_portable_link,
+    link_points_at,
     links_supported,
     make_portable_link,
     remove_link_if_present,
@@ -1535,7 +1536,8 @@ def _rebuild_project_hubs(
     aside_paths: list[str],
 ) -> tuple[int, int, int]:
     """:func:`rebuild_all_project_links` for one project whose directory is
-    there: wipe both hubs, re-create the links, re-render REFERENCES.md.
+    there: wipe both hubs (a link already pointing where it should stays),
+    re-create the links, re-render REFERENCES.md.
 
     Returns ``(n_paper_links, n_code_links, n_replaced_copies)``. A folder it
     moves out of the user's directory goes into ``aside_paths`` as it happens,
@@ -1545,6 +1547,11 @@ def _rebuild_project_hubs(
     # Whatever is NOT a link gets settled here (an expanded copy is
     # deleted or preserved in .trash/), so the create loop below meets
     # either an empty position or one it must leave alone.
+    # A link that already points where it should is kept rather than wiped
+    # and re-made: a project folder litman can read but not change then goes
+    # through a rebuild with nothing to change untouched.
+    planned = _planned_hub_links(vault, project_dir, tagged_papers)
+    wanted = dict(planned)
     blocked: set[Path] = set()
     n_replaced_copies = 0
     for sub in (LITERATURE_SUBDIR, CODE_SUBDIR):
@@ -1555,6 +1562,9 @@ def _rebuild_project_hubs(
         # sorted() drains the scandir generator before the settling
         # starts removing entries out from under it.
         for child in sorted(sub_dir.iterdir()):
+            target = wanted.get(child)
+            if target is not None and link_points_at(child, target):
+                continue
             if remove_link_if_present(child):
                 continue
             settled = settle_hub_entry(
@@ -1579,6 +1589,26 @@ def _rebuild_project_hubs(
 
     n_paper_links = 0
     n_code_links = 0
+    for link, target in planned:
+        if link not in blocked and make_portable_link(link, target):
+            if link.parent.name == LITERATURE_SUBDIR:
+                n_paper_links += 1
+            else:
+                n_code_links += 1
+
+    write_references_md(vault, project, project_dir)
+
+    return n_paper_links, n_code_links, n_replaced_copies
+
+
+def _planned_hub_links(
+    vault: Path, project_dir: Path, tagged_papers: list[dict[str, Any]]
+) -> list[tuple[Path, Path]]:
+    """``(link, target)`` for every link a rebuild of ``project_dir`` makes, in
+    order: each paper's own link, then one per repo it binds. A repo two
+    papers bind appears twice, as it is linked (and counted) twice. A paper
+    or clone missing from the vault gets no link."""
+    planned: list[tuple[Path, Path]] = []
     for p in tagged_papers:
         pid = p.get("id")
         if not pid:
@@ -1586,21 +1616,10 @@ def _rebuild_project_hubs(
         paper_dir = (vault / "papers" / pid).resolve()
         if not paper_dir.is_dir():
             continue
-        paper_link = project_dir / LITERATURE_SUBDIR / pid
-        if paper_link not in blocked and make_portable_link(
-            paper_link, paper_dir
-        ):
-            n_paper_links += 1
+        planned.append((project_dir / LITERATURE_SUBDIR / pid, paper_dir))
         for repo_name in p.get("code-clones") or []:
             repo_target = (vault / "codes" / repo_name / "repo").resolve()
             if not repo_target.exists():
                 continue
-            code_link = project_dir / CODE_SUBDIR / repo_name
-            if code_link not in blocked and make_portable_link(
-                code_link, repo_target
-            ):
-                n_code_links += 1
-
-    write_references_md(vault, project, project_dir)
-
-    return n_paper_links, n_code_links, n_replaced_copies
+            planned.append((project_dir / CODE_SUBDIR / repo_name, repo_target))
+    return planned

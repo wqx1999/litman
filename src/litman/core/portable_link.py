@@ -239,9 +239,10 @@ def make_portable_link(link_path: Path, target_path: Path) -> bool:
     a directory junction (absolute target by nature; staleness after a move is
     repaired by the same machinery that repairs moved project bridges).
 
-    The parent of ``link_path`` is created if missing. Any pre-existing
-    entry at ``link_path`` (link or regular file) is removed first so
-    the operation is a true upsert.
+    The parent of ``link_path`` is created if missing. A link already
+    pointing at ``target_path`` (:func:`link_points_at`) is left as it is;
+    any other pre-existing entry at ``link_path`` (link or regular file) is
+    removed first so the operation is a true upsert.
 
     On filesystems that refuse the link (FAT32/exFAT, network shares), the
     ``OSError`` is caught, a one-shot warning is emitted, and the function
@@ -252,6 +253,11 @@ def make_portable_link(link_path: Path, target_path: Path) -> bool:
     Returns:
         ``True`` on success, ``False`` on graceful degrade.
     """
+    if link_points_at(link_path, target_path):
+        # Nothing to write. A rebuild passes every link of a project folder
+        # through here, and one litman can read but not change must not fail
+        # over links that are already right.
+        return True
     link_path.parent.mkdir(parents=True, exist_ok=True)
     obstruction: OSError | None = None
     if is_portable_link(link_path) or link_path.exists():
@@ -274,6 +280,34 @@ def make_portable_link(link_path: Path, target_path: Path) -> bool:
             _warn_link_obstructed(link_path, obstruction)
         else:
             _warn_links_unsupported(link_path, err)
+        return False
+
+
+def link_points_at(link_path: Path, target_path: Path) -> bool:
+    """Is ``link_path`` already the link :func:`make_portable_link` would make?
+
+    Strict on purpose: whatever it cannot confirm reads as ``False``, and the
+    caller re-creates the link exactly as it always did. On POSIX the stored
+    text must equal the relative target the upsert writes, so an absolute
+    link that happens to resolve to the same place is still re-created and
+    the vault stays movable as a unit. A Windows junction stores an absolute
+    target by nature, so it is compared by where it resolves: one left
+    pointing at a vault that moved resolves somewhere else.
+    """
+    try:
+        if sys.platform == "win32":
+            if not link_path.is_junction():
+                return False
+            return os.path.normcase(os.path.realpath(link_path)) == (
+                os.path.normcase(os.path.realpath(target_path))
+            )
+        if not link_path.is_symlink():
+            return False
+        return os.readlink(link_path) == os.path.relpath(
+            target_path, link_path.parent
+        )
+    except (OSError, ValueError):
+        # ValueError: Windows relpath across drives.
         return False
 
 

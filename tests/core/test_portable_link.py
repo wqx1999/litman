@@ -11,6 +11,7 @@ contract is verified without needing an exFAT drive.
 from __future__ import annotations
 
 import io
+import os
 import shutil
 import sys
 from pathlib import Path
@@ -21,6 +22,7 @@ from rich.console import Console
 import litman.core.portable_link as portable_link
 from litman.core.portable_link import (
     is_portable_link,
+    link_points_at,
     make_portable_link,
     remove_link_if_present,
     reset_warning_state,
@@ -133,6 +135,65 @@ def test_make_portable_link_overwrites_existing_regular_file(
     assert ok is True
     assert is_portable_link(link)
     assert (link / "f.txt").read_text(encoding="utf-8") == "from-link"
+
+
+# ---------------------------------------------------------------------------
+# A link that already points there is left as it is
+# ---------------------------------------------------------------------------
+
+
+def _refuse_changes(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Fail the test on any attempt to remove or make a link."""
+
+    def untouchable(*_a: object, **_k: object) -> None:
+        raise AssertionError("a link that already pointed there was re-made")
+
+    for name in ("symlink", "unlink", "rmdir"):
+        monkeypatch.setattr(os, name, untouchable)
+    monkeypatch.setattr(portable_link, "_create_junction", untouchable)
+
+
+def test_link_points_at_tells_the_right_link_from_any_other(
+    tmp_path: Path,
+) -> None:
+    right = _dir_with(tmp_path, "right", "r")
+    other = _dir_with(tmp_path, "other", "o")
+    link = tmp_path / "hub" / "link"
+    make_portable_link(link, right)
+
+    assert link_points_at(link, right)
+    assert not link_points_at(link, other)
+    assert not link_points_at(tmp_path / "hub" / "missing", right)
+    assert not link_points_at(right, right)  # a real folder is no link
+
+
+def test_make_portable_link_leaves_a_link_that_already_points_there(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    target = _dir_with(tmp_path, "target", "x")
+    link = tmp_path / "hub" / "link"
+    assert make_portable_link(link, target) is True
+
+    _refuse_changes(monkeypatch)
+    assert make_portable_link(link, target) is True
+    assert (link / "f.txt").read_text(encoding="utf-8") == "x"
+
+
+@pytest.mark.skipif(
+    sys.platform == "win32", reason="POSIX links only; Windows makes junctions"
+)
+def test_an_absolute_link_to_the_right_place_is_still_made_relative(
+    tmp_path: Path,
+) -> None:
+    """The vault stays movable as a unit only with relative links."""
+    target = _dir_with(tmp_path, "target", "x")
+    link = tmp_path / "hub" / "link"
+    link.parent.mkdir()
+    link.symlink_to(target)
+
+    assert not link_points_at(link, target)
+    assert make_portable_link(link, target) is True
+    assert not os.path.isabs(os.readlink(link))
 
 
 # ---------------------------------------------------------------------------
@@ -393,6 +454,35 @@ class TestRealJunctionsOnWindows:
         assert remove_link_if_present(link) is True
         assert not link.exists()
         assert (target / "inside.txt").exists()
+
+    def test_a_junction_already_pointing_there_is_left_alone(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        target = tmp_path / "papers-dir"
+        target.mkdir()
+        link = tmp_path / "junction"
+        assert make_portable_link(link, target) is True
+
+        # Spelled another way, it is still the same folder.
+        assert link_points_at(link, Path(str(target).upper()))
+        _refuse_changes(monkeypatch)
+        assert make_portable_link(link, target) is True
+
+    def test_a_junction_left_pointing_where_the_folder_was_is_remade(
+        self, tmp_path: Path
+    ) -> None:
+        """What a moved vault leaves behind: junctions keep the old path."""
+        old = tmp_path / "old"
+        old.mkdir()
+        link = tmp_path / "junction"
+        make_portable_link(link, old)
+        new = tmp_path / "new"
+        old.rename(new)
+
+        assert not link_points_at(link, new)
+        assert make_portable_link(link, new) is True
+        assert link_points_at(link, new)
+        assert os.path.samefile(link, new)
 
 
 def test_make_portable_link_on_real_directory_warns_in_plain_english(

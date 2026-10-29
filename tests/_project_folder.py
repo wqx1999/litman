@@ -1,29 +1,53 @@
-"""Shared fixture for the tests of a project folder that cannot be read.
+"""Shared fixtures for the tests of a project folder litman cannot use.
 
 ``deny`` does to one hub folder what ``chmod 000`` does on POSIX, on every
 platform: the folder can still be seen from its parent, but nothing in it can
-be listed, read or changed. It works at the ``os`` / ``io`` layer every
-filesystem call in litman goes through, so the code under test runs unchanged
-— no litman function is patched.
+be listed, read or changed. ``deny_writes`` is ``chmod 555`` or a read-only
+mount: everything in the folder can be listed and read, nothing can be
+created, removed, renamed or written. Both work at the ``os`` / ``io`` layer
+every filesystem call in litman goes through, so the code under test runs
+unchanged — no litman function is patched.
 """
 
 from __future__ import annotations
 
 import io
 import os
+import sys
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 import pytest
+from click.testing import CliRunner
+from ruamel.yaml import YAML
 
+from litman.cli import cli
+from litman.core.checks import check_project_references
 from litman.core.code import bind_paper_to_repo
 from litman.core.config import load_config
+from litman.core.document import list_papers
 from litman.core.library import create_vault
 from litman.core.project_link import add_project, link_paper_to_project
 
 ACCESS_DENIED = "Access is denied"
+HUBS = ["litman_reflib", "litman_code"]
+
+# The one line a command ends with when it could not update a project folder.
+LINE = (
+    f"warning: could not update a project folder ({ACCESS_DENIED}). "
+    "Fix that, then run `lit health-check --fix`."
+)
+
+posix_only = pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="chmod does not take access away from a folder on Windows",
+)
+not_root = pytest.mark.skipif(
+    hasattr(os, "geteuid") and os.geteuid() == 0,
+    reason="root reads and writes a folder whatever its permission bits",
+)
 
 
 def deny(monkeypatch: pytest.MonkeyPatch, hub: Path) -> None:
@@ -53,6 +77,66 @@ def deny(monkeypatch: pytest.MonkeyPatch, hub: Path) -> None:
     for name in ("listdir", "scandir"):
         monkeypatch.setattr(os, name, guard(getattr(os, name), listing=True))
     monkeypatch.setattr(io, "open", guard(io.open))
+
+
+_WRITE_FLAGS = os.O_WRONLY | os.O_RDWR | os.O_CREAT | os.O_TRUNC | os.O_APPEND
+
+
+def deny_writes(monkeypatch: pytest.MonkeyPatch, folder: Path) -> None:
+    """Refuse every change to a path inside ``folder``; reads go through.
+
+    Stricter than ``chmod 555`` in one way, as a read-only mount is: a file
+    already in the folder cannot be rewritten either.
+    """
+    root = os.path.normcase(os.path.abspath(folder))
+
+    def inside(arg: object) -> bool:
+        if not isinstance(arg, (str, os.PathLike)):
+            return False
+        path = os.path.normcase(os.path.abspath(os.fspath(arg)))
+        return path.startswith(root + os.sep)
+
+    def refuse(arg: Any) -> None:
+        raise PermissionError(13, ACCESS_DENIED, os.fspath(arg))
+
+    def guard(real: Callable[..., Any]) -> Callable[..., Any]:
+        def call(*args: Any, **kwargs: Any) -> Any:
+            for arg in args[:2]:
+                if inside(arg):
+                    refuse(arg)
+            return real(*args, **kwargs)
+
+        return call
+
+    for name in (
+        "mkdir", "rmdir", "unlink", "remove", "symlink", "link", "rename",
+        "replace", "chmod",
+    ):
+        monkeypatch.setattr(os, name, guard(getattr(os, name)))
+
+    real_os_open = os.open
+
+    def os_open(path: Any, flags: int, *args: Any, **kwargs: Any) -> int:
+        if flags & _WRITE_FLAGS and inside(path):
+            refuse(path)
+        return real_os_open(path, flags, *args, **kwargs)
+
+    real_io_open = io.open
+
+    def io_open(file: Any, mode: str = "r", *args: Any, **kwargs: Any) -> Any:
+        if any(c in mode for c in "wax+") and inside(file):
+            refuse(file)
+        return real_io_open(file, mode, *args, **kwargs)
+
+    monkeypatch.setattr(os, "open", os_open)
+    monkeypatch.setattr(io, "open", io_open)
+    if sys.platform == "win32":
+        # A junction is made through _winapi, not os.
+        import _winapi
+
+        monkeypatch.setattr(
+            _winapi, "CreateJunction", guard(_winapi.CreateJunction)
+        )
 
 
 @dataclass
@@ -106,3 +190,26 @@ def make_library(tmp_path: Path) -> Library:
     )
     bind_paper_to_repo(vault, "p1", "repoS")
     return Library(vault, project_dir)
+
+
+def run_lit(lib: Library, argv: list[str]) -> tuple[int, str, BaseException | None]:
+    """Exit code, output with one space between words (so a line Rich wrapped
+    still matches), and the exception the command ended with."""
+    result = CliRunner().invoke(cli, [*argv, "--library", str(lib.vault)])
+    return result.exit_code, " ".join(result.output.split()), result.exception
+
+
+def project_issues(lib: Library) -> list[str]:
+    return [
+        i.message
+        for i in check_project_references(lib.vault, list_papers(lib.vault))
+    ]
+
+
+def paper_meta(lib: Library, paper_id: str) -> dict:
+    path = lib.vault / "papers" / paper_id / "metadata.yaml"
+    return YAML(typ="safe").load(path.read_text(encoding="utf-8")) if path.is_file() else {}
+
+
+def registered_projects(lib: Library) -> dict:
+    return dict(load_config(lib.vault).projects)
