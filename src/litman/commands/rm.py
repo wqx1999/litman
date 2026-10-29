@@ -30,8 +30,10 @@ Cascade teardown (one ``staged_write`` transaction, invariant #9/#12):
   M23.2 re-clone, along with its ``repo-meta.yaml`` and ``notes.md`` (the
   user's fields and notes, which a re-clone cannot bring back). A 1:1 repo
   with nothing to clone it from again (a ``lit code add --move`` folder, no
-  upstream) is the only copy: it is unbound and kept, never deleted. A
-  still-bound repo (1:N) only loses the binding.
+  upstream) is the only copy: it is unbound and kept, never deleted. So is one
+  holding the user's own changes (:func:`repo_changes`: edited or new files,
+  commits on no remote, a stash, files put next to ``repo/``), or one it
+  cannot check. A still-bound repo (1:N) only loses the binding.
 * Project: for each project in A's ``projects``, the ``litman_reflib/A``
   symlink is removed, the parallel ``litman_code/<repo>`` symlink is removed only
   when no other paper in that project still binds the repo, and
@@ -82,6 +84,7 @@ from litman.core.code import (
     NOTES_FILENAME,
     REPO_META_FILENAME,
     can_fetch_again,
+    repo_changes,
 )
 from litman.core.config import load_config
 from litman.core.confirm import _confirm_destructive
@@ -225,7 +228,12 @@ def _build_cascade_code_updates(
     target_id: str,
     now: str,
 ) -> tuple[
-    dict[str, str], dict[str, str], list[str], dict[str, dict[str, str | bytes]]
+    dict[str, str],
+    dict[str, str],
+    list[str],
+    list[str],
+    dict[str, str],
+    dict[str, dict[str, str | bytes]],
 ]:
     """Build staged repo-meta.yaml writes that unbind A from each repo.
 
@@ -234,11 +242,11 @@ def _build_cascade_code_updates(
     Does NOT use ``unbind_repo_from_all_papers`` (that strips a repo from
     *every* paper and skips repo-meta — the wrong direction here).
 
-    Returns ``(staged_writes, orphan_repos, kept_repos, orphan_repo_files)``
-    where:
+    Returns ``(staged_writes, orphan_repos, kept_repos, edited_repos,
+    unchecked_repos, orphan_repo_files)`` where:
         * ``staged_writes`` maps ``codes/<repo>/repo-meta.yaml`` relpath →
-          new yaml text (only for repos that stay: 1:N survivors and
-          ``kept_repos``)
+          new yaml text (only for repos that stay: 1:N survivors and the
+          three kinds of kept 1:1 repo below)
         * ``orphan_repos`` maps ``repo_name → upstream_url`` for repos whose
           binder list became empty (1:1) — caller hard-deletes the dir and
           records the url in the trash sidecar. Orphan repos are NOT staged
@@ -246,6 +254,11 @@ def _build_cascade_code_updates(
         * ``kept_repos`` names the 1:1 repos with nothing to clone them from
           again (:func:`can_fetch_again`): the vault holds their only copy, so
           they are unbound and stay — ``lit code rm`` is the way to delete one.
+        * ``edited_repos`` names the 1:1 repos that could be cloned again but
+          hold the user's own changes (:func:`repo_changes`), which a clone
+          would not bring back: kept the same way.
+        * ``unchecked_repos`` maps the 1:1 repos it could not check for such
+          changes to why (``git not found``, ...): kept the same way.
         * ``orphan_repo_files`` holds each orphan's ``repo-meta.yaml`` and
           ``notes.md`` as they are (text, or bytes for a note that is not
           UTF-8), for the trash sidecar.
@@ -257,6 +270,8 @@ def _build_cascade_code_updates(
     staged: dict[str, str] = {}
     orphan_repos: dict[str, str] = {}
     kept_repos: list[str] = []
+    edited_repos: list[str] = []
+    unchecked_repos: dict[str, str] = {}
     orphan_repo_files: dict[str, dict[str, str | bytes]] = {}
     for repo_name in target_meta.get("code-clones") or []:
         repo_meta_path = (
@@ -273,21 +288,35 @@ def _build_cascade_code_updates(
         remaining = [p for p in papers if p != target_id]
         if not remaining:
             # 1:1 — A was the last (or only) binder. Orphan the dir, unless
-            # it is the only copy of the code.
+            # it is the only copy of the code, or of the user's changes to it.
             upstream = str(rt.get("upstream") or "")
-            if can_fetch_again(upstream):
-                orphan_repos[str(repo_name)] = upstream
-                orphan_repo_files[str(repo_name)] = _repo_user_files(
-                    repo_meta_path.parent
-                )
-                continue
-            kept_repos.append(str(repo_name))
+            if not can_fetch_again(upstream):
+                kept_repos.append(str(repo_name))
+            else:
+                state, why = repo_changes(repo_meta_path.parent)
+                if state == "clean":
+                    orphan_repos[str(repo_name)] = upstream
+                    orphan_repo_files[str(repo_name)] = _repo_user_files(
+                        repo_meta_path.parent
+                    )
+                    continue
+                if state == "changed":
+                    edited_repos.append(str(repo_name))
+                else:
+                    unchecked_repos[str(repo_name)] = why
         rt["papers"] = remaining
         rt["updated-at"] = now
         staged[f"{CODES_DIRNAME}/{repo_name}/{REPO_META_FILENAME}"] = (
             _dump_yaml_to_string(rt)
         )
-    return staged, orphan_repos, sorted(kept_repos), orphan_repo_files
+    return (
+        staged,
+        orphan_repos,
+        sorted(kept_repos),
+        sorted(edited_repos),
+        dict(sorted(unchecked_repos.items())),
+        orphan_repo_files,
+    )
 
 
 def _repo_user_files(repo_root: Path) -> dict[str, str | bytes]:
@@ -414,6 +443,10 @@ class RmPlan:
     # 1:1 repos with nothing to clone them from again: unbound (their write
     # is in cascade_repo_updates) and kept.
     kept_repos: list[str]
+    # 1:1 repos holding the user's own changes, and those it could not check
+    # (repo name -> why): unbound and kept the same way.
+    edited_repos: list[str]
+    unchecked_repos: dict[str, str]
     projects: list[str]
     # Referencing notes/discussion to tag `(deleted)`: relpath → annotated text.
     note_updates: dict[str, str]
@@ -431,7 +464,8 @@ class RmPlan:
     def repos_unbound(self) -> list[str]:
         """Bare repo names for the 1:N survivors (keyed by repo-meta relpath)."""
         names = (k.split("/")[1] for k in self.cascade_repo_updates)
-        return sorted(n for n in names if n not in self.kept_repos)
+        kept = {*self.kept_repos, *self.edited_repos, *self.unchecked_repos}
+        return sorted(n for n in names if n not in kept)
 
 
 @dataclass
@@ -444,6 +478,8 @@ class RmResult:
     repos_unbound: int
     orphan_repos: list[str]
     kept_repos: list[str]
+    edited_repos: list[str]
+    unchecked_repos: dict[str, str]
     projects: list[str]
     note_files: list[str]
     evicted: list[str]
@@ -618,9 +654,14 @@ def discover_rm_impact(vault: Path, paper_id: str) -> RmPlan:
     cascade_ref_updates, touched_ref_ids = _build_cascade_ref_updates(
         vault, target_meta, paper_id, now, safe_papers
     )
-    cascade_repo_updates, orphan_repos, kept_repos, orphan_repo_files = (
-        _build_cascade_code_updates(vault, target_meta, paper_id, now)
-    )
+    (
+        cascade_repo_updates,
+        orphan_repos,
+        kept_repos,
+        edited_repos,
+        unchecked_repos,
+        orphan_repo_files,
+    ) = _build_cascade_code_updates(vault, target_meta, paper_id, now)
 
     # ----- Drop the target from the in-memory paper list (for INDEX) -----
     surviving = [p for p in safe_papers if p.get("id") != paper_id]
@@ -668,6 +709,8 @@ def discover_rm_impact(vault: Path, paper_id: str) -> RmPlan:
         orphan_repos=orphan_repos,
         orphan_repo_files=orphan_repo_files,
         kept_repos=kept_repos,
+        edited_repos=edited_repos,
+        unchecked_repos=unchecked_repos,
         projects=projects,
         note_updates=note_updates,
         new_index=new_index,
@@ -795,6 +838,8 @@ def execute_rm(plan: RmPlan, *, purge: bool = False) -> RmResult:
         repos_unbound=len(plan.repos_unbound),
         orphan_repos=sorted(plan.orphan_repos),
         kept_repos=plan.kept_repos,
+        edited_repos=plan.edited_repos,
+        unchecked_repos=plan.unchecked_repos,
         projects=list(plan.projects),
         note_files=sorted(plan.note_updates),
         evicted=evicted,
@@ -975,6 +1020,19 @@ def rm_cmd(
                 "  Would keep repos with no copy to clone again: "
                 f"[dim]{escape(', '.join(plan.kept_repos))}[/]"
             )
+        if plan.edited_repos:
+            console.print(
+                "  Would keep repos with your own changes: "
+                f"[dim]{escape(', '.join(plan.edited_repos))}[/]"
+            )
+        if plan.unchecked_repos:
+            listed = ", ".join(
+                f"{name} ({why})" for name, why in plan.unchecked_repos.items()
+            )
+            console.print(
+                "  Would keep repos it could not check for changes: "
+                f"[dim]{escape(listed)}[/]"
+            )
         if plan.projects:
             console.print(
                 "  Would unlink from projects: "
@@ -1037,6 +1095,23 @@ def rm_cmd(
         console.print(
             f"  Kept [bold]{n}[/] repo{'s' if n != 1 else ''} with no copy to "
             f"clone again [dim]({escape(', '.join(result.kept_repos))}; "
+            "`lit code rm` deletes one)[/]"
+        )
+    if result.edited_repos:
+        n = len(result.edited_repos)
+        console.print(
+            f"  Kept [bold]{n}[/] repo{'s' if n != 1 else ''} with your own "
+            f"changes [dim]({escape(', '.join(result.edited_repos))}; "
+            "`lit code rm` deletes one)[/]"
+        )
+    if result.unchecked_repos:
+        n = len(result.unchecked_repos)
+        listed = ", ".join(
+            f"{name}: {why}" for name, why in result.unchecked_repos.items()
+        )
+        console.print(
+            f"  Kept [bold]{n}[/] repo{'s' if n != 1 else ''} it could not "
+            f"check for changes [dim]({escape(listed)}; "
             "`lit code rm` deletes one)[/]"
         )
     if result.projects:

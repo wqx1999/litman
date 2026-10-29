@@ -37,7 +37,7 @@ from ruamel.yaml.error import YAMLError
 from litman.core.atomic import staged_write
 from litman.core.dates import now_iso
 from litman.core.document import list_papers, load_yaml_or_raise
-from litman.core.locking import rmtree
+from litman.core.locking import is_file_manager_dropping, rmtree
 from litman.core.undecodable import printable
 from litman.core.views import render_index
 from litman.core.yaml_pool import ThreadLocalYAML
@@ -1207,6 +1207,117 @@ def can_fetch_again(upstream: str) -> bool:
     if upstream.startswith("local:"):
         return Path(upstream.removeprefix("local:")).is_dir()
     return True
+
+
+# What `lit rm` reads before it deletes a repo it could clone again.
+RepoState = Literal["clean", "changed", "unchecked"]
+
+# A git call that takes longer than this counts as "could not check": the
+# repo is kept, and a large checkout cannot hold up the delete.
+_CHANGES_TIMEOUT_S = 15.0
+# Who commits the folder _init_git_repo_at imports without git.
+_IMPORT_IDENTITY = "litman@localhost"
+# Variables that would point `git -C <dir>` at another repository.
+_GIT_LOCATION_VARS = frozenset(
+    {
+        "GIT_DIR",
+        "GIT_WORK_TREE",
+        "GIT_INDEX_FILE",
+        "GIT_OBJECT_DIRECTORY",
+        "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+        "GIT_COMMON_DIR",
+        "GIT_NAMESPACE",
+    }
+)
+
+
+def _git_read(repo_dir: Path, *args: str) -> subprocess.CompletedProcess[str]:
+    """Run a read-only git command in ``repo_dir``, bounded in time.
+
+    ``GIT_OPTIONAL_LOCKS=0`` keeps ``git status`` from refreshing (and
+    locking) the index: the check writes nothing.
+    """
+    env = {k: v for k, v in os.environ.items() if k.upper() not in _GIT_LOCATION_VARS}
+    env["GIT_OPTIONAL_LOCKS"] = "0"
+    return subprocess.run(
+        ["git", "-C", str(repo_dir), *args],
+        check=False,
+        capture_output=True,
+        text=True,
+        errors="surrogateescape",
+        env=env,
+        timeout=_CHANGES_TIMEOUT_S,
+    )
+
+
+def _has_own_files(status: str) -> bool:
+    """Whether ``git status --porcelain -z`` lists a change of the user's.
+
+    Anything but an untracked file a file manager left (``.DS_Store``, ...).
+    """
+    for entry in status.split("\0"):
+        if not entry:
+            continue
+        code, path = entry[:2], entry[3:]
+        if code != "??" or not is_file_manager_dropping(path.rsplit("/", 1)[-1]):
+            return True
+    return False
+
+
+def repo_changes(repo_root: Path) -> tuple[RepoState, str]:
+    """Whether ``codes/<repo>/`` holds anything a fresh clone would not bring back.
+
+    ``("changed", "")`` when it does: a file next to ``repo/`` other than
+    ``repo-meta.yaml`` and ``notes.md`` (and what a file manager leaves), a
+    stash, a commit on no remote, or a changed, staged or untracked file in
+    the checkout (ignored files and a file manager's do not count).
+    ``("clean", "")`` when it does not, or when there is no ``repo/`` at all
+    (a sync that leaves checkouts out). ``("unchecked", why)`` when it cannot
+    tell: ``repo/`` is not a git checkout, or git is missing, fails or takes
+    too long — ``why`` says which.
+    """
+    try:
+        names = [child.name for child in repo_root.iterdir()]
+    except OSError:
+        return "unchecked", "cannot read the folder"
+    own = {REPO_DIRNAME, REPO_META_FILENAME, NOTES_FILENAME}
+    if any(n not in own and not is_file_manager_dropping(n) for n in names):
+        return "changed", ""
+    repo_dir = repo_root / REPO_DIRNAME
+    if not os.path.lexists(repo_dir):
+        return "clean", ""
+    # Before any git call: without its own .git, git would walk up and
+    # answer for an enclosing repository (a vault kept in git).
+    if not os.path.lexists(repo_dir / ".git"):
+        return "unchecked", "not a git checkout"
+    try:
+        stash = _git_read(repo_dir, "rev-parse", "--verify", "--quiet", "refs/stash")
+        if stash.returncode == 0:
+            return "changed", ""
+        # Commits on no remote, by committer: --branches as well as HEAD (a
+        # commit on another local branch). The one litman makes importing a
+        # folder without git is not the user's — a re-import makes it again —
+        # unless they amended it, which makes them its committer.
+        log = _git_read(
+            repo_dir, "log", "--format=%ce", "HEAD", "--branches", "--not", "--remotes"
+        )
+        if log.returncode != 0:
+            return "unchecked", "git failed"
+        if any(line.lower() != _IMPORT_IDENTITY for line in log.stdout.splitlines()):
+            return "changed", ""
+        # Every untracked file, explicitly: a repo set to hide them still
+        # shows them, and each is named, so what a file manager leaves (in
+        # any folder it was shown) can be told apart.
+        status = _git_read(repo_dir, "status", "--porcelain", "-z", "--untracked-files=all")
+        if status.returncode != 0:
+            return "unchecked", "git failed"
+        return ("changed", "") if _has_own_files(status.stdout) else ("clean", "")
+    except FileNotFoundError:
+        return "unchecked", "git not found"
+    except subprocess.TimeoutExpired:
+        return "unchecked", "git took too long"
+    except OSError:
+        return "unchecked", "git failed"
 
 
 def restore_missing_repos(

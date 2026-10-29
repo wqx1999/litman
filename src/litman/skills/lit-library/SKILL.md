@@ -138,7 +138,7 @@ Give a `[CLI only]` row a one-line cue from the PDF when you can — **never dro
 
 **[C.2] A repo already in the vault** → `lit code link <repo-name> --paper <id>`: binds, no clone. On the user's request only.
 
-**[C.3] Unbind or retire — read the reverse list first** (`lit code list --format json`: each repo's `papers`). Other papers still use it → `lit code unlink <repo> --paper <id>`, which keeps the directory; 🔴 never `lit code rm --cascade` while other papers still cite the repo. The last one → `lit code rm <repo> --cascade --yes` deletes the directory: Rule 4. A repo `lit rm` kept with `no copy to clone again` is the only copy of that code — say so before its `lit code rm`. `lit unlink` without `code` is paper ↔ project ([H]).
+**[C.3] Unbind or retire — read the reverse list first** (`lit code list --format json`: each repo's `papers`). Other papers still use it → `lit code unlink <repo> --paper <id>`, which keeps the directory; 🔴 never `lit code rm --cascade` while other papers still cite the repo. The last one → `lit code rm <repo> --cascade --yes` deletes the directory: Rule 4. A repo `lit rm` kept with `no copy to clone again` is the only copy of that code, one kept `with your own changes` holds edits a clone would not bring back, and one it `could not check for changes` may hold some — say which before its `lit code rm`. `lit unlink` without `code` is paper ↔ project ([H]).
 
 ## [H] Projects
 

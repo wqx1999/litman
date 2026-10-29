@@ -559,7 +559,11 @@ repo bindings, project links) are torn down atomically; the paper's own fields
 ride into trash so a later restore can rebuild them. A repo no other paper
 uses is deleted with the paper, its `repo-meta.yaml` and `notes.md` kept in the
 trash for a restore; one with nothing to clone it again from (a folder added
-with `lit code add --move`, or no upstream) is kept and only unbound. A `y/N`
+with `lit code add --move`, or no upstream) is kept and only unbound. So is one
+holding your own changes, which a clone would not bring back: changed or new
+files in `repo/` (ignored ones do not count), commits not pushed, a stash, or
+files you put next to `repo/`; and one it cannot check for them (no git, say).
+`lit code rm` deletes a kept repo. A `y/N`
 prompt guards the delete (default N). With `--si`, it deletes one or more of the paper's SI files
 instead — see below.
 

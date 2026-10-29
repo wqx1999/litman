@@ -130,6 +130,13 @@ own entry. Read those before you upgrade, whatever the number says.
   restore put back blank ones. They now wait in the trash with the paper and
   come back when you restore it. A paper deleted before this version cannot
   get them back.
+- **`lit rm` no longer deletes a repo you changed.** When the paper you
+  deleted was the only one using a repo, `lit rm` deleted the whole repo, on
+  the grounds that it could be cloned again. A clone does not bring back what
+  you changed in it: edited or new files, commits you had not pushed, a stash,
+  files you put next to `repo/`. That repo is now kept, unbound, and
+  `lit rm` says so; so is one it cannot check (no git, say). The web UI's
+  delete dialog lists it too. `lit code rm` deletes it if you want.
 
 ### Security
 

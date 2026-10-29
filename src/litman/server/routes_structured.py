@@ -364,14 +364,20 @@ async def post_unread(request: Request, paper_id: str) -> dict[str, object]:
     return {"ok": True, "changed": changed, "message": message}
 
 
+def _unchecked(repos: dict[str, str]) -> list[dict[str, str]]:
+    """``[{"name", "reason"}]`` for the repos a delete could not check."""
+    return [{"name": name, "reason": why} for name, why in repos.items()]
+
+
 def _rm_impact_summary(plan: RmPlan) -> dict[str, object]:
     """Project an :class:`RmPlan` into the JSON the confirm dialog renders.
 
     Lists every external link the delete would break so the GUI can warn before
     removing: which papers' references get cleared, which repos are unbound
     (1:N) vs deleted as now-orphaned clones (1:1) vs kept because nothing could
-    clone them again, which projects are unlinked, and which referencing notes
-    get tagged ``(deleted)``.
+    clone them again, because they hold the user's own changes, or because they
+    could not be checked for any, which projects are unlinked, and which
+    referencing notes get tagged ``(deleted)``.
     """
     return {
         "id": plan.paper_id,
@@ -380,6 +386,8 @@ def _rm_impact_summary(plan: RmPlan) -> dict[str, object]:
         "reposUnbound": plan.repos_unbound,
         "reposRemoved": sorted(plan.orphan_repos),
         "reposKept": plan.kept_repos,
+        "reposEdited": plan.edited_repos,
+        "reposUnchecked": _unchecked(plan.unchecked_repos),
         "projects": sorted(plan.projects),
         "notes": sorted(plan.note_updates),
     }
@@ -440,6 +448,8 @@ async def delete_paper(request: Request, paper_id: str) -> dict[str, object]:
         "reposUnbound": result.repos_unbound,
         "reposRemoved": result.orphan_repos,
         "reposKept": result.kept_repos,
+        "reposEdited": result.edited_repos,
+        "reposUnchecked": _unchecked(result.unchecked_repos),
         "projects": result.projects,
         "notes": result.note_files,
         "warnings": result.warnings,

@@ -27,6 +27,7 @@ from litman.core.locking import lock_truth_file
 from litman.core.portable_link import is_portable_link
 from litman.core.trash import TRASH_DIRNAME, TRASH_MAX_ENTRIES, list_trash
 from litman.exceptions import PaperNotFoundError
+from tests._git_clone import clean_clone
 
 _yaml = YAML(typ="safe")
 
@@ -84,8 +85,9 @@ def _make_fake_repo(
     """Materialize codes/<repo>/repo/ + repo-meta.yaml for cascade tests."""
     repo_root = vault / "codes" / repo_name
     repo_root.mkdir(parents=True, exist_ok=True)
-    (repo_root / "repo").mkdir(exist_ok=True)
-    (repo_root / "repo" / "README.md").write_text("# fake\n", encoding="utf-8")
+    if not (repo_root / "repo").exists():
+        # A real clone: rm deletes only a checkout git reads as clean.
+        clean_clone(vault, repo_root / "repo")
     yaml = YAML()
     yaml.indent(mapping=2, sequence=4, offset=2)
     yaml.default_flow_style = False
