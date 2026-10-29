@@ -452,6 +452,72 @@ def test_a_web_ui_restore_binds_a_checkout_that_is_back_in_place(
     assert (root / "repo" / "README.md").read_text(encoding="utf-8") == "# mine\n"
 
 
+def _deleted_then_noted_again(vault: Path, tmp_path: Path, note: bytes) -> Path:
+    """rm deleted the clean repo, its notes.md saved with the paper; then a
+    notes.md came back in its folder (written by hand, or a sync)."""
+    root = _paper_with_repo(vault, tmp_path)
+    _lit(vault, "rm", TARGET, "-y")
+    root.mkdir(parents=True)
+    (root / "notes.md").write_bytes(note)
+    return root
+
+
+@pytest.mark.parametrize("taken", [False, True])
+def test_restore_keeps_a_note_written_since_the_delete(
+    vault: Path, tmp_path: Path, taken: bool
+) -> None:
+    root = _deleted_then_noted_again(vault, tmp_path, b"# written since\n")
+    beside = "notes.from-trash.md"
+    if taken:
+        (root / beside).write_bytes(b"something else\n")
+        beside = "notes.from-trash-2.md"
+
+    restored = _lit(vault, "trash", "restore", TARGET)
+
+    assert (root / "notes.md").read_bytes() == b"# written since\n"
+    assert (root / beside).read_text(encoding="utf-8") == "# Solo\n"
+    assert (
+        "Kept the notes.md already in codes/Solo/; the one saved with the "
+        f"paper is beside it as {beside}"
+    ) in restored
+    assert _papers_of(vault) == [TARGET]
+
+
+def test_restore_writes_no_second_copy_of_the_same_note(
+    vault: Path, tmp_path: Path
+) -> None:
+    saved = (_paper_with_repo(vault, tmp_path) / "notes.md").read_bytes()
+    root = vault / "codes" / "Solo"
+    _lit(vault, "rm", TARGET, "-y")
+    root.mkdir(parents=True)
+    (root / "notes.md").write_bytes(saved)
+
+    restored = _lit(vault, "trash", "restore", TARGET)
+
+    assert sorted(p.name for p in root.iterdir()) == ["notes.md", "repo-meta.yaml"]
+    assert "beside it" not in restored
+
+
+def test_a_web_ui_restore_keeps_a_note_written_since_the_delete(
+    vault: Path, tmp_path: Path
+) -> None:
+    pytest.importorskip("fastapi")
+    from litman.server import create_app
+    from tests.server._client import TestClient
+
+    root = _deleted_then_noted_again(vault, tmp_path, b"# written since\n")
+    (entry,) = list_trash(vault)
+
+    resp = TestClient(create_app(vault)).post(
+        f"/api/trash/{entry.entry_name}/restore"
+    )
+
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["notes_beside"] == {"Solo": "notes.from-trash.md"}
+    assert (root / "notes.md").read_bytes() == b"# written since\n"
+    assert (root / "notes.from-trash.md").read_text(encoding="utf-8") == "# Solo\n"
+
+
 def test_a_reclone_never_takes_a_checkout_that_is_there(
     vault: Path, tmp_path: Path
 ) -> None:

@@ -40,6 +40,7 @@ trashed entries — they are absent from INDEX.json and views/.
 from __future__ import annotations
 
 import io
+import itertools
 import os
 import re
 import shutil
@@ -185,6 +186,9 @@ class RestoreResult:
     repos_rebound: set[str] = field(default_factory=set)
     # projects whose symlink + REFERENCES were re-created.
     projects_rebuilt: set[str] = field(default_factory=set)
+    # deleted 1:1 repos whose codes/<name>/notes.md was already back and
+    # different: kept, the saved note put beside it under this file name.
+    notes_beside: dict[str, str] = field(default_factory=dict)
     # project-hub folders the re-link had to preserve under .trash/ — the only
     # copy of whatever was in them, so the caller reports the paths.
     hub_moved_aside: list[str] = field(default_factory=list)
@@ -555,7 +559,7 @@ def _build_restore_code_updates(
     now: str,
     orphan_repos: dict[str, str],
     orphan_repo_files: dict[str, dict[str, str | bytes]],
-) -> tuple[dict[str, str | bytes], set[str], dict[str, str]]:
+) -> tuple[dict[str, str | bytes], set[str], dict[str, str], dict[str, str]]:
     """Build staged repo-meta.yaml writes that re-bind A into surviving repos.
 
     For each repo in A's sealed ``code-clones``:
@@ -567,7 +571,8 @@ def _build_restore_code_updates(
           sidecar has its upstream, ``codes/<repo>/repo-meta.yaml`` comes back
           in the same transaction — as the sidecar saved it (with
           ``papers: [A]``), or rebuilt from name + upstream for an entry that
-          saved none — with the saved ``notes.md``, and no ``repo/``
+          saved none — with the saved ``notes.md`` (beside a different one already
+          there, not over it: :func:`_saved_notes_name`), and no ``repo/``
           checkout. The sidecar is its only other record and goes
           with this restore, so without it a restore that does not re-clone
           (the web UI's, or a "no") loses the address for good; with it the
@@ -580,11 +585,13 @@ def _build_restore_code_updates(
         * absent and NOT in ``orphan_repos`` → already-orphan ref; health-check
           backstops. Binding kept; nothing staged.
 
-    Returns ``(staged_repo_writes, repos_rebound, missing_repos)``.
+    Returns ``(staged_repo_writes, repos_rebound, missing_repos,
+    notes_beside)``.
     """
     staged: dict[str, str | bytes] = {}
     rebound: set[str] = set()
     missing: dict[str, str] = {}
+    notes_beside: dict[str, str] = {}
     for repo_name in restored_meta.get("code-clones") or []:
         repo_name = str(repo_name)
         repo_meta_path = (
@@ -613,11 +620,16 @@ def _build_restore_code_updates(
                     notes = saved.get(NOTES_FILENAME)
                     if notes is not None:
                         # As bytes, so the note comes back byte for byte.
-                        staged[f"{repo_rel}/{NOTES_FILENAME}"] = (
+                        data = (
                             notes.encode("utf-8")
                             if isinstance(notes, str)
                             else notes
                         )
+                        name = _saved_notes_name(vault / repo_rel, data)
+                        if name is not None:
+                            staged[f"{repo_rel}/{name}"] = data
+                            if name != NOTES_FILENAME:
+                                notes_beside[repo_name] = name
             continue
         try:
             rt = _yaml_rt.load(repo_meta_path.read_text(encoding="utf-8"))
@@ -638,7 +650,31 @@ def _build_restore_code_updates(
                 _dump_rt_to_string(rt)
             )
         rebound.add(repo_name)
-    return staged, rebound, missing
+    return staged, rebound, missing, notes_beside
+
+
+def _saved_notes_name(repo_root: Path, data: bytes) -> str | None:
+    """The file a restore writes a deleted repo's saved ``notes.md`` to.
+
+    ``notes.md`` when there is none, nothing when the one there is that same
+    note. A different one there was written after the delete (by hand, or a
+    sync that brought it back) and is the user's: the saved note goes beside
+    it as ``notes.from-trash.md`` (``-2``, ``-3``, ... past a taken name).
+    """
+    for n in itertools.count():
+        if n == 0:
+            name = NOTES_FILENAME
+        else:
+            name = "notes.from-trash.md" if n == 1 else f"notes.from-trash-{n}.md"
+        path = repo_root / name
+        if not os.path.lexists(path):
+            return name
+        try:
+            if path.read_bytes() == data:
+                return None
+        except OSError:
+            pass  # unreadable: still not ours to write over
+    raise AssertionError("unreachable")
 
 
 def _restored_repo_meta(
@@ -815,13 +851,15 @@ def restore_from_trash(
     ref_writes, reverse_rebuilt, dead_edges = _build_restore_ref_updates(
         vault, sealed_meta, paper_id, now
     )
-    code_writes, repos_rebound, missing_repos = _build_restore_code_updates(
-        vault,
-        sealed_meta,
-        paper_id,
-        now,
-        entry.orphan_repos,
-        entry.orphan_repo_files,
+    code_writes, repos_rebound, missing_repos, notes_beside = (
+        _build_restore_code_updates(
+            vault,
+            sealed_meta,
+            paper_id,
+            now,
+            entry.orphan_repos,
+            entry.orphan_repo_files,
+        )
     )
 
     # Bump A's own updated-at when restore pruned dead edges (best-effort
@@ -930,6 +968,7 @@ def restore_from_trash(
         reverse_edges_rebuilt=reverse_rebuilt,
         dead_edges_dropped=dead_edges,
         repos_rebound=repos_rebound,
+        notes_beside=notes_beside,
         projects_rebuilt=projects_rebuilt,
         hub_moved_aside=hub_moved_aside,
         link_errors=link_errors,

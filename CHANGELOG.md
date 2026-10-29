@@ -143,6 +143,11 @@ own entry. Read those before you upgrade, whatever the number says.
   tried to clone it again, failed because the folder was in the way, and
   deleted that folder with everything you had changed in it. The restore now
   binds the paper to the folder that is there.
+- **`lit trash restore` no longer writes over a repo's newer notes.** When a
+  `notes.md` was back in the folder of a repo deleted with the paper (written
+  by hand, or brought back by a sync), the restore replaced it with the copy
+  saved at the delete. It now keeps that one, puts the saved copy beside it as
+  `notes.from-trash.md`, and says so.
 
 ### Security
 

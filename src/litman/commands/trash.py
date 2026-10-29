@@ -350,6 +350,13 @@ def trash_restore_cmd(
             f"  Re-bound to [bold]{n}[/] repo{'s' if n != 1 else ''} "
             f"[dim]({escape(', '.join(sorted(result.repos_rebound)))})[/]"
         )
+    # A note written since the delete is not overwritten (core/trash.py).
+    for repo_name, name in sorted(result.notes_beside.items()):
+        console.print(
+            f"  Kept the notes.md already in codes/{escape(repo_name)}/; the "
+            f"one saved with the paper is beside it as {escape(name)}",
+            soft_wrap=True,
+        )
     if result.projects_rebuilt:
         n = len(result.projects_rebuilt)
         console.print(

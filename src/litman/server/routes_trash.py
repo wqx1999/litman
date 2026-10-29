@@ -225,6 +225,7 @@ def post_trash_restore(request: Request, entry_name: str) -> dict[str, object]:
         "title": result.title,
         "reverse_edges_rebuilt": sorted(result.reverse_edges_rebuilt),
         "repos_rebound": sorted(result.repos_rebound),
+        "notes_beside": dict(result.notes_beside),
         "projects_rebuilt": sorted(result.projects_rebuilt),
         "missing_repos": dict(result.missing_repos),
         "dead_edges_dropped": sorted(result.dead_edges_dropped),
