@@ -92,6 +92,12 @@ own entry. Read those before you upgrade, whatever the number says.
   folder also leaves the links and `REFERENCES.md` that are already right as
   they are, so a read-only folder in order raises nothing;
   `REFERENCES.md`'s "Last updated" is now when its list last changed.
+- **Deleting a project in the web UI names the folder it could not clean up.**
+  When a project's `litman_reflib/` or `litman_code/` could not be read or
+  changed, the web UI said only "Removed project" and left the old links in
+  it, and nothing looks at that folder again. It now names the folder and the
+  reason, and the notice stays until you click it, as `lit project rm` already
+  said.
 - **`lit rm` no longer deletes the only copy of a repo.** A folder added with
   `lit code add --move` exists only in the library. When the paper you deleted
   was the only one using it, `lit rm` deleted the repo too, and restoring the

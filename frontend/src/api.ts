@@ -1050,11 +1050,16 @@ export function createProject(
 /** Unregister a project through the `lit project rm` backend (atomic TAXONOMY +
  * config rewrite, then cascade: unlink every paper, drop relevance keys, tear
  * down reflib symlinks + REFERENCES.md). The on-disk project directory is left
- * intact. `changed` counts the papers unlinked. Throws the backend's
- * TaxonomyError (400) verbatim on rejection. */
+ * intact. `changed` counts the papers unlinked; `foldersLeft` lists the project
+ * folders the teardown could not clean, with the OS's reason. Throws the
+ * backend's TaxonomyError (400) verbatim on rejection. */
 export function deleteProject(
   name: string,
-): Promise<{ ok: boolean; changed: number }> {
+): Promise<{
+  ok: boolean
+  changed: number
+  foldersLeft: { path: string; reason: string }[]
+}> {
   return mutateJSON(`/api/projects/${encodeURIComponent(name)}`, 'DELETE')
 }
 

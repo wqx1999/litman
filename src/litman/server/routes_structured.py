@@ -33,6 +33,7 @@ from litman.core.config import load_config
 from litman.core.dates import today_iso, validate_iso_date
 from litman.core.id import is_valid_id
 from litman.core.library import DEFAULT_VAULT_NAME
+from litman.core.portable_link import _os_error_reason
 from litman.core.project_link import (
     LinkError,
     add_project,
@@ -707,14 +708,25 @@ async def delete_project(request: Request, name: str) -> dict[str, object]:
     the project directory itself (invariant #16: no second write path). Confirm-
     free — the GUI's confirm dialog is the confirmation.
 
-    An unregistered project surfaces as TaxonomyError → 400.
+    An unregistered project surfaces as TaxonomyError → 400. ``foldersLeft``
+    names each project folder the teardown could not clean, with the OS's
+    reason: the project is out of the config, so nothing looks there again
+    and the GUI has to say so now (the CLI prints the same).
     """
     vault = request.app.state.vault
+    hubs_left: dict[Path, OSError] = {}
     try:
-        n_changed, _ = remove_project(vault, name)
+        n_changed, _ = remove_project(vault, name, hubs_left=hubs_left)
     except TaxonomyError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
-    return {"ok": True, "changed": n_changed}
+    return {
+        "ok": True,
+        "changed": n_changed,
+        "foldersLeft": [
+            {"path": str(hub), "reason": _os_error_reason(err)}
+            for hub, err in hubs_left.items()
+        ],
+    }
 
 
 @router.put("/projects/{name}")

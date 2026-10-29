@@ -47,7 +47,11 @@ export default function ProjectManager({
   allPapers: IndexPaper[]
   onChanged: () => void
   onClose: () => void
-  notify: (msg: string, variant?: ToastVariant) => void
+  notify: (
+    msg: string,
+    variant?: ToastVariant,
+    opts?: { sticky?: boolean },
+  ) => void
 }) {
   // The project awaiting delete confirmation, being renamed, or having its path
   // re-pointed; the new-project dialog toggle; and whether a write is in flight
@@ -75,8 +79,21 @@ export default function ProjectManager({
   async function doDelete(name: string) {
     setBusy(true)
     try {
-      await deleteProject(name)
-      notify(`Removed project “${name}”.`, 'success')
+      const res = await deleteProject(name)
+      const left = res.foldersLeft
+      if (left.length) {
+        // The project is out of the config, so nothing looks at these folders
+        // again: this is the one chance to say so — keep it up until read.
+        const where = left.map((f) => `${f.path} (${f.reason})`).join(' · ')
+        notify(
+          `Removed project “${name}” · could not clean up ${where} — delete ` +
+            `${left.length === 1 ? 'its' : 'their'} links by hand`,
+          'warning',
+          { sticky: true },
+        )
+      } else {
+        notify(`Removed project “${name}”.`, 'success')
+      }
       onChanged()
     } catch (err) {
       notify(err instanceof Error ? err.message : String(err), 'error')

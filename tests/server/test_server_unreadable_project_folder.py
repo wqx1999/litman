@@ -21,6 +21,7 @@ from tests._project_folder import (
     deny,
     deny_writes,
     make_library,
+    registered_projects,
 )
 from tests.server._client import TestClient
 
@@ -80,6 +81,29 @@ def test_a_write_finishes_with_a_project_folder_it_cannot_read(
 
     assert resp.status_code == 200, resp.text
     assert health.status_code == 200, health.text
+
+
+@pytest.mark.parametrize("hub", HUBS)
+@pytest.mark.parametrize("fault", ["cannot read", "cannot change"])
+def test_deleting_a_project_names_the_folder_it_could_not_clean_up(
+    lib: Library, monkeypatch: pytest.MonkeyPatch, fault: str, hub: str
+) -> None:
+    """The one write the health panel cannot stand in for: the project is out
+    of the config, so nothing looks at its folder again. The delete itself
+    names what it left there (the page turns it into the notice)."""
+    client = TestClient(create_app(lib.vault), raise_server_exceptions=False)
+    with monkeypatch.context() as patch:
+        (deny if fault == "cannot read" else deny_writes)(patch, lib.hub(hub))
+        resp = client.delete("/api/projects/pp")
+
+    assert resp.status_code == 200, resp.text
+    # Compared resolved: the registered path may be spelled another way
+    # (macOS /private/var, Windows short names).
+    left = resp.json()["foldersLeft"]
+    assert [Path(f["path"]).resolve() for f in left] == [lib.hub(hub).resolve()]
+    assert [f["reason"] for f in left] == [ACCESS_DENIED]
+    assert "pp" not in registered_projects(lib)
+    assert any(lib.hub(hub).iterdir())  # left there, as the notice says
 
 
 @pytest.mark.parametrize("hub", HUBS)

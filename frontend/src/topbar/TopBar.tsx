@@ -90,7 +90,11 @@ interface Props {
   /** A vault switch is in flight — disables the selector to block re-entry. */
   switching: boolean
   /** Toast a message (surfaces the backend's raw error verbatim). */
-  notify: (msg: string, variant?: ToastVariant) => void
+  notify: (
+    msg: string,
+    variant?: ToastVariant,
+    opts?: { sticky?: boolean },
+  ) => void
   /** Current theme + toggle, lifted to App (Phase 4) so the `L` shortcut and the
    * header button drive ONE theme state. The toggle still flips the `.dark`
    * class + persists the choice (see App's useDarkMode). */

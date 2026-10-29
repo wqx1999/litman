@@ -1145,7 +1145,7 @@ def test_delete_project_cascades_and_keeps_dir(
 
     resp = client.delete("/api/projects/pepforge")
     assert resp.status_code == 200
-    assert resp.json() == {"ok": True, "changed": 1}
+    assert resp.json() == {"ok": True, "changed": 1, "foldersLeft": []}
 
     # TRUTH: paper untagged + dropped from both truth sources …
     assert _meta(vault, paper_id)["projects"] == []
