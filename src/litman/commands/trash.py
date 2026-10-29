@@ -15,6 +15,7 @@ Trash storage layout and atomicity rules live in :mod:`litman.core.trash`.
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 from typing import Any
 
@@ -162,9 +163,14 @@ def _reclone_missing_repo(
     links the repo into A's projects. A project ``litman_code/`` the bind
     could not update lands in ``link_errors``.
 
+    A failed attempt rolls back only what it made: never a ``repo/`` that was
+    already there (the restore re-binds one of those instead of handing it
+    here), nor what else ``codes/<repo>/`` held.
+
     Raises:
-        CodeError: empty upstream, clone failure, or bind failure. The caller
-            turns this into a kept-binding + warning (decision #3).
+        CodeError: empty upstream, ``repo/`` already there, clone failure, or
+            bind failure. The caller turns this into a kept-binding + warning
+            (decision #3).
     """
     if not upstream:
         raise CodeError(
@@ -172,7 +178,10 @@ def _reclone_missing_repo(
         )
     repo_root = vault / CODES_DIRNAME / repo_name
     repo_dir = repo_root / REPO_DIRNAME
+    if os.path.lexists(repo_dir):
+        raise CodeError(f"{repo_dir} is already there")
     had_meta = (repo_root / REPO_META_FILENAME).is_file()
+    made_root = not repo_root.exists()
     repo_root.mkdir(parents=True, exist_ok=True)
     try:
         fetch_repo(upstream, repo_dir)
@@ -199,7 +208,7 @@ def _reclone_missing_repo(
         # wrote read-only .git objects, which Windows refuses to unlink — a
         # bare rmtree would strand them and wedge every future re-clone on
         # "directory not empty".
-        rmtree(repo_dir if had_meta else repo_root, ignore_errors=True)
+        rmtree(repo_root if made_root else repo_dir, ignore_errors=True)
         if isinstance(e, CodeError):
             raise
         raise CodeError(f"re-clone of {repo_name!r} failed: {e}") from e

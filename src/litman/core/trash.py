@@ -40,6 +40,7 @@ trashed entries — they are absent from INDEX.json and views/.
 from __future__ import annotations
 
 import io
+import os
 import re
 import shutil
 from dataclasses import dataclass, field
@@ -572,6 +573,10 @@ def _build_restore_code_updates(
           (the web UI's, or a "no") loses the address for good; with it the
           repo is in the state a sync without checkouts leaves, which
           ``lit health-check`` reports and ``lit code restore-all`` re-clones.
+          When ``codes/<repo>/repo/`` is already there (a sync that kept the
+          checkout, a clone by hand), the repo is re-bound to it instead and
+          not handed on: a re-clone would find it in the way, and its rollback
+          used to delete it, with whatever the user had changed in it.
         * absent and NOT in ``orphan_repos`` → already-orphan ref; health-check
           backstops. Binding kept; nothing staged.
 
@@ -588,7 +593,11 @@ def _build_restore_code_updates(
         if not repo_meta_path.is_file():
             if repo_name in orphan_repos:
                 upstream = orphan_repos[repo_name]
-                missing[repo_name] = upstream
+                checkout = vault / CODES_DIRNAME / repo_name / REPO_DIRNAME
+                if upstream and os.path.lexists(checkout):
+                    rebound.add(repo_name)
+                else:
+                    missing[repo_name] = upstream
                 if upstream:
                     saved = orphan_repo_files.get(repo_name, {})
                     repo_rel = f"{CODES_DIRNAME}/{repo_name}"

@@ -137,6 +137,12 @@ own entry. Read those before you upgrade, whatever the number says.
   files you put next to `repo/`. That repo is now kept, unbound, and
   `lit rm` says so; so is one it cannot check (no git, say). The web UI's
   delete dialog lists it too. `lit code rm` deletes it if you want.
+- **`lit trash restore -y` no longer deletes a repo that is already back.**
+  When a paper's repo had been deleted with it and its `repo/` folder was in
+  place again (a sync from another computer, or a clone by hand), the restore
+  tried to clone it again, failed because the folder was in the way, and
+  deleted that folder with everything you had changed in it. The restore now
+  binds the paper to the folder that is there.
 
 ### Security
 

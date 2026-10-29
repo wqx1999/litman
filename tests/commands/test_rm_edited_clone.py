@@ -4,24 +4,28 @@ A repo only the deleted paper used goes with it when it can be cloned again —
 but a clone does not bring back what you changed in the checkout. Each case
 makes one such change to a real shallow clone and checks that the repo is
 kept, untouched and named, and that a restore binds it again; the controls
-check that a clone git reads as clean still goes.
+check that a clone git reads as clean still goes. Then the restore that used
+to delete a checkout it found back in place.
 """
 
 from __future__ import annotations
 
 from collections.abc import Callable
 from pathlib import Path
+from typing import Any
 
 import pytest
 from click.testing import CliRunner
 from ruamel.yaml import YAML
 
 from litman.cli import cli
+from litman.commands.trash import _reclone_missing_repo
 from litman.core import code as code_mod
 from litman.core.code import import_local_repo, repo_changes
 from litman.core.library import create_vault
 from litman.core.locking import rmtree
 from litman.core.trash import list_trash
+from litman.exceptions import CodeError
 from tests._git_clone import clone, git, make_upstream
 from tests._project_folder import deny
 
@@ -400,3 +404,79 @@ def test_restore_binds_a_kept_repo_again(vault: Path, tmp_path: Path) -> None:
     assert "clone" not in restored.lower()
     assert _papers_of(vault) == [TARGET]
     assert (root / "repo" / "README.md").read_text(encoding="utf-8") == "# mine\n"
+
+
+def _deleted_then_back_in_place(vault: Path, tmp_path: Path) -> Path:
+    """rm deleted the clean repo; then its checkout came back without its
+    repo-meta.yaml — a sync from a computer where the paper was deleted keeps
+    the checkout it leaves out, or a clone by hand — and was changed."""
+    root = _paper_with_repo(vault, tmp_path)
+    _lit(vault, "rm", TARGET, "-y")
+    assert not root.exists()
+    clone(tmp_path / "upstream", root / "repo")
+    _edit(root)
+    return root
+
+
+def test_restore_binds_a_checkout_that_is_back_in_place(
+    vault: Path, tmp_path: Path
+) -> None:
+    root = _deleted_then_back_in_place(vault, tmp_path)
+
+    restored = _lit(vault, "trash", "restore", TARGET, "-y")
+
+    assert "Re-bound to 1 repo (Solo)" in restored
+    assert "clone" not in restored.lower()
+    assert (root / "repo" / "README.md").read_text(encoding="utf-8") == "# mine\n"
+    assert _papers_of(vault) == [TARGET]
+
+
+def test_a_web_ui_restore_binds_a_checkout_that_is_back_in_place(
+    vault: Path, tmp_path: Path
+) -> None:
+    pytest.importorskip("fastapi")
+    from litman.server import create_app
+    from tests.server._client import TestClient
+
+    root = _deleted_then_back_in_place(vault, tmp_path)
+    (entry,) = list_trash(vault)
+
+    resp = TestClient(create_app(vault)).post(
+        f"/api/trash/{entry.entry_name}/restore"
+    )
+
+    assert resp.status_code == 200, resp.text
+    body: dict[str, Any] = resp.json()
+    assert (body["repos_rebound"], body["missing_repos"]) == (["Solo"], {})
+    assert _papers_of(vault) == [TARGET]
+    assert (root / "repo" / "README.md").read_text(encoding="utf-8") == "# mine\n"
+
+
+def test_a_reclone_never_takes_a_checkout_that_is_there(
+    vault: Path, tmp_path: Path
+) -> None:
+    root = _paper_with_repo(vault, tmp_path)
+    _edit(root)
+
+    with pytest.raises(CodeError, match="already there"):
+        _reclone_missing_repo(
+            vault, TARGET, "Solo", (tmp_path / "upstream").as_uri(), link_errors=[]
+        )
+
+    assert (root / "repo" / "README.md").read_text(encoding="utf-8") == "# mine\n"
+
+
+def test_a_failed_reclone_leaves_what_the_repo_folder_held(
+    vault: Path, tmp_path: Path
+) -> None:
+    root = vault / "codes" / "Solo"
+    root.mkdir(parents=True)
+    (root / "mine.txt").write_text("mine\n", encoding="utf-8")
+
+    with pytest.raises(CodeError):
+        _reclone_missing_repo(
+            vault, TARGET, "Solo", (tmp_path / "nowhere").as_uri(), link_errors=[]
+        )
+
+    assert (root / "mine.txt").read_text(encoding="utf-8") == "mine\n"
+    assert not (root / "repo").exists()
