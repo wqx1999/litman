@@ -11,7 +11,12 @@ from pathlib import Path
 from typing import Any
 
 from litman.core.checks._base import Issue
-from litman.core.portable_link import is_portable_link, links_supported, links_unsupported_hint
+from litman.core.portable_link import (
+    _os_error_reason,
+    is_portable_link,
+    links_supported,
+    links_unsupported_hint,
+)
 from litman.core.schema import PROJECT_PRIORITY_PREFIX
 from litman.core.taxonomy import parse_taxonomy, read_taxonomy_text
 from litman.exceptions import ConfigError, UnreadableTaxonomyError
@@ -272,13 +277,6 @@ def check_project_references(
     """
     from litman.commands._drift import _exists_bounded
     from litman.core.config import load_config
-    from litman.core.project_link import CODE_SUBDIR
-    from litman.core.project_refs import (
-        LITERATURE_SUBDIR,
-        REFERENCES_FILENAME,
-        _papers_for_project,
-        render_references_md,
-    )
 
     try:
         config = load_config(vault)
@@ -304,183 +302,207 @@ def check_project_references(
         if not project_dir.is_dir():
             continue
 
-        reflib = project_dir / LITERATURE_SUBDIR
-        member_papers = _papers_for_project(papers, name)
-        member_ids = {
-            str(p.get("id")) for p in member_papers if p.get("id")
-        }
-
-        # 1) REFERENCES.md content vs freshly rendered (banner timestamp is the
-        #    only volatile line; compare with the timestamp pinned so a stale
-        #    body — not just a clock difference — is what we report).
-        refs_file = reflib / REFERENCES_FILENAME
-        existing = None
-        if refs_file.is_file():
-            try:
-                existing = refs_file.read_text(encoding="utf-8")
-            except OSError as exc:
-                out.append(
-                    Issue(
-                        category="project_references",
-                        severity="warning",
-                        paper_id=None,
-                        message=(
-                            f"could not read {refs_file} "
-                            f"({exc.__class__.__name__}) — skipped"
-                        ),
-                        hint="check file permissions; run `lit refresh-views`",
-                    )
-                )
-                continue
-        if existing is not None:
-            pinned_now = _references_banner_timestamp(existing)
-            expected = render_references_md(
-                vault, name, now=pinned_now, papers=papers
-            )
-            if _strip_references_banner(existing) != _strip_references_banner(
-                expected
-            ):
-                out.append(
-                    Issue(
-                        category="project_references",
-                        severity="error",
-                        paper_id=None,
-                        message=(
-                            f"project {name!r} REFERENCES.md is out of date "
-                            "with the membership set (derived content drift)"
-                        ),
-                        hint="run `lit health-check --fix` to regenerate it",
-                    )
-                )
-        elif member_ids:
-            out.append(
-                Issue(
-                    category="project_references",
-                    severity="error",
-                    paper_id=None,
-                    message=(
-                        f"project {name!r} has {len(member_ids)} member paper(s) "
-                        "but no litman_reflib/REFERENCES.md"
-                    ),
-                    hint="run `lit health-check --fix` to generate it",
-                )
-            )
-
-        # 2) litman_reflib/<id> link set vs membership.
-        link_ids: set[str] = set()
-        foreign_dirs: set[str] = set()
-        if reflib.is_dir():
-            for entry in reflib.iterdir():
-                # is_portable_link first: a junction answers is_dir() True, so
-                # the other order files every Windows link as a folder copy.
-                if is_portable_link(entry):
-                    link_ids.add(entry.name)
-                elif entry.is_dir():
-                    foreign_dirs.add(entry.name)
-        for extra in sorted(link_ids - member_ids):
-            out.append(
-                Issue(
-                    category="project_references",
-                    severity="error",
-                    paper_id=extra,
-                    message=(
-                        f"{project_dir / LITERATURE_SUBDIR / extra} link has "
-                        f"no matching membership in project {name!r}"
-                    ),
-                    hint="run `lit health-check --fix` to rebuild project links",
-                )
-            )
-        # Probed on the PROJECT dir, not the vault: a vault on an internal
-        # drive and a project folder on an exFAT stick give different answers,
-        # so one project can be reportable while another is not. When the
-        # filesystem cannot hold links the bridges were never made, `--fix`
-        # cannot make them, and reporting one error per member paper is noise
-        # no user can clear — `links_unsupported` states it once instead. The
-        # `extra` arms above stay live: removing a link works anywhere.
-        project_can_link = links_supported(project_dir)
-
-        if project_can_link:
-            for missing in sorted(member_ids - link_ids - foreign_dirs):
-                out.append(
-                    Issue(
-                        category="project_references",
-                        severity="error",
-                        paper_id=missing,
-                        message=(
-                            f"project {name!r} membership implies a litman_reflib "
-                            f"link for {missing!r} but it is missing"
-                        ),
-                        hint="run `lit health-check --fix` to rebuild project links",
-                    )
-                )
-            for occupied in sorted(foreign_dirs):
-                known = occupied in member_ids
-                out.append(
-                    _folder_copy_issue(
-                        reflib / occupied,
-                        occupied if known else None,
-                        known=known,
-                    )
-                )
-
-        # 3) litman_code/<repo> link set vs derived code-clone membership.
-        #    Parallel to the litman_reflib block: expected = every repo bound
-        #    (code-clones) by a member paper whose codes/<repo>/repo clone is
-        #    present locally (mirrors rebuild_all_project_links, which skips
-        #    absent clones — a missing clone is owned by
-        #    check_code_clone_integrity / `lit code restore-all`).
-        expected_repos: set[str] = set()
-        for p in member_papers:
-            for repo_name in p.get("code-clones") or []:
-                if (vault / "codes" / str(repo_name) / "repo").exists():
-                    expected_repos.add(str(repo_name))
-        code_dir = project_dir / CODE_SUBDIR
-        code_link_names: set[str] = set()
-        code_foreign_dirs: set[str] = set()
-        if code_dir.is_dir():
-            for entry in code_dir.iterdir():
-                if is_portable_link(entry):
-                    code_link_names.add(entry.name)
-                elif entry.is_dir():
-                    code_foreign_dirs.add(entry.name)
-        for extra in sorted(code_link_names - expected_repos):
-            out.append(
-                Issue(
-                    category="project_references",
-                    severity="error",
-                    paper_id=None,
-                    message=(
-                        f"{code_dir / extra} link has no matching code-clone "
-                        f"membership in project {name!r} (stale project link)"
-                    ),
-                    hint="run `lit health-check --fix` to rebuild project links",
-                )
-            )
-        if project_can_link:
-            for missing in sorted(
-                expected_repos - code_link_names - code_foreign_dirs
-            ):
-                out.append(
-                    Issue(
-                        category="project_references",
-                        severity="error",
-                        paper_id=None,
-                        message=(
-                            f"project {name!r} membership implies a litman_code "
-                            f"link for {missing!r} but it is missing"
-                        ),
-                        hint="run `lit health-check --fix` to rebuild project links",
-                    )
-                )
-            for occupied in sorted(code_foreign_dirs):
-                out.append(
-                    _folder_copy_issue(
-                        code_dir / occupied,
-                        None,
-                        known=occupied in expected_repos,
-                    )
-                )
+        try:
+            out.extend(_project_reference_issues(vault, name, project_dir, papers))
+        except OSError as err:
+            out.append(_unreadable_project_issue(name, project_dir, err))
     return out
+
+
+def _project_reference_issues(
+    vault: Path, name: str, project_dir: Path, papers: list[dict[str, Any]]
+) -> list[Issue]:
+    """:func:`check_project_references` for one project whose directory is
+    there. Raises ``OSError`` when a hub (or REFERENCES.md) cannot be read; the
+    caller turns that into one finding for the project."""
+    from litman.core.project_link import CODE_SUBDIR
+    from litman.core.project_refs import (
+        LITERATURE_SUBDIR,
+        REFERENCES_FILENAME,
+        _papers_for_project,
+        render_references_md,
+    )
+
+    out: list[Issue] = []
+    reflib = project_dir / LITERATURE_SUBDIR
+    member_papers = _papers_for_project(papers, name)
+    member_ids = {
+        str(p.get("id")) for p in member_papers if p.get("id")
+    }
+
+    # 1) REFERENCES.md content vs freshly rendered (banner timestamp is the
+    #    only volatile line; compare with the timestamp pinned so a stale
+    #    body — not just a clock difference — is what we report).
+    refs_file = reflib / REFERENCES_FILENAME
+    existing = None
+    if refs_file.is_file():
+        existing = refs_file.read_text(encoding="utf-8")
+    if existing is not None:
+        pinned_now = _references_banner_timestamp(existing)
+        expected = render_references_md(
+            vault, name, now=pinned_now, papers=papers
+        )
+        if _strip_references_banner(existing) != _strip_references_banner(
+            expected
+        ):
+            out.append(
+                Issue(
+                    category="project_references",
+                    severity="error",
+                    paper_id=None,
+                    message=(
+                        f"project {name!r} REFERENCES.md is out of date "
+                        "with the membership set (derived content drift)"
+                    ),
+                    hint="run `lit health-check --fix` to regenerate it",
+                )
+            )
+    elif member_ids:
+        out.append(
+            Issue(
+                category="project_references",
+                severity="error",
+                paper_id=None,
+                message=(
+                    f"project {name!r} has {len(member_ids)} member paper(s) "
+                    "but no litman_reflib/REFERENCES.md"
+                ),
+                hint="run `lit health-check --fix` to generate it",
+            )
+        )
+
+    # 2) litman_reflib/<id> link set vs membership.
+    link_ids: set[str] = set()
+    foreign_dirs: set[str] = set()
+    if reflib.is_dir():
+        for entry in reflib.iterdir():
+            # is_portable_link first: a junction answers is_dir() True, so
+            # the other order files every Windows link as a folder copy.
+            if is_portable_link(entry):
+                link_ids.add(entry.name)
+            elif entry.is_dir():
+                foreign_dirs.add(entry.name)
+    for extra in sorted(link_ids - member_ids):
+        out.append(
+            Issue(
+                category="project_references",
+                severity="error",
+                paper_id=extra,
+                message=(
+                    f"{project_dir / LITERATURE_SUBDIR / extra} link has "
+                    f"no matching membership in project {name!r}"
+                ),
+                hint="run `lit health-check --fix` to rebuild project links",
+            )
+        )
+    # Probed on the PROJECT dir, not the vault: a vault on an internal
+    # drive and a project folder on an exFAT stick give different answers,
+    # so one project can be reportable while another is not. When the
+    # filesystem cannot hold links the bridges were never made, `--fix`
+    # cannot make them, and reporting one error per member paper is noise
+    # no user can clear — `links_unsupported` states it once instead. The
+    # `extra` arms above stay live: removing a link works anywhere.
+    project_can_link = links_supported(project_dir)
+
+    if project_can_link:
+        for missing in sorted(member_ids - link_ids - foreign_dirs):
+            out.append(
+                Issue(
+                    category="project_references",
+                    severity="error",
+                    paper_id=missing,
+                    message=(
+                        f"project {name!r} membership implies a litman_reflib "
+                        f"link for {missing!r} but it is missing"
+                    ),
+                    hint="run `lit health-check --fix` to rebuild project links",
+                )
+            )
+        for occupied in sorted(foreign_dirs):
+            known = occupied in member_ids
+            out.append(
+                _folder_copy_issue(
+                    reflib / occupied,
+                    occupied if known else None,
+                    known=known,
+                )
+            )
+
+    # 3) litman_code/<repo> link set vs derived code-clone membership.
+    #    Parallel to the litman_reflib block: expected = every repo bound
+    #    (code-clones) by a member paper whose codes/<repo>/repo clone is
+    #    present locally (mirrors rebuild_all_project_links, which skips
+    #    absent clones — a missing clone is owned by
+    #    check_code_clone_integrity / `lit code restore-all`).
+    expected_repos: set[str] = set()
+    for p in member_papers:
+        for repo_name in p.get("code-clones") or []:
+            if (vault / "codes" / str(repo_name) / "repo").exists():
+                expected_repos.add(str(repo_name))
+    code_dir = project_dir / CODE_SUBDIR
+    code_link_names: set[str] = set()
+    code_foreign_dirs: set[str] = set()
+    if code_dir.is_dir():
+        for entry in code_dir.iterdir():
+            if is_portable_link(entry):
+                code_link_names.add(entry.name)
+            elif entry.is_dir():
+                code_foreign_dirs.add(entry.name)
+    for extra in sorted(code_link_names - expected_repos):
+        out.append(
+            Issue(
+                category="project_references",
+                severity="error",
+                paper_id=None,
+                message=(
+                    f"{code_dir / extra} link has no matching code-clone "
+                    f"membership in project {name!r} (stale project link)"
+                ),
+                hint="run `lit health-check --fix` to rebuild project links",
+            )
+        )
+    if project_can_link:
+        for missing in sorted(
+            expected_repos - code_link_names - code_foreign_dirs
+        ):
+            out.append(
+                Issue(
+                    category="project_references",
+                    severity="error",
+                    paper_id=None,
+                    message=(
+                        f"project {name!r} membership implies a litman_code "
+                        f"link for {missing!r} but it is missing"
+                    ),
+                    hint="run `lit health-check --fix` to rebuild project links",
+                )
+            )
+        for occupied in sorted(code_foreign_dirs):
+            out.append(
+                _folder_copy_issue(
+                    code_dir / occupied,
+                    None,
+                    known=occupied in expected_repos,
+                )
+            )
+    return out
+
+
+def _unreadable_project_issue(name: str, project_dir: Path, err: OSError) -> Issue:
+    """A project folder the check could not read through. One finding for the
+    project, in place of the comparisons it could not make (an unreadable
+    ``litman_reflib/`` would otherwise report every member as missing)."""
+    where = err.filename if err.filename else project_dir
+    return Issue(
+        category="project_references",
+        severity="warning",
+        paper_id=None,
+        message=(
+            f"could not read {where} ({_os_error_reason(err)}) — project "
+            f"{name!r} not checked"
+        ),
+        hint="fix that, then run `lit health-check --fix`",
+    )
 
 
 def check_link_support(
