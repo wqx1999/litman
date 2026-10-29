@@ -103,6 +103,10 @@ own entry. Read those before you upgrade, whatever the number says.
   update in one line, and `lit health-check` reports that view until the
   folder takes changes again. A rebuild leaves the links in `views/` that are
   already right as they are.
+- **"could not clear" also says to make the folder writable.** When a real
+  folder sat where a project link belongs and could not be removed, the hint
+  said only to close whatever was using it, also when the folder itself did
+  not allow changes.
 - **Deleting a project in the web UI names the folder it could not clean up.**
   When a project's `litman_reflib/` or `litman_code/` could not be read or
   changed, the web UI said only "Removed project" and left the old links in

@@ -511,10 +511,13 @@ def warn_hub_entry_unmovable(path: Path, err: OSError) -> None:
     """Warn that a real folder in a link position could not be cleared.
 
     Raised by ``project_link.settle_hub_entry`` when the filesystem refuses to
-    delete or move the folder — a child open in another program, a read-only
-    parent. The OS reason is kept here (unlike the real-folder message above,
-    where it only misdirected): "used by another process" is exactly what the
-    user has to act on.
+    delete or move the folder — a child open in another program, or the
+    folder's own permissions (a hub that takes no change at all is said
+    before this, by the caller). The OS reason is kept here (unlike the
+    real-folder message above, where it only misdirected): "used by another
+    process" or "Permission denied" is exactly what the user has to act on,
+    and the way out names both, since on Windows the two come back as the
+    same PermissionError.
 
     Lives in this module rather than with its caller so every folder-link
     warning goes through the one stderr console, and so a test that stubs
@@ -523,8 +526,8 @@ def warn_hub_entry_unmovable(path: Path, err: OSError) -> None:
     _console.print(
         f"[yellow]warning:[/] could not clear {escape(str(path))}: "
         f"{escape(_os_error_reason(err))}.\n"
-        "[dim]    The link was not created. Close anything using that folder, "
-        "then re-run `lit health-check --fix`.[/]"
+        "[dim]    The link was not created. Close anything using that folder "
+        "or make it writable, then re-run `lit health-check --fix`.[/]"
     )
 
 

@@ -408,6 +408,56 @@ def test_a_real_folder_in_a_read_only_hub_is_left_and_said_in_one_line(
     assert not (lib.vault / ".trash" / "replaced-folders").exists()
 
 
+# The way out when the folder itself will not give up what is in it.
+WAY_OUT = (
+    "The link was not created. Close anything using that folder or make it "
+    "writable, then re-run `lit health-check --fix`."
+)
+
+
+def _copy_in_place_of_link(lib: Library) -> Path:
+    spot = lib.reflib / "p2"
+    remove_link_if_present(spot)
+    shutil.copytree(lib.vault / "papers" / "p2", spot)
+    return spot
+
+
+def test_a_copy_that_will_not_give_up_its_files_names_both_ways_out(
+    lib: Library, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The hub takes changes, the copy in it does not: "close anything using
+    that folder" alone pointed at the wrong cause (on Windows a file in use
+    and a folder without write access come back as the same error)."""
+    spot = _copy_in_place_of_link(lib)
+    with monkeypatch.context() as patch:
+        deny_writes(patch, spot)
+        code, output, exc = run_lit(lib, ["link", "--rebuild-all"])
+
+    assert code == 0, f"{output} {exc!r}"
+    assert "could not clear" in output
+    assert f"{ACCESS_DENIED}. {WAY_OUT}" in output
+    assert spot.is_dir() and not is_portable_link(spot)
+
+
+@posix_only
+@not_root
+def test_a_copy_chmod_made_read_only_names_both_ways_out(lib: Library) -> None:
+    """The real thing, nothing injected. The reason varies with the Python
+    (3.12's rmtree reports only "Directory not empty"), which is why the way
+    out has to name the folder's permissions itself."""
+    spot = _copy_in_place_of_link(lib)
+    spot.chmod(0o555)
+    try:
+        code, output, exc = run_lit(lib, ["link", "--rebuild-all"])
+    finally:
+        spot.chmod(0o755)
+
+    assert code == 0, f"{output} {exc!r}"
+    assert "could not clear" in output
+    assert WAY_OUT in output
+    assert spot.is_dir() and not is_portable_link(spot)
+
+
 @posix_only
 @not_root
 def test_health_check_on_a_project_folder_chmod_made_read_only(
