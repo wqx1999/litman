@@ -2213,6 +2213,7 @@ def _assert_config_detail(detail: str, kind: str) -> None:
         ("DELETE", "/api/projects/pepforge", None),
         ("POST", "/api/paper/{id}/project", {"project": "pepforge"}),
         ("DELETE", "/api/paper/{id}/project/pepforge", None),
+        ("GET", "/api/paper/{id}/rm-preview", None),
     ],
     ids=[
         "project-list",
@@ -2222,6 +2223,7 @@ def _assert_config_detail(detail: str, kind: str) -> None:
         "project-rm",
         "link",
         "unlink",
+        "rm-preview",
     ],
 )
 @pytest.mark.parametrize("kind", ["unparsable", "invalid"])

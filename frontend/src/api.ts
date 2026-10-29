@@ -370,9 +370,10 @@ export interface RmPreview {
 }
 
 /** Preview the cascade of removing a paper, without deleting (GET, pure read).
- * Backs the tab trash-icon confirm dialog. */
+ * Backs the tab trash-icon confirm dialog. Detailed, so the dialog says why
+ * the preview failed — an unreadable lit-config.yaml — not just "500". */
 export function fetchRmPreview(id: string): Promise<RmPreview> {
-  return getJSON<RmPreview>(`/api/paper/${encodeURIComponent(id)}/rm-preview`)
+  return getJSONDetailed<RmPreview>(`/api/paper/${encodeURIComponent(id)}/rm-preview`)
 }
 
 /** Soft-delete a paper through the `lit rm` backend: move it to `.trash/`
