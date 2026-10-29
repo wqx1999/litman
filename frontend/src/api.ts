@@ -365,6 +365,10 @@ export interface RmPreview {
   reposRemoved: string[]
   /** Repos no other paper uses with no copy to clone again — unbound, kept. */
   reposKept: string[]
+  /** Repos no other paper uses that hold your own changes — unbound, kept. */
+  reposEdited: string[]
+  /** Repos no other paper uses it could not check for changes — unbound, kept. */
+  reposUnchecked: { name: string; reason: string }[]
   /** Projects this paper is unlinked from (reflib symlink + REFERENCES.md). */
   projects: string[]
   /** Referencing notes/discussion that get a `(deleted)` tag. */
