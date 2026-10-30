@@ -324,11 +324,13 @@ def entry_refusal(directory: Path) -> OSError | None:
         if err.errno is None:
             return err
         return OSError(err.errno, err.strerror, str(directory))
-    os.close(fd)
     try:
-        probe.unlink()
-    except OSError:
-        pass
+        os.close(fd)
+    finally:
+        try:
+            probe.unlink()
+        except OSError:
+            pass
     return None
 
 

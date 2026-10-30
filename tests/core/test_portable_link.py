@@ -759,6 +759,26 @@ def test_a_folder_that_takes_no_entry_still_reads_as_able_to_hold_links(
     assert portable_link.link_mechanism(tmp_path / "missing") == "none"
 
 
+@pytest.mark.parametrize("fault", [OSError(5, "I/O error"), KeyboardInterrupt()])
+def test_the_write_probe_is_removed_whatever_ends_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fault: BaseException
+) -> None:
+    """A close that fails (an NFS write-back error) or a Ctrl-C between the
+    probe file's creation and its removal left it in the folder."""
+    real_close = os.close
+
+    def close_then_fail(fd: int) -> None:
+        real_close(fd)
+        raise fault
+
+    with monkeypatch.context() as patch:
+        patch.setattr(os, "close", close_then_fail)
+        with pytest.raises(type(fault)):
+            portable_link.entry_refusal(tmp_path)
+
+    assert list(tmp_path.iterdir()) == []
+
+
 def test_a_drive_that_refuses_links_still_reads_as_none(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
