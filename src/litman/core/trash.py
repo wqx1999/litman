@@ -44,6 +44,7 @@ import itertools
 import os
 import re
 import shutil
+import sys
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
@@ -97,9 +98,15 @@ TRASH_DIRNAME = ".trash"
 TRASH_MAX_ENTRIES = 100
 
 _yaml = ThreadLocalYAML(typ="safe")
+# The sidecar holds a deleted repo's notes.md as text, which a restore must
+# write back byte for byte. ruamel folds a long double-quoted string at 80
+# columns, and a fold right after an escape (a backslash, a tab) loses its
+# continuation mark, so the note reads back with a space added: `$\Delta` came
+# back as `$\ Delta`. Unfolded, nothing is added.
 _yaml_dump = ThreadLocalYAML(
     indent={"mapping": 2, "sequence": 4, "offset": 2},
     default_flow_style=False,
+    width=sys.maxsize,
 )
 
 # Round-trip writer for restore's symmetric reverse-edge rebuild: it edits

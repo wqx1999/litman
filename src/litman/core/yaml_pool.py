@@ -39,7 +39,8 @@ class ThreadLocalYAML:
 
     * ``typ="safe"`` for read-only safe loaders, or
     * ``indent`` / ``preserve_quotes`` / ``default_flow_style`` for the
-      comment-preserving round-trip dumpers.
+      comment-preserving round-trip dumpers, and ``width`` for one whose
+      strings must not be folded.
 
     Each thread lazily builds and caches its own underlying instance.
     """
@@ -51,11 +52,13 @@ class ThreadLocalYAML:
         indent: dict[str, int] | None = None,
         preserve_quotes: bool | None = None,
         default_flow_style: bool | None = None,
+        width: int | None = None,
     ) -> None:
         self._typ = typ
         self._indent = indent
         self._preserve_quotes = preserve_quotes
         self._default_flow_style = default_flow_style
+        self._width = width
         self._local = threading.local()
 
     def _build(self) -> YAML:
@@ -66,6 +69,8 @@ class ThreadLocalYAML:
             yaml.preserve_quotes = self._preserve_quotes
         if self._default_flow_style is not None:
             yaml.default_flow_style = self._default_flow_style
+        if self._width is not None:
+            yaml.width = self._width
         return yaml
 
     @property

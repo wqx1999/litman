@@ -44,6 +44,7 @@ from litman.core.portable_link import is_portable_link
 from litman.core.trash import TRASH_DIRNAME
 from litman.exceptions import RmError, TrashError
 from tests._git_clone import clean_clone
+from tests.commands.test_trash import ESCAPED_PHRASES
 
 _yaml = YAML(typ="safe")
 
@@ -1072,6 +1073,27 @@ def test_restore_brings_back_a_repo_note_that_is_not_utf8(
     """A note saved in another encoding cannot be text in the trash entry; it
     comes back byte for byte all the same."""
     notes = "# Solo\r\n环境: torch\r\n".encode("gbk")
+    _rm_solo(vault, tmp_path, notes)
+
+    result = CliRunner().invoke(
+        cli, ["trash", "restore", "2024_Target", "--library", str(vault)]
+    )
+
+    assert result.exit_code == 0, result.output
+    assert (vault / "codes" / "Solo" / "notes.md").read_bytes() == notes
+
+
+def test_restore_brings_back_a_repo_note_with_backslashes_and_tabs_as_written(
+    vault: Path, tmp_path: Path
+) -> None:
+    """Long lines with LaTeX, a Windows path or a tab came back with a space
+    after a backslash (`$\\ Delta`) or a tab."""
+    lines = [
+        "x" * shift + phrase * 5
+        for phrase in ESCAPED_PHRASES.values()
+        for shift in range(len(phrase))
+    ]
+    notes = ("# Solo\r\n\r\n" + "\r\n".join(lines) + "\r\n").encode()
     _rm_solo(vault, tmp_path, notes)
 
     result = CliRunner().invoke(
