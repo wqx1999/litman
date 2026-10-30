@@ -73,6 +73,12 @@ from tests.server._client import TestClient
 # netlink or whose kernel has no tcp_diag.
 KERNEL = peer_owner.sock_diag()
 CANNOT_TELL = "this machine cannot say who owns a connection's other end; every client passes"
+# The startup test compares inodes, which a Windows socket does not have. It
+# never runs there: Windows has no netlink.
+NO_INODES = pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="a Windows socket has no inode; the startup test never runs there",
+)
 
 ME = 1000  # the server's own user, in the fake tables
 OTHER = 1001
@@ -372,12 +378,14 @@ def test_a_socket_bound_to_a_device_is_asked_for_on_that_device(
     assert unbound.devices == [0]
 
 
+@NO_INODES
 def test_a_kernel_without_tcp_diag_cannot_tell() -> None:
     """It finds no TCP socket at all — not even the server's own connection —
     and every client would read as gone, the server's own user included."""
     assert answers_for_tcp(SockDiag(FakeNetlink({}))) is False  # type: ignore[arg-type]
 
 
+@NO_INODES
 def test_a_kernel_that_answers_with_an_error_cannot_tell() -> None:
     """Refused by a sandbox, or not understood: the kernel's own answer, which
     no other user can bring about."""
@@ -394,6 +402,7 @@ def _no_free_port(*args: Any, **kwargs: Any) -> socket.socket:
     raise OSError(errno.EADDRINUSE, "Address already in use")
 
 
+@NO_INODES
 @pytest.mark.parametrize("why", ["no free port", "no answer in time"])
 def test_a_test_that_could_not_be_made_is_an_error(
     monkeypatch: pytest.MonkeyPatch, why: str
