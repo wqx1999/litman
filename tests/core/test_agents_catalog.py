@@ -2,13 +2,14 @@
 tasks).
 
 The catalog is the code-level source of truth for which agents litman can
-launch/onboard. These tests pin the six-agent shape and order (the two main
-agents first — claude, then zcode — the rest alphabetical), that every catalog
-entry is supported, generic (per-agent-branch-free) detection — by ``kind``:
-a terminal CLI is probed on PATH, a desktop app through ``core.app_launch`` —
-the skill adapters' delegation to ``core.skill`` (claude → the Claude Code dir;
-zcode, cursor, codex, and opencode → the shared open-standard dir; agy → the
-Antigravity CLI app-data dir), the per-agent skills-dir resolvers, and the
+launch/onboard. These tests pin the seven-agent shape and order (claude,
+zcode, agy, codex, dsh, cursor, opencode — the order wangq set), that every
+catalog entry is supported, generic (per-agent-branch-free) detection — by
+``kind``: a terminal CLI is probed on PATH, a desktop app through
+``core.app_launch`` — the skill adapters' delegation to ``core.skill`` (claude
+→ the Claude Code dir; zcode, dsh, codex, cursor, and opencode → the shared
+open-standard dir; agy → the Antigravity CLI app-data dir), the per-agent
+skills-dir resolvers, and the
 loud failure of the dormant ``supported=False`` placeholder machinery (no
 live catalog agent uses it today, so it is covered directly via
 ``_unsupported`` + a synthetic spec). Detection is driven entirely through a
@@ -36,23 +37,41 @@ from litman.core.agents import (
 )
 
 
-def test_catalog_has_exactly_six_named_agents() -> None:
-    """The two main agents first — Claude Code (the fallback default tops the
-    picker), then ZCode — the rest alphabetical (ADR-028). The GUI picker
-    renders catalog order verbatim."""
+def test_catalog_has_exactly_seven_named_agents() -> None:
+    """The order wangq set (2026-10-30): Claude Code (the fallback default
+    tops the picker), ZCode, Antigravity CLI, Codex, then DeepSeek Harness
+    right under Codex, Cursor, OpenCode. The GUI picker renders catalog order
+    verbatim."""
     names = [spec.name for spec in AGENTS]
-    assert names == ["claude", "zcode", "agy", "codex", "cursor", "opencode"]
-    assert len(set(names)) == 6
+    assert names == [
+        "claude",
+        "zcode",
+        "agy",
+        "codex",
+        "dsh",
+        "cursor",
+        "opencode",
+    ]
+    assert len(set(names)) == 7
 
 
-def test_supported_set_is_the_six_agents() -> None:
+def test_supported_set_is_the_seven_agents() -> None:
     supported = {spec.name for spec in AGENTS if spec.supported}
-    assert supported == {"claude", "zcode", "agy", "codex", "cursor", "opencode"}
+    assert supported == {
+        "claude",
+        "zcode",
+        "agy",
+        "codex",
+        "dsh",
+        "cursor",
+        "opencode",
+    }
     assert [s.name for s in supported_agents()] == [
         "claude",
         "zcode",
         "agy",
         "codex",
+        "dsh",
         "cursor",
         "opencode",
     ]
@@ -73,6 +92,7 @@ def test_beginner_facing_brands_identify_the_major_agent_families() -> None:
     assert brands["agy"] == "Google"
     assert brands["codex"] == "ChatGPT · OpenAI"
     assert brands["zcode"] == "GLM · 智谱"
+    assert brands["dsh"] == "DeepSeek · 深度求索"
 
 
 def test_zcode_is_a_desktop_app_row() -> None:
@@ -83,6 +103,21 @@ def test_zcode_is_a_desktop_app_row() -> None:
     assert zcode.open_url == "zcode://workspace/open?path={vault}"
     assert zcode.mac_bundle == "ZCode.app"
     assert "Autonomous mode" in zcode.permission_hint
+
+
+def test_dsh_is_a_desktop_app_row_opened_by_its_bare_link() -> None:
+    """DeepSeek Harness takes no folder: no exe arguments, and a link with no
+    vault in it — it reopens its last session. It runs lit under its default
+    approvals, so there is no hint to show either."""
+    dsh = get_agent("dsh")
+    assert dsh.display == "DeepSeek Harness"
+    assert dsh.kind == "app"
+    assert dsh.install_url == "https://www.deepseek.com/harness/"
+    assert dsh.url_scheme == "dsh"
+    assert dsh.app_args == ()
+    assert dsh.open_url == "dsh://open"
+    assert dsh.mac_bundle == "DeepSeek Harness.app"
+    assert dsh.permission_hint is None
 
 
 def test_only_app_rows_carry_app_fields_and_no_launch_command() -> None:
@@ -558,6 +593,7 @@ def test_agent_skills_parent_dir_routes_by_catalog(
     assert agent_skills_parent_dir("cursor") == standard
     assert agent_skills_parent_dir("zcode") == standard
     assert agent_skills_parent_dir("codex") == standard
+    assert agent_skills_parent_dir("dsh") == standard
     assert agent_skills_parent_dir("opencode") == standard
     assert agent_skills_parent_dir("agy") == antigravity
 
@@ -575,8 +611,8 @@ def test_skills_parent_dirs_three_dirs_catalog_order(
 ) -> None:
     """Still exactly three distinct dirs, first-occurrence catalog order:
     claude's, then the shared open-standard dir (zcode is the first of the
-    four agents reading it; codex, cursor and opencode reuse the same path),
-    then agy's."""
+    five agents reading it; codex, dsh, cursor and opencode reuse the same
+    path), then agy's."""
     claude_dir = tmp_path / "claude-skills"
     standard = tmp_path / "std-skills"
     antigravity = tmp_path / "agy-skills"

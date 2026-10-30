@@ -117,11 +117,11 @@ def install_skill_cmd(
     directories.
 
     Running this command does NOT install the agent itself, configure API
-    keys, or modify any of the user's other skills. For a catalog agent it
-    also adds that agent's narrow command rule allowing ``lit ...`` without
-    repeated approval; all other commands keep the agent's normal policy.
-    An agent litman cannot write a rule for (ZCode) gets a line on how to
-    allow lit in the app instead.
+    keys, or modify any of the user's other skills. For a catalog agent that
+    supports one, it also adds that agent's narrow command rule allowing
+    ``lit ...`` without repeated approval; all other commands keep the
+    agent's normal policy. ZCode, for which litman cannot write a rule, gets
+    a line on how to allow lit in the app instead.
     A manual --parent-dir has no associated agent, so it only copies files.
     """
     if agent_name is not None and parent_dir is not None:

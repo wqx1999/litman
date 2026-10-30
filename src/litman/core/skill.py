@@ -62,10 +62,10 @@ def default_skills_parent_dir() -> Path:
 
 def standard_skills_parent_dir() -> Path:
     """The skills dir of the Agent Skills open standard
-    (``~/.agents/skills``) — ZCode, Cursor, Codex, and OpenCode all discover
-    it (Cursor verified on a real install, ZCode on Windows; Codex and
-    OpenCode measured activating skills from it by the litman-bench
-    harness).
+    (``~/.agents/skills``) — ZCode, DeepSeek Harness, Cursor, Codex, and
+    OpenCode all discover it (Cursor verified on a real install, ZCode and
+    DeepSeek Harness on Windows; Codex and OpenCode measured activating
+    skills from it by the litman-bench harness).
 
     Same call-time seam contract as :func:`default_skills_parent_dir`: a
     redirected ``$HOME`` is honored, and the test suite isolates itself from

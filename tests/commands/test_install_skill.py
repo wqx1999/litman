@@ -595,6 +595,32 @@ def test_cli_install_skill_agent_zcode_tells_how_to_allow_lit(
     assert all(Path(p).parts[:2] == (".agents", "skills") for p in written), written
 
 
+@pytest.mark.no_skills_isolation
+def test_cli_install_skill_agent_dsh_installs_the_skills_and_nothing_else(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """DeepSeek Harness reads the open-standard dir and runs lit under its
+    default approvals: the skills land there, with no approval line, no hint,
+    and no file anywhere else."""
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("USERPROFILE", str(home))
+
+    result = CliRunner().invoke(cli, ["install-skill", "--agent", "dsh"])
+
+    assert result.exit_code == 0, result.output
+    for name in list_bundled_skills():
+        assert (home / ".agents" / "skills" / name / "SKILL.md").is_file()
+    assert "lit command approval" not in result.output
+    assert "Warning" not in result.output
+    assert "Autonomous" not in result.output
+    written = sorted(
+        str(p.relative_to(home)) for p in home.rglob("*") if p.is_file()
+    )
+    assert all(Path(p).parts[:2] == (".agents", "skills") for p in written), written
+
+
 def test_cli_install_skill_agent_agy_writes_antigravity_dir() -> None:
     """--agent agy resolves the Antigravity CLI app-data dir through the
     catalog — NOT the open-standard dir, which agy does not read."""
@@ -635,6 +661,7 @@ def test_cli_install_skill_agent_unknown_name_lists_supported() -> None:
     assert "zcode" in result.output
     assert "agy" in result.output
     assert "codex" in result.output
+    assert "dsh" in result.output
     assert "cursor" in result.output
     assert "opencode" in result.output
 

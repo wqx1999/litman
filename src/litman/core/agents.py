@@ -10,22 +10,22 @@ consumers (the ``lit agent`` CLI, the GUI agent button, the ``/api/agent/*``
 endpoints) iterate the catalog generically — there is deliberately no
 ``if name == "claude"`` branch anywhere (red line: zero per-agent code).
 
-litman supports six agents today. Two have a skills directory of their
+litman supports seven agents today. Two have a skills directory of their
 own: Claude Code (``~/.claude/skills``) and Antigravity CLI (``agy``, whose
 only user-installable skills location is its own app-data directory
 ``~/.gemini/antigravity-cli/skills`` — it does not read the open-standard
-dir). The other four — ZCode, Cursor, Codex, and OpenCode — all discover
-skills from the Agent Skills open-standard directory ``~/.agents/skills`` and
-so share one adapter shape (Cursor additionally does a compatibility read of
-the Claude dir).
+dir). The other five — ZCode, DeepSeek Harness, Codex, Cursor, and OpenCode —
+all discover skills from the Agent Skills open-standard directory
+``~/.agents/skills`` and so share one adapter shape (Cursor additionally does
+a compatibility read of the Claude dir).
 
 Five are terminal CLIs (``kind="terminal"``): ``launch`` is a command run in
-a terminal at the vault. ZCode is a desktop app (``kind="app"``): litman opens
-the app itself at the vault through :mod:`litman.core.app_launch`, with no
-terminal in between. Consumers branch on ``kind``, the same data-driven way
-they branch on ``supported``.
+a terminal at the vault. ZCode and DeepSeek Harness are desktop apps
+(``kind="app"``): litman opens the app itself through
+:mod:`litman.core.app_launch`, with no terminal in between. Consumers branch
+on ``kind``, the same data-driven way they branch on ``supported``.
 
-All six are ``supported=True`` — the catalog carries no greyed placeholder
+All seven are ``supported=True`` — the catalog carries no greyed placeholder
 today. The machinery for one nonetheless stays as dormant capability: the
 ``supported`` flag on :class:`AgentSpec`, the :func:`_unsupported` placeholder
 adapter, and every consumer's ``supported`` gate. A future roadmap agent
@@ -114,7 +114,8 @@ class AgentSpec:
     url_scheme: str | None = None
     # Windows: the exe's arguments; "{vault}" becomes the vault path.
     app_args: tuple[str, ...] = ()
-    # The link that opens the vault; "{vault}" becomes the percent-encoded path.
+    # The link that opens the app; a "{vault}" in it becomes the
+    # percent-encoded vault path.
     open_url: str | None = None
     # macOS: the bundle's name under /Applications or ~/Applications.
     mac_bundle: str | None = None
@@ -139,11 +140,13 @@ class AgentSpec:
 # it and driving litman through them), so their adapters are copied verbatim
 # from Cursor's — no per-vendor resolver or generated config file. ZCode
 # reads the same directory (checked on Windows: skills installed there for
-# Codex showed up in ZCode), so its adapters are the same too.
+# Codex showed up in ZCode), and so does DeepSeek Harness (checked on Windows:
+# it loaded both litman skills from there), so their adapters are the same too.
 #
-# Order: the two main agents first — claude (the fallback default tops the
-# picker), then zcode — the rest alphabetical (ADR-028). The GUI picker and
-# `skills_parent_dirs()` follow this order.
+# Order: claude (the fallback default tops the picker), zcode, agy, codex,
+# dsh, cursor, opencode — set by wangq (2026-10-30), who put DeepSeek Harness
+# right under Codex. The GUI picker and `skills_parent_dirs()` follow this
+# order.
 AGENTS: tuple[AgentSpec, ...] = (
     AgentSpec(
         name="claude",
@@ -227,6 +230,32 @@ AGENTS: tuple[AgentSpec, ...] = (
             lambda: agent_permissions.install_codex_lit_permission()
         ),
         skills_dir=lambda: skill.standard_skills_parent_dir(),
+    ),
+    AgentSpec(
+        name="dsh",
+        display="DeepSeek Harness",
+        brand="DeepSeek · 深度求索",
+        # A desktop app: never a PATH command, as for ZCode.
+        launch="",
+        supported=True,
+        install_url="https://www.deepseek.com/harness/",
+        detect_bin="",
+        skill_state=lambda: aggregate_skill_state(
+            parent_dir=skill.standard_skills_parent_dir()
+        ),
+        install_skill=lambda: install_all_skills(
+            parent_dir=skill.standard_skills_parent_dir(), overwrite=True
+        ),
+        install_lit_permission=(
+            lambda: agent_permissions.no_lit_permission("dsh")
+        ),
+        skills_dir=lambda: skill.standard_skills_parent_dir(),
+        kind="app",
+        url_scheme="dsh",
+        # DSH takes no folder: neither an exe argument nor a link names one,
+        # so it opens where it was last used.
+        open_url="dsh://open",
+        mac_bundle="DeepSeek Harness.app",
     ),
     AgentSpec(
         name="cursor",

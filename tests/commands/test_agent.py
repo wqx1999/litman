@@ -126,7 +126,10 @@ def test_agent_unsupported_name_is_rejected(
     assert isinstance(result.exception, LitmanError)
     message = str(result.exception)
     assert "'future' is not available yet" in message
-    assert "Supported agents: claude, zcode, agy, codex, cursor, opencode" in message
+    assert (
+        "Supported agents: claude, zcode, agy, codex, dsh, cursor, opencode"
+        in message
+    )
     assert execd == []  # never reached the exec path
 
 
@@ -284,3 +287,48 @@ def test_agent_app_not_installed_names_the_download(
     assert "hasn't been opened yet" in message
     assert "https://zcode.z.ai" in message
     assert "PATH" not in message
+
+
+def test_agent_dsh_on_windows_opens_its_link_and_returns(
+    vault: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Through the real app_launch, faked down to the registry and the
+    opener: `lit agent dsh` hands `dsh://open` to Windows and returns."""
+    from litman.core import app_launch
+
+    exe = tmp_path / "dsh" / "DeepSeek Harness.exe"
+    exe.parent.mkdir(parents=True)
+    exe.write_bytes(b"")
+    monkeypatch.setattr(app_launch, "_platform", lambda: "win32")
+    monkeypatch.setattr(
+        app_launch, "_read_scheme_command", lambda _scheme: f'"{exe}" "%1"'
+    )
+    opened: list[str] = []
+    monkeypatch.setattr(app_launch, "_startfile", opened.append)
+    monkeypatch.setattr(
+        app_launch,
+        "_popen_detached_windows",
+        lambda *_a: pytest.fail("DSH takes no exe arguments"),
+    )
+
+    result = CliRunner().invoke(agent_cmd, ["dsh", "--library", str(vault)])
+
+    assert result.exit_code == 0, result.output
+    assert opened == ["dsh://open"]
+    assert result.output.replace("\n", "") == f"Opened DeepSeek Harness at {vault}."
+
+
+def test_agent_dsh_never_opened_names_the_download(
+    vault: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from litman.core import app_launch
+
+    monkeypatch.setattr(app_launch, "_platform", lambda: "win32")
+    result = CliRunner().invoke(agent_cmd, ["dsh", "--library", str(vault)])
+    assert result.exit_code != 0
+    assert isinstance(result.exception, LitmanError)
+    assert str(result.exception) == (
+        "DeepSeek Harness isn't installed, or hasn't been opened yet. "
+        "Open it once, then try again. "
+        "Get DeepSeek Harness: https://www.deepseek.com/harness/"
+    )

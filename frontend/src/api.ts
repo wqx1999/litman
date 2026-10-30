@@ -879,9 +879,9 @@ export function launchAgent(name?: string): Promise<AgentLaunchResult> {
 
 /** One agent's onboarding view: display name, beginner-facing brand, whether
  * litman supports it today
- * (Claude Code, ZCode, Antigravity CLI, Codex, Cursor and OpenCode — all
- * supported today), whether it is installed (launch command on PATH, or the
- * desktop app registered), its
+ * (Claude Code, ZCode, Antigravity CLI, Codex, DeepSeek Harness, Cursor and
+ * OpenCode — all supported today), whether it is installed (launch command on
+ * PATH, or the desktop app registered), its
  * official install page, and `skill_state` — the server's content-level verdict
  * for THIS agent's skill install ('absent' | 'stale' | 'current'; null for an
  * unsupported placeholder, which is never probed). Agents sharing a skills
