@@ -84,9 +84,10 @@ whatever you already pay for. **Start with Claude Code.**
 
 These also work — last checked with litman 1.3.8:
 
-| Agent CLI | Recommended model |
+| Agent | Recommended model |
 |:---|:---|
 | [Codex](https://developers.openai.com/codex/cli/) | Official subscription |
+| [DeepSeek Harness](https://www.deepseek.com/harness/) | DeepSeek |
 | [Antigravity CLI](https://antigravity.google/download#antigravity-cli) | Official subscription |
 | [Cursor](https://cursor.com/cli) | Composer 2.5 |
 | [OpenCode](https://opencode.ai/) | MiniMax-M3 |

@@ -11,6 +11,14 @@ own entry. Read those before you upgrade, whatever the number says.
 
 ## Unreleased
 
+### Added
+
+- **DeepSeek Harness is a supported agent.** Pick it in the agent panel or run
+  `lit agent dsh`, and DeepSeek Harness opens — no terminal in between.
+  Install the skills from the same panel: DeepSeek Harness loads both of them.
+  It comes back to the session you used last, so the first time, add your
+  library as a workspace in DeepSeek Harness.
+
 ### Fixed
 
 - **Users in mainland China now see when a new version is out.** litman

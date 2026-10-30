@@ -156,10 +156,10 @@ without them. Copies files only; does not install an agent or configure any
 keys.
 
 Skills go where the agent auto-discovers them: `~/.claude/skills` for Claude
-Code, the open-standard `~/.agents/skills` for ZCode, Cursor, Codex, and OpenCode, and
-`~/.gemini/antigravity-cli/skills` for Antigravity CLI. With no flags the
-command targets your default agent's directory; `--agent` targets another
-agent's.
+Code, the open-standard `~/.agents/skills` for ZCode, DeepSeek Harness, Cursor,
+Codex, and OpenCode, and `~/.gemini/antigravity-cli/skills` for Antigravity
+CLI. With no flags the command targets your default agent's directory;
+`--agent` targets another agent's.
 
 Safe to re-run after upgrading litman: skills that already match the bundled
 content report "up to date", out-of-date ones are offered a refresh (`[Y/n]`,
@@ -178,7 +178,7 @@ lit install-skill --skill lit-reading
 | Flag | What it does |
 |---|---|
 | `--skill <name>` | Install only this skill. Default: install all bundled skills. |
-| `--agent <name>` | Install into this agent's skills directory (`claude`, `zcode`, `agy`, `codex`, `cursor`, `opencode`). Default: your default agent. Mutually exclusive with `--parent-dir`. |
+| `--agent <name>` | Install into this agent's skills directory (`claude`, `zcode`, `agy`, `codex`, `dsh`, `cursor`, `opencode`). Default: your default agent. Mutually exclusive with `--parent-dir`. |
 | `--parent-dir <path>` | Install into this exact directory instead. Mutually exclusive with `--agent`. |
 | `--force` | Overwrite files inside an existing target without asking. Files not part of the bundled skill are left in place. |
 
@@ -1092,18 +1092,27 @@ lit agent --set-default claude  # record the machine-level default agent
 The default agent is machine-level, not per-vault: it is recorded in
 `preferences.yaml` next to the vault registry, set by `lit setup`, the GUI
 agent panel, or `lit agent --set-default`. Claude Code, ZCode, Antigravity CLI
-(`agy`), Codex, Cursor, and OpenCode are the supported agents.
+(`agy`), Codex, DeepSeek Harness (`dsh`), Cursor, and OpenCode are the
+supported agents.
 
 ZCode is a desktop app, not a terminal agent: `lit agent zcode` opens ZCode at
 the vault and returns at once. If ZCode is already open, it switches to the
 vault. Open ZCode once after installing it, so litman can find it.
 
+DeepSeek Harness is a desktop app too: `lit agent dsh` opens it and returns at
+once. It comes back to the session you used last, so the first time, add the
+vault as a workspace in DeepSeek Harness. Open DeepSeek Harness once after
+installing it, so litman can find it. If every command in DeepSeek Harness on
+Windows fails with exit code 3221225794, that is a known DeepSeek Harness
+sandbox bug: update DeepSeek Harness, and if it persists, approve with
+"Allow once".
+
 Two things fail with a one-line error: a NAME that is not in the catalog, and an
-agent whose command is missing from PATH (for ZCode: not installed, or never
-opened). The Web UI's agent button launches the same default agent: on a machine
-with a display it opens the agent in a new terminal window, or opens ZCode;
-when the server runs on a remote box (HPC) it shows the `lit agent` line to
-copy into your own terminal.
+agent whose command is missing from PATH (for ZCode and DeepSeek Harness: not
+installed, or never opened). The Web UI's agent button launches the same default
+agent: on a machine with a display it opens the agent in a new terminal window,
+or opens the desktop app; when the server runs on a remote box (HPC) it shows
+the `lit agent` line to copy into your own terminal.
 
 ### `lit self-update`
 
