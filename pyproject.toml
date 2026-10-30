@@ -131,15 +131,65 @@ select = [
     "C4",   # flake8-comprehensions
     "RUF",  # ruff-specific
 ]
+ignore = [
+    # Deliberate typography in user-facing text and docs (×, –, ℹ, CJK punctuation).
+    "RUF001", "RUF002", "RUF003",
+    # try/except/pass is the house style; contextlib.suppress would also swallow
+    # a matching ExceptionGroup, so the rewrite is not a pure no-op.
+    "SIM105",
+    # `xs + [x]` reads fine; the suggested `[*list(xs), x]` reads worse.
+    "RUF005",
+]
 
 [tool.ruff.lint.per-file-ignores]
-"tests/*" = ["B011"]  # tests can use `assert False`
+# How tests assert: `assert False`, `pytest.raises(Exception)`, plain-text
+# `match=` patterns, nested `with pytest.raises(...)`, `assert "x" == value`.
+"tests/*" = ["B011", "B017", "RUF043", "SIM117", "SIM300"]
+# Imports placed mid-file on purpose, next to the tests that use them.
+"tests/core/test_atomic.py" = ["E402"]
+"tests/server/test_server_write.py" = ["E402"]
+# Lines inside assertions (and the golden data beside them), kept as written.
+"tests/commands/test_trash.py" = ["C416"]
+"tests/server/test_server_health.py" = ["E501"]
+"tests/bench/test_batch.py" = ["E501"]
+"tests/bench/test_checker.py" = ["E501"]
+"tests/bench/test_routing.py" = ["E501"]
 
 [tool.mypy]
 python_version = "3.12"
 strict = true
 warn_unused_ignores = true
 files = ["src/litman", "tests"]
+# tests/bench imports its harness through a sys.path entry its conftest adds at
+# runtime, so mypy finds every harness file under two module names; like pytest
+# and CI, mypy leaves the benchmark harness out.
+exclude = ["^tests/bench/"]
+
+[[tool.mypy.overrides]]
+# Tests are checked, but not as strictly as src: test functions and helpers go
+# unannotated, and assertions run straight on Optional results (narrowing them
+# would mean adding asserts). attr-defined: tests patch a module's own imports
+# (viewer.sys, atomic.os), and whether those count as exported is decided by
+# the src module, not here. func-returns-value: the `lambda: calls.append(x) or
+# result` spy idiom. strict_equality: three asserts compare a TypedDict with a
+# plain dict, or a faked Popen with a string. Unused ignores are not reported:
+# several mark deliberate type violations (a None on purpose) that only these
+# relaxations make silent.
+module = ["tests.*"]
+disallow_untyped_defs = false
+disallow_incomplete_defs = false
+disallow_untyped_calls = false
+disallow_any_generics = false
+warn_return_any = false
+strict_optional = false
+strict_equality = false
+warn_unused_ignores = false
+disable_error_code = ["attr-defined", "func-returns-value"]
+
+[[tool.mypy.overrides]]
+# macOS-only GUI dependencies (pywebview, and AppKit from its pyobjc runtime).
+module = ["webview", "webview.*", "AppKit"]
+ignore_missing_imports = true
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

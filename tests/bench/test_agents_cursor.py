@@ -20,7 +20,6 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
-
 from harness.agents import get_adapter
 from harness.agents.cursor import (
     CursorAdapter,

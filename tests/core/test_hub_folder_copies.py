@@ -657,12 +657,14 @@ def test_copy_untouched_when_project_drive_cannot_link(
     """AC-11: on a drive that cannot hold links the copy is the only browsable
     thing there is. Leave it, and stop telling the user to delete it.
 
-    p2 is the positive control: its position is NOT obstructed, so the link is
-    still attempted there and the one legitimate "this filesystem cannot hold
-    folder links" warning fires. Without it, "no warning about the copy" would
-    be indistinguishable from "this test prints nothing at all". With it, the
-    count is what does the work: dropping the create loop's blocked-set guard
-    adds a second warning about the copy and this fails.
+    p2 is the positive control: its link is missing and its position NOT
+    obstructed, so the link is attempted there and the one legitimate "this
+    filesystem cannot hold folder links" warning fires. (Missing, because a
+    link already in place is left alone and attempts nothing.) Without it, "no
+    warning about the copy" would be indistinguishable from "this test prints
+    nothing at all". With it, the count is what does the work: dropping the
+    create loop's blocked-set guard adds a second warning about the copy and
+    this fails.
     """
     from litman.core import portable_link
     from litman.core.checks import check_project_references
@@ -672,7 +674,7 @@ def test_copy_untouched_when_project_drive_cannot_link(
     vault, project_dir = _linked_project(tmp_path, extra_papers=["p2"])
     link = project_dir / "litman_reflib" / "p1"
     copy = _expand_to_copy(link, vault / "papers" / "p1")
-    assert is_portable_link(project_dir / "litman_reflib" / "p2")
+    assert remove_link_if_present(project_dir / "litman_reflib" / "p2")
 
     said = _record_link_warnings(monkeypatch)
 

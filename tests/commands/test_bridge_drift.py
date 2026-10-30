@@ -28,6 +28,7 @@ import pytest
 from litman.commands import _drift
 from litman.core.checks import check_project_bridge_dangling
 from litman.core.library import create_vault
+from litman.core.portable_link import is_portable_link
 from litman.core.project_link import (
     find_dangling_bridges,
     rebuild_all_project_links,
@@ -37,7 +38,6 @@ from litman.core.vault_registry import (
     VaultRegistry,
     save_registry,
 )
-from litman.core.portable_link import is_portable_link
 
 
 @pytest.fixture(autouse=True)
@@ -239,7 +239,7 @@ def test_find_dangling_sees_junction_bridges(
     out = find_dangling_bridges(
         {"pepforge": str(proj)},
         {str(proj): True},
-        lambda paths: {p: False for p in paths},  # every target definitely gone
+        lambda paths: dict.fromkeys(paths, False),  # every target definitely gone
     )
     assert [p.name for p in out["pepforge"]] == [bridge.name]
 

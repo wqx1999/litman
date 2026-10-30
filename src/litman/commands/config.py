@@ -20,13 +20,11 @@ from rich.table import Table
 from litman.commands._options import library_option, vault_option
 from litman.core.config import (
     CONFIG_FILENAME,
-    LitConfig,
     config_to_yaml_dict,
     load_config,
 )
 from litman.core.library import find_vault, resolve_library_or_vault
 from litman.core.yaml_pool import ThreadLocalYAML
-from litman.exceptions import ConfigError
 
 console = Console()
 

@@ -704,9 +704,9 @@ def get_si_file(request: Request, paper_id: str, file: str) -> FileResponse:
     )
 
 
-def _config_problem(exc: ConfigError) -> str:
+def config_problem(exc: ConfigError, way_out: str) -> str:
     """lit-config.yaml's fault as one line for the page — the field, when one
-    is at fault — and the way out. No path: the page has no use for it."""
+    is at fault — then ``way_out``. No path: the page has no use for it."""
     cause = exc.__cause__
     if isinstance(cause, ValidationError) and cause.errors():
         first = cause.errors()[0]
@@ -714,7 +714,7 @@ def _config_problem(exc: ConfigError) -> str:
         problem = f"{CONFIG_FILENAME} is invalid ({field}: {first['msg']})"
     else:
         problem = f"{CONFIG_FILENAME} cannot be read (lit config show says why)"
-    return f"{problem} — fix it, or download the file instead"
+    return f"{problem} — {way_out}"
 
 
 @router.post("/paper/{paper_id}/si/{file}/open")
@@ -756,7 +756,10 @@ def post_si_file_open(request: Request, paper_id: str, file: str) -> dict[str, A
         try:
             configured = load_config(vault).default_pdf_viewer
         except ConfigError as exc:
-            raise HTTPException(status_code=500, detail=_config_problem(exc)) from exc
+            raise HTTPException(
+                status_code=500,
+                detail=config_problem(exc, "fix it, or download the file instead"),
+            ) from exc
     try:
         viewer.launch_file(path, configured)
     except viewer.OpenFailed as exc:

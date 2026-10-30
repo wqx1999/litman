@@ -112,7 +112,7 @@ def _dpi_scale(root: object) -> float:
     if sys.platform != "win32":
         return 1.0
     try:
-        dpi = float(root.winfo_fpixels("1i"))  # type: ignore[attr-defined]
+        dpi = float(root.winfo_fpixels("1i"))  # type: ignore[attr-defined, unused-ignore]
     except Exception:
         return 1.0
     return min(3.0, max(1.0, dpi / 96.0))

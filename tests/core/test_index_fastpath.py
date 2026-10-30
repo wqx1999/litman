@@ -21,9 +21,11 @@ import time
 from pathlib import Path
 from typing import Any
 
+from litman.core import locking
 from litman.core.correctors import reconcile_derived
 from litman.core.document import list_papers
 from litman.core.library import create_vault
+from litman.core.portable_link import is_portable_link
 from litman.core.views import (
     INDEX_PAPER_FIELDS,
     load_index_papers,
@@ -32,8 +34,6 @@ from litman.core.views import (
     update_views_for_paper,
     view_fields_snapshot,
 )
-from litman.core.portable_link import is_portable_link
-from litman.core import locking
 
 
 def _seed_paper(vault: Path, paper_id: str, **fields: object) -> None:

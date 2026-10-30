@@ -16,7 +16,7 @@ Usage:
 First-time pinning: run `--write-lock` once on a machine with real network/browser
 access, then commit the generated fixtures.lock. Every later run verifies bytes
 against those pins, so a wrong URL / silent bot-block page can never slip through.
-"""
+"""  # noqa: E501 — the usage lines
 from __future__ import annotations
 
 import argparse

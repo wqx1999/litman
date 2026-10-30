@@ -123,7 +123,7 @@ export interface FixedEnumField {
 }
 
 /** The /api/fixed-enums payload: status/type whitelists for the cockpit
- * dropdowns, sourced from core/checks (not hard-coded in the frontend).
+ * dropdowns, sourced from core/schema (not hard-coded in the frontend).
  * `priority` is NOT here: it was retired as a paper-level field (ADR-025) and
  * its replacement is per project, so there is no project-less whitelist a
  * dropdown could show. The grade arrives on PaperMeta instead. */

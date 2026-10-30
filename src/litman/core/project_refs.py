@@ -22,17 +22,20 @@ on a fresh machine before the user runs ``lit link --rebuild-all``.
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 from typing import Any
 
-from ruamel.yaml import YAMLError
+from ruamel.yaml.error import YAMLError
 
 from litman.core.dates import now_iso
 from litman.core.document import list_papers, read_metadata
+from litman.core.portable_link import _os_error_reason
 from litman.core.views import load_index_papers
 
 REFERENCES_FILENAME = "REFERENCES.md"
 LITERATURE_SUBDIR = "litman_reflib"
+_LAST_UPDATED = re.compile(r"<!-- Last updated: (.*?) -->")
 
 
 def load_project_member_metas(
@@ -156,7 +159,7 @@ def _group_by_priority(
         pr = p.get(f"priority-{project}")
         key = pr if pr in _PRIORITY_ORDER else None
         buckets.setdefault(key, []).append(p)
-    for key, group in buckets.items():
+    for group in buckets.values():
         group.sort(key=lambda x: (_year_sort_key(x), str(x.get("id", ""))))
     return buckets
 
@@ -283,6 +286,20 @@ def write_references_md(
     literature_dir = project_dir / LITERATURE_SUBDIR
     literature_dir.mkdir(exist_ok=True)
     target = literature_dir / REFERENCES_FILENAME
+    try:
+        existing: str | None = target.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        existing = None
+    if existing is not None:
+        # Only the timestamp would change: leave the file as it is, so a
+        # project folder litman can read but not change goes through a
+        # rebuild with nothing to change untouched. "Last updated" is when
+        # the list last changed.
+        stamp = _LAST_UPDATED.search(existing)
+        if stamp and existing == render_references_md(
+            vault, project, now=stamp.group(1), papers=papers
+        ):
+            return target
     target.write_text(
         render_references_md(vault, project, now=now, papers=papers),
         encoding="utf-8",
@@ -315,7 +332,8 @@ def rebuild_all_project_refs(
         ``{project_name: {"status": "written" | "skipped" | "error",
                            "path": Path | None,
                            "n_papers": int,
-                           "detail": str}}``
+                           "detail": str}}``, plus ``"error"`` (the
+        ``OSError``) on an ``"error"`` entry.
     """
     if papers is None:
         papers = list_papers(vault)
@@ -335,12 +353,19 @@ def rebuild_all_project_refs(
             target = write_references_md(
                 vault, project, project_dir, now=now, papers=papers
             )
-        except Exception as e:  # defensive — write_references_md raises only FileNotFoundError currently
+        except OSError as e:
+            # The project folder is there but litman_reflib/ cannot be listed
+            # or written (no read access, a read-only mount). The other
+            # projects still get theirs; the caller says which did not.
             out[project] = {
                 "status": "error",
                 "path": None,
                 "n_papers": n_papers,
-                "detail": str(e),
+                "detail": (
+                    f"could not update {e.filename or project_dir} "
+                    f"({_os_error_reason(e)})"
+                ),
+                "error": e,
             }
             continue
         out[project] = {

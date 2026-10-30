@@ -52,9 +52,8 @@ from litman.commands.gui import (
     remove_browser_profile,
     shortcut_path,
 )
-from litman.core.presence import PresenceTracker
 from litman.core import locking
-
+from litman.core.presence import PresenceTracker
 
 # The REAL host, captured at import — before any test can fake it. Half this
 # file runs under ``monkeypatch.setattr(sys, "platform", ...)``, so reading
@@ -242,7 +241,7 @@ class _FakeProc:
 
     def __init__(self, argv) -> None:
         self.argv = argv
-        self.returncode = None
+        self.returncode: int | None = None
         self.terminated = False
         self._closed = threading.Event()
 
@@ -354,6 +353,24 @@ def test_gui_no_browser_suppresses_open(
 
     assert result.exit_code == 0, result.output
     assert opened == [] and procs == []
+
+
+def test_gui_takes_no_client_address_from_proxy_headers(
+    monkeypatch, gui_harness, vault_with_paper
+) -> None:
+    """The guard looks up who owns the connection's other end. uvicorn's
+    default would let any local client name that end in X-Forwarded-For."""
+    vault, _pid = vault_with_paper
+    configs: list[dict[str, Any]] = []
+    monkeypatch.setattr("uvicorn.Config", lambda *a, **k: configs.append(k))
+
+    result = CliRunner().invoke(
+        gui_cmd, ["--library", str(vault), "--no-browser"]
+    )
+
+    assert result.exit_code == 0, result.output
+    assert len(configs) == 1
+    assert configs[0]["proxy_headers"] is False
 
 
 def test_gui_headless_linux_never_opens(
@@ -1265,7 +1282,7 @@ def test_window_launch_arms_the_tab_fallback(
     # the desktop shortcut on Ubuntu.
     opened, procs = gui_harness
     vault, _pid = vault_with_paper
-    armed: list[object] = []
+    armed: list[Any] = []
     monkeypatch.setattr(sys, "platform", "linux")
     monkeypatch.setenv("DISPLAY", ":0")
     monkeypatch.setattr(
@@ -1649,6 +1666,38 @@ def test_make_shortcut_linux_writes_desktop_file(
     assert "updated" in result2.output
 
 
+def _block_shortcut_folder(monkeypatch, tmp_path) -> Path:
+    """Put a file where the shortcut's folder belongs, on every platform: the
+    Desktop (Windows), the applications folder (Linux), both app homes
+    (macOS)."""
+    blocker = tmp_path / "Desktop"
+    blocker.write_text("not a folder\n", encoding="utf-8")
+    monkeypatch.setattr(gui, "shortcut_path", lambda: blocker / "litman.lnk")
+    monkeypatch.setattr(
+        gui,
+        "_darwin_bundle_locations",
+        lambda: (blocker / "litman.app", blocker / "user" / "litman.app"),
+    )
+    return blocker
+
+
+def test_make_shortcut_says_in_one_line_why_it_could_not(
+    monkeypatch, tmp_path, fake_lit_on_path
+) -> None:
+    # A file where the Desktop folder belongs (win-test, round 2) ended
+    # `lit gui --make-shortcut` in a whole FileExistsError traceback.
+    blocker = _block_shortcut_folder(monkeypatch, tmp_path)
+
+    result = CliRunner().invoke(gui_cmd, ["--make-shortcut"])
+
+    error = result.exception
+    assert type(error).__name__ == "LitmanError", result.output
+    message = str(error)
+    assert message.startswith(f"Could not create the desktop shortcut at {blocker}")
+    assert message.endswith(". Fix that, then re-run: lit gui --make-shortcut")
+    assert "\n" not in message and "Errno" not in message
+
+
 def test_app_window_flags_carry_the_wm_class_only_on_linux(monkeypatch) -> None:
     # X11 matches the window's WM_CLASS against StartupWMClass in
     # litman.desktop; Windows groups by AppUserModelID and macOS by owning
@@ -1921,6 +1970,55 @@ def test_make_shortcut_win32_falls_back_to_lit_without_the_twin(
     result = CliRunner().invoke(gui_cmd, ["--make-shortcut"])
     assert result.exit_code == 0, result.output
     assert f"$s.TargetPath = '{fake_lit_on_path}'" in runs[0][-1]
+
+
+# Off PATH, the shortcut falls back to the lit that is running. Its argv[0]
+# has lost ".exe": the entry-point script strips it (pip's and uv's alike),
+# so on Windows argv[0] names `lit`, next to the real lit.exe.
+
+
+@pytest.fixture
+def lit_off_path(monkeypatch, tmp_path) -> Path:
+    """No lit on PATH; the running lit's argv[0] is ``<tmp>/bin/lit``."""
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    monkeypatch.setattr(shutil, "which", lambda _name: None)
+    monkeypatch.setattr(sys, "argv", [str(bin_dir / "lit"), "gui"])
+    return bin_dir
+
+
+def test_off_path_lit_is_found_by_the_exe_its_argv0_lost(lit_off_path) -> None:
+    (lit_off_path / "lit.exe").write_bytes(b"")
+    assert gui._resolve_lit_executable() == str((lit_off_path / "lit.exe").resolve())
+
+
+def test_off_path_lit_is_its_argv0_when_that_is_the_file(lit_off_path) -> None:
+    (lit_off_path / "lit").write_bytes(b"")
+    assert gui._resolve_lit_executable() == str((lit_off_path / "lit").resolve())
+
+
+def test_off_path_lit_found_nowhere_says_so(lit_off_path) -> None:
+    with pytest.raises(gui.LitmanError, match="Could not locate the `lit` executable"):
+        gui._resolve_lit_executable()
+
+
+def test_off_path_an_exe_beside_another_program_is_not_lit(
+    monkeypatch, lit_off_path
+) -> None:
+    """Run as another program (python -m litman), its own .exe is no lit."""
+    (lit_off_path / "python.exe").write_bytes(b"")
+    monkeypatch.setattr(sys, "argv", [str(lit_off_path / "python"), "gui"])
+    with pytest.raises(gui.LitmanError, match="Could not locate the `lit` executable"):
+        gui._resolve_lit_executable()
+
+
+def test_off_path_windows_shortcut_targets_the_twin_beside_lit_exe(
+    monkeypatch, lit_off_path
+) -> None:
+    monkeypatch.setattr(gui, "_platform", lambda: "win32")
+    (lit_off_path / "lit.exe").write_bytes(b"")
+    (lit_off_path / "litw.exe").write_bytes(b"")
+    assert gui._shortcut_executable() == str((lit_off_path / "litw.exe").resolve())
 
 
 def test_make_shortcut_darwin_builds_app_bundle(
@@ -3625,7 +3723,7 @@ def test_terminate_splash_when_visible_backstops_on_timeout() -> None:
     # C3: presence never arrives → the splash_timeout backstop still closes it.
     splash = _FakeSplash()
     _terminate_splash_when_visible(
-        splash, PresenceTracker(), threading.Event(),
+        splash, PresenceTracker(), threading.Event(),  # type: ignore[arg-type]  # a fake Popen
         splash_timeout=0.05, poll=0.01,
     )
     assert splash.terminated == 1
@@ -3637,7 +3735,7 @@ def test_terminate_splash_when_visible_backstops_on_stop_event() -> None:
     stop = threading.Event()
     stop.set()
     _terminate_splash_when_visible(
-        splash, PresenceTracker(), stop, splash_timeout=5.0, poll=0.01
+        splash, PresenceTracker(), stop, splash_timeout=5.0, poll=0.01  # type: ignore[arg-type]  # a fake Popen
     )
     assert splash.terminated == 1
 
@@ -3649,7 +3747,7 @@ def test_terminate_splash_when_visible_real_default_timeout() -> None:
     splash = _FakeSplash()
     tracker = PresenceTracker()
     tracker.connect()
-    _terminate_splash_when_visible(splash, tracker, threading.Event())
+    _terminate_splash_when_visible(splash, tracker, threading.Event())  # type: ignore[arg-type]  # a fake Popen
     assert splash.terminated == 1
 
 
@@ -3662,7 +3760,7 @@ def test_terminate_splash_when_visible_suppresses_oserror() -> None:
 
     tracker = PresenceTracker()
     tracker.connect()
-    _terminate_splash_when_visible(_BadSplash(), tracker, threading.Event())
+    _terminate_splash_when_visible(_BadSplash(), tracker, threading.Event())  # type: ignore[arg-type]  # a fake Popen
 
 
 def test_splash_terminated_on_tab_fallback(
@@ -4003,7 +4101,7 @@ def test_gui_drops_the_record_even_when_the_server_raises(
 def _no_update_check(monkeypatch: pytest.MonkeyPatch) -> None:
     from litman.core import update_check
 
-    monkeypatch.setattr(update_check, "refresh_cache_if_stale", lambda: None)
+    monkeypatch.setattr(update_check, "refresh_cache_if_stale", lambda **kw: None)
 
 
 def test_lifespan_records_a_gui_with_a_port_and_drops_it_on_stop(

@@ -15,9 +15,9 @@ from ruamel.yaml import YAML
 from litman.cli import cli
 from litman.core.library import create_vault
 from litman.core.locking import lock_truth_file, unlock_truth_file
+from litman.core.portable_link import is_portable_link
 from litman.core.taxonomy import (
     ALL_DICTS,
-    FIXED_DICTS,
     USER_DICTS,
     add_taxonomy_values,
     parse_taxonomy,
@@ -29,7 +29,6 @@ from litman.exceptions import (
     TaxonomySimilarError,
     UnreadableTaxonomyError,
 )
-from litman.core.portable_link import is_portable_link
 
 _yaml = YAML(typ="safe")
 

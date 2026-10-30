@@ -17,12 +17,13 @@ from litman.cli import cli
 from litman.core.library import create_vault
 from litman.core.locking import lock_truth_file, unlock_truth_file
 from litman.core.notes import WIKILINK_REMINDER
+from litman.core.portable_link import is_portable_link
 from litman.exceptions import (
     CorruptMetadataError,
     ModifyError,
     PaperNotFoundError,
 )
-from litman.core.portable_link import is_portable_link
+from tests.commands.test_trash import ESCAPED_PHRASES
 
 _yaml = YAML(typ="safe")
 
@@ -288,6 +289,94 @@ def test_modify_set_multiple_in_one_invocation(
     assert meta["type"] == "review"
     assert meta["status"] == "deep-read"
     assert meta["read-date"] == "2026-04-28"
+
+
+def _long_lines(phrase: str) -> list[str]:
+    """Two long lines repeating ``phrase``, once per shift of it, so a line
+    folded at a fixed column breaks next to every character of it."""
+    return [("x" * shift + phrase * 5 + "\n") * 2 for shift in range(len(phrase))]
+
+
+@pytest.mark.parametrize("kind", list(ESCAPED_PHRASES))
+def test_modify_set_keeps_a_long_multi_line_value_as_written(
+    vault_with_paper: tuple[Path, str], kind: str
+) -> None:
+    """A value with line breaks read back with a space added after a
+    backslash or a tab: `$\\ Delta`, `C:\\data\\ raw`."""
+    vault, paper_id = vault_with_paper
+    values = {
+        f"note-{i:02d}": value
+        for i, value in enumerate(_long_lines(ESCAPED_PHRASES[kind]))
+    }
+    args = ["modify", paper_id, "--library", str(vault)]
+    for key, value in values.items():
+        args += ["--set", f"{key}={value}"]
+
+    result = CliRunner().invoke(cli, args)
+
+    assert result.exit_code == 0, result.output
+    meta = _read_meta(vault, paper_id)
+    assert {key: meta[key] for key in values} == values
+
+
+def test_modify_set_title_keeps_its_backslashes(
+    vault_with_paper: tuple[Path, str],
+) -> None:
+    """A title with an apostrophe, a colon and LaTeX is written in double
+    quotes; folded right after a backslash, it read back as `$\\ alpha`."""
+    vault, paper_id = vault_with_paper
+    phrase = "Peptides' helix: $\\alpha$ "
+    changed = []
+    for shift in range(len(phrase)):
+        title = "x" * shift + phrase * 5
+        result = CliRunner().invoke(
+            cli,
+            ["modify", paper_id, "--set", f"title={title}", "--library", str(vault)],
+        )
+        assert result.exit_code == 0, result.output
+        if _read_meta(vault, paper_id)["title"] != title.rstrip():
+            changed.append(shift)
+
+    assert changed == []
+
+
+def _double_quoted(value: str) -> str:
+    return '"' + value.replace("\\", "\\\\").replace("\t", "\\t") + '"'
+
+
+def test_modify_keeps_a_hand_written_value_it_was_not_asked_to_change(
+    vault_with_paper: tuple[Path, str],
+) -> None:
+    """A modify writes the whole file back, and a value written by hand in
+    double quotes keeps them; folded right after an escape, a value nobody
+    touched read back with a space added."""
+    vault, paper_id = vault_with_paper
+    path = vault / "papers" / paper_id / "metadata.yaml"
+    values = {
+        f"comment-{i:03d}": value
+        for i, value in enumerate(
+            "x" * shift + phrase * 5
+            for phrase in ESCAPED_PHRASES.values()
+            for shift in range(len(phrase))
+        )
+    }
+    unlock_truth_file(path)
+    path.write_text(
+        path.read_text(encoding="utf-8")
+        + "".join(f"{key}: {_double_quoted(v)}\n" for key, v in values.items()),
+        encoding="utf-8",
+    )
+    lock_truth_file(path)
+    written = _read_meta(vault, paper_id)
+    assert {key: written[key] for key in values} == values
+
+    result = CliRunner().invoke(
+        cli, ["modify", paper_id, "--set", "status=skim", "--library", str(vault)]
+    )
+
+    assert result.exit_code == 0, result.output
+    meta = _read_meta(vault, paper_id)
+    assert {key: meta[key] for key in values} == values
 
 
 # ---------------------------------------------------------------------------
@@ -2077,11 +2166,11 @@ def test_retired_field_refusal_never_preempts_the_older_gates(
     through `retired_field_replacement()` rather than importing the private
     dict, so patching it here is what the command actually consults.
     """
-    from litman.core import checks as checks_mod
+    from litman.core import schema as schema_mod
 
     vault, paper_id = vault_with_paper
     monkeypatch.setattr(
-        checks_mod,
+        schema_mod,
         "_RETIRED_FIELDS",
         {"id": "x", "updated-at": "x", "topics": "x"},
     )

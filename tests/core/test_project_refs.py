@@ -142,7 +142,7 @@ def test_render_relevance_annotation_present(vault: Path) -> None:
         vault, "2024_X_paper",
         projects=["pepforge"],
         priority="A",
-        **{"relevance-pepforge": "Direct baseline; PEPTIDE-only case."},
+        **{"relevance-pepforge": "Direct baseline; PEPTIDE-only case."},  # type: ignore[arg-type]  # a hyphenated metadata key, so it goes in via **
     )
     out = render_references_md(vault, "pepforge")
     assert "*Direct baseline; PEPTIDE-only case.*" in out
@@ -154,7 +154,7 @@ def test_render_relevance_for_wrong_project_ignored(vault: Path) -> None:
         vault, "2024_X_paper",
         projects=["pepforge"],
         priority="A",
-        **{"relevance-pepcodec": "Different-project note."},
+        **{"relevance-pepcodec": "Different-project note."},  # type: ignore[arg-type]  # a hyphenated metadata key, so it goes in via **
     )
     out = render_references_md(vault, "pepforge")
     assert "Different-project note" not in out
@@ -219,6 +219,59 @@ def test_write_idempotent(vault: Path, tmp_path: Path) -> None:
     assert second.read_text(encoding="utf-8").count("Priority B") == 1
 
 
+def test_write_leaves_a_list_that_has_not_changed_as_it_is(
+    vault: Path, tmp_path: Path
+) -> None:
+    """Only the timestamp would differ, so the file is not rewritten: a
+    project folder litman can read but not change takes a rebuild with
+    nothing to change. "Last updated" is when the list last changed."""
+    project_dir = tmp_path / "pepforge_proj"
+    project_dir.mkdir()
+    _make_paper(vault, "p1", projects=["pepforge"])
+    target = write_references_md(
+        vault, "pepforge", project_dir, now="2026-05-11T01:00:00+02:00"
+    )
+    write_references_md(
+        vault, "pepforge", project_dir, now="2026-05-11T02:00:00+02:00"
+    )
+
+    assert "Last updated: 2026-05-11T01:00:00+02:00" in target.read_text(
+        encoding="utf-8"
+    )
+
+
+def test_write_rewrites_a_list_that_changed(vault: Path, tmp_path: Path) -> None:
+    project_dir = tmp_path / "pepforge_proj"
+    project_dir.mkdir()
+    _make_paper(vault, "p1", projects=["pepforge"])
+    target = write_references_md(
+        vault, "pepforge", project_dir, now="2026-05-11T01:00:00+02:00"
+    )
+    _make_paper(vault, "p2", title="A second paper", projects=["pepforge"])
+    write_references_md(
+        vault, "pepforge", project_dir, now="2026-05-11T02:00:00+02:00"
+    )
+
+    text = target.read_text(encoding="utf-8")
+    assert "Last updated: 2026-05-11T02:00:00+02:00" in text
+    assert "A second paper" in text
+
+
+def test_write_puts_back_a_list_edited_by_hand(vault: Path, tmp_path: Path) -> None:
+    project_dir = tmp_path / "pepforge_proj"
+    project_dir.mkdir()
+    _make_paper(vault, "p1", projects=["pepforge"])
+    target = write_references_md(
+        vault, "pepforge", project_dir, now="2026-05-11T01:00:00+02:00"
+    )
+    target.write_text(
+        target.read_text(encoding="utf-8") + "my own line\n", encoding="utf-8"
+    )
+    write_references_md(vault, "pepforge", project_dir)
+
+    assert "my own line" not in target.read_text(encoding="utf-8")
+
+
 def test_write_refuses_missing_project_dir(vault: Path, tmp_path: Path) -> None:
     with pytest.raises(FileNotFoundError):
         write_references_md(vault, "pepforge", tmp_path / "does_not_exist")
@@ -278,7 +331,9 @@ def test_rebuild_all_empty_registry(vault: Path) -> None:
     assert results == {}
 
 
-def test_rebuild_all_expands_tilde(vault: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_rebuild_all_expands_tilde(
+    vault: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """``~`` in the registry path is expanded relative to HOME."""
     monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.setenv("USERPROFILE", str(tmp_path))  # "~" on Windows

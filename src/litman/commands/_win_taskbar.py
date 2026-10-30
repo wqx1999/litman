@@ -39,6 +39,7 @@ import time
 import uuid
 from collections.abc import Callable
 from ctypes import POINTER, byref, c_int, c_ubyte, c_uint32, c_ushort, c_void_p
+from typing import cast
 
 # PKEY_AppUserModel_* share one fmtid; the property id picks the member.
 _PKEY_APPUSERMODEL = "9F4C2855-9F79-4B39-A8D0-E1D42DE1D5F3"
@@ -94,13 +95,13 @@ def _guid(text: str) -> _GUID:
 
 
 def _is_litman_aumid(aumid: str | None) -> bool:
-    return bool(aumid) and _AUMID_MARK in aumid
+    return bool(aumid) and _AUMID_MARK in cast(str, aumid)
 
 
 def _com_method(obj: c_void_p, slot: int, *argtypes: object) -> Callable[..., int]:
     """Bind vtable slot ``slot`` of ``obj`` as a callable returning HRESULT."""
     vtable = ctypes.cast(obj, POINTER(POINTER(c_void_p))).contents
-    proto = ctypes.WINFUNCTYPE(c_int, c_void_p, *argtypes)
+    proto = ctypes.WINFUNCTYPE(c_int, c_void_p, *argtypes)  # type: ignore[attr-defined, unused-ignore]  # Windows-only ctypes API
     bound = proto(vtable[slot])
     return lambda *args: bound(obj, *args)
 
@@ -112,7 +113,7 @@ def _release(obj: c_void_p) -> None:
 def _window_store(hwnd: int) -> c_void_p | None:
     store = c_void_p()
     iid = _guid(_IID_IPROPERTY_STORE)
-    hr = ctypes.windll.shell32.SHGetPropertyStoreForWindow(
+    hr = ctypes.windll.shell32.SHGetPropertyStoreForWindow(  # type: ignore[attr-defined, unused-ignore]  # Windows-only ctypes API
         c_void_p(hwnd), byref(iid), byref(store)
     )
     return store if hr == 0 and store.value else None
@@ -133,7 +134,7 @@ def _read_string(store: c_void_p, pid: int) -> str | None:
             return ctypes.wstring_at(value.p)
         return None
     finally:
-        ctypes.windll.ole32.PropVariantClear(byref(value))
+        ctypes.windll.ole32.PropVariantClear(byref(value))  # type: ignore[attr-defined, unused-ignore]  # Windows-only ctypes API
 
 
 def _write_string(store: c_void_p, pid: int, text: str) -> bool:
@@ -149,9 +150,9 @@ def _write_string(store: c_void_p, pid: int, text: str) -> bool:
 
 
 def _visible_windows() -> list[int]:
-    user32 = ctypes.windll.user32
+    user32 = ctypes.windll.user32  # type: ignore[attr-defined, unused-ignore]  # Windows-only ctypes API
     found: list[int] = []
-    proto = ctypes.WINFUNCTYPE(c_int, c_void_p, c_void_p)
+    proto = ctypes.WINFUNCTYPE(c_int, c_void_p, c_void_p)  # type: ignore[attr-defined, unused-ignore]  # Windows-only ctypes API
 
     def keep(hwnd: int | None, _lparam: object) -> int:
         if hwnd is not None and user32.IsWindowVisible(c_void_p(hwnd)):
@@ -171,7 +172,7 @@ def _readd_taskbar_tab(hwnd: int) -> None:
     taskbar = c_void_p()
     clsid = _guid(_CLSID_TASKBAR_LIST)
     iid = _guid(_IID_ITASKBAR_LIST)
-    hr = ctypes.windll.ole32.CoCreateInstance(
+    hr = ctypes.windll.ole32.CoCreateInstance(  # type: ignore[attr-defined, unused-ignore]  # Windows-only ctypes API
         byref(clsid), None, _CLSCTX_INPROC_SERVER, byref(iid), byref(taskbar)
     )
     if hr != 0 or not taskbar.value:
@@ -242,7 +243,8 @@ def adopt_window(
     the wait early on shutdown. Best-effort by contract: the caller treats
     False the same as success minus the icon.
     """
-    ctypes.windll.ole32.CoInitialize(None)  # per-thread; S_FALSE is fine
+    # per-thread; S_FALSE is fine
+    ctypes.windll.ole32.CoInitialize(None)  # type: ignore[attr-defined, unused-ignore]  # Windows-only ctypes API
     deadline = time.monotonic() + timeout
     while not give_up():
         if _brand_pass(icon_path, relaunch_command):

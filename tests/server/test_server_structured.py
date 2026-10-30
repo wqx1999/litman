@@ -33,8 +33,10 @@ from datetime import UTC
 
 from litman.cli import cli
 from litman.core import locking
+from litman.core.config import CONFIG_FILENAME
 from litman.core.library import create_vault
 from litman.core.portable_link import is_portable_link
+from litman.core.trash import list_trash
 from litman.core.vault_registry import (
     add_vault,
     find_active,
@@ -99,6 +101,28 @@ def test_put_metadata_set_status_writes_backend_and_reprojects_index(
     assert _meta(vault, paper_id)["status"] == "deep-read"
     # … and the DERIVED projection was recomputed by the backend to match.
     assert _index_paper(vault, paper_id)["status"] == "deep-read"
+
+
+def test_put_metadata_title_keeps_its_backslashes(
+    vault_with_paper: tuple[Path, str],
+) -> None:
+    """The metadata editor's title is written as `lit modify` writes it: with
+    an apostrophe, a colon and LaTeX, in double quotes, and folded right after
+    a backslash, it read back as `$\\ alpha`."""
+    vault, paper_id = vault_with_paper
+    client = _client(vault)
+    phrase = "Peptides' helix: $\\alpha$ "
+    changed = []
+    for shift in range(len(phrase)):
+        title = "x" * shift + phrase * 5
+        resp = client.put(
+            f"/api/paper/{paper_id}/metadata", json={"set": {"title": title}}
+        )
+        assert resp.status_code == 200, resp.text
+        if _meta(vault, paper_id)["title"] != title.rstrip():
+            changed.append(shift)
+
+    assert changed == []
 
 
 def test_put_metadata_unset_type(vault_with_paper: tuple[Path, str]) -> None:
@@ -611,7 +635,7 @@ def test_get_fixed_enums(vault_with_paper: tuple[Path, str]) -> None:
     assert body["status"]["allowsNone"] is False
     assert body["status"]["values"] == ["inbox", "skim", "deep-read", "dropped"]
 
-    # type: optional (offer an unset), sorted values.
+    # "type": optional (offer an unset), sorted values.
     assert body["type"]["allowsNone"] is True
     assert "research" in body["type"]["values"]
     assert body["type"]["values"] == sorted(body["type"]["values"])
@@ -1143,7 +1167,7 @@ def test_delete_project_cascades_and_keeps_dir(
 
     resp = client.delete("/api/projects/pepforge")
     assert resp.status_code == 200
-    assert resp.json() == {"ok": True, "changed": 1}
+    assert resp.json() == {"ok": True, "changed": 1, "foldersLeft": []}
 
     # TRUTH: paper untagged + dropped from both truth sources …
     assert _meta(vault, paper_id)["projects"] == []
@@ -1526,7 +1550,6 @@ def test_put_active_vault_unknown_name_400(tmp_path: Path) -> None:
 def test_put_active_vault_missing_path_refused_400(tmp_path: Path) -> None:
     """A stale registry entry (vault dir gone) is refused BEFORE persisting, so
     the global active + the live server stay on the old vault."""
-    import shutil
 
     v1, v2 = _two_registered_vaults(tmp_path)
     app = create_app(v1)
@@ -2173,3 +2196,127 @@ def test_a_write_on_a_taxonomy_that_is_not_utf8_is_a_described_500(
         f"Cannot read {path}: line 14 is not UTF-8. Re-save it as UTF-8, then retry."
     )
     assert path.read_bytes() == data
+
+
+# ---------------------------------------------------------------------------
+# A lit-config.yaml that cannot be read
+# ---------------------------------------------------------------------------
+
+
+def _damage_config(vault: Path, kind: str) -> None:
+    path = vault / CONFIG_FILENAME
+    if kind == "unparsable":
+        path.write_text("library_name: [unclosed\n", encoding="utf-8")
+    else:
+        with path.open("a", encoding="utf-8") as f:
+            f.write("no_such_setting: 1\n")
+
+
+def _assert_config_detail(detail: str, kind: str) -> None:
+    """One line for a toast: what is wrong with the file and the way out."""
+    if kind == "unparsable":
+        assert detail == (
+            "lit-config.yaml cannot be read (lit config show says why) "
+            "— fix it and try again"
+        )
+    else:
+        assert detail.startswith("lit-config.yaml is invalid (no_such_setting: ")
+        assert detail.endswith(") — fix it and try again")
+        assert "\n" not in detail
+
+
+@pytest.mark.parametrize(
+    ("method", "url", "body"),
+    [
+        ("GET", "/api/projects", None),
+        ("POST", "/api/projects", {"name": "pepforge2", "path": "<dir>"}),
+        ("PUT", "/api/projects/pepforge", {"new": "pepforge2"}),
+        ("PUT", "/api/projects/pepforge/path", {"path": "<dir>"}),
+        ("DELETE", "/api/projects/pepforge", None),
+        ("POST", "/api/paper/{id}/project", {"project": "pepforge"}),
+        ("DELETE", "/api/paper/{id}/project/pepforge", None),
+        ("GET", "/api/paper/{id}/rm-preview", None),
+    ],
+    ids=[
+        "project-list",
+        "project-add",
+        "project-rename",
+        "project-set-path",
+        "project-rm",
+        "link",
+        "unlink",
+        "rm-preview",
+    ],
+)
+@pytest.mark.parametrize("kind", ["unparsable", "invalid"])
+def test_a_config_that_cannot_be_read_is_a_described_500(
+    vault_with_paper: tuple[Path, str],
+    tmp_path: Path,
+    kind: str,
+    method: str,
+    url: str,
+    body: dict | None,
+) -> None:
+    """The toast says lit-config.yaml needs fixing instead of "Internal Server
+    Error", and nothing is written."""
+    vault, paper_id = vault_with_paper
+    _register_project(vault, "pepforge", tmp_path / "pepforge")
+    client = _client(vault)
+    linked = client.post(f"/api/paper/{paper_id}/project", json={"project": "pepforge"})
+    assert linked.status_code == 200
+    _damage_config(vault, kind)
+    before = {
+        p: p.read_bytes()
+        for p in (vault / CONFIG_FILENAME, vault / "TAXONOMY.md", vault / "INDEX.json")
+    }
+    if body is not None and body.get("path") == "<dir>":
+        body = {**body, "path": str(tmp_path)}
+
+    resp = client.request(method, url.format(id=paper_id), json=body)
+
+    assert resp.status_code == 500
+    _assert_config_detail(resp.json()["detail"], kind)
+    assert {p: p.read_bytes() for p in before} == before
+
+
+@pytest.mark.parametrize("kind", ["unparsable", "invalid"])
+def test_restoring_a_paper_says_the_config_cannot_be_read(
+    vault_with_paper: tuple[Path, str], kind: str
+) -> None:
+    vault, paper_id = vault_with_paper
+    removed = CliRunner().invoke(cli, ["rm", paper_id, "--yes", "--library", str(vault)])
+    assert removed.exit_code == 0, removed.output
+    entry_name = list_trash(vault)[0].entry_name
+    client = _client(vault)
+    _damage_config(vault, kind)
+
+    resp = client.post(f"/api/trash/{entry_name}/restore")
+
+    assert resp.status_code == 500
+    _assert_config_detail(resp.json()["detail"], kind)
+    assert [e.entry_name for e in list_trash(vault)] == [entry_name]
+    assert not (vault / "papers" / paper_id).exists()
+
+
+@pytest.mark.parametrize("kind", ["unparsable", "invalid"])
+def test_editing_a_project_member_saves_when_the_config_cannot_be_read(
+    vault_with_paper: tuple[Path, str], tmp_path: Path, kind: str
+) -> None:
+    """The edit is saved before the project folders are refreshed, so it
+    answers 200 rather than "fix it and try again" for a change that already
+    landed. The health panel is where the unreadable config shows."""
+    vault, paper_id = vault_with_paper
+    _register_project(vault, "pepforge", tmp_path / "pepforge")
+    client = _client(vault)
+    linked = client.post(f"/api/paper/{paper_id}/project", json={"project": "pepforge"})
+    assert linked.status_code == 200
+    _damage_config(vault, kind)
+
+    resp = client.put(
+        f"/api/paper/{paper_id}/metadata", json={"set": {"title": "Brand New Title"}}
+    )
+
+    assert resp.status_code == 200, resp.text
+    assert resp.json() == {"ok": True, "changed": True}
+    meta_text = (vault / "papers" / paper_id / "metadata.yaml").read_text(encoding="utf-8")
+    assert _yaml.load(meta_text)["title"] == "Brand New Title"

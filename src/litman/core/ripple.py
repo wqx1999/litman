@@ -42,7 +42,7 @@ from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
 
-from ruamel.yaml import YAMLError
+from ruamel.yaml.error import YAMLError
 
 from litman.core.atomic import _make_op_id, staged_write
 from litman.core.dates import now_iso
@@ -51,8 +51,10 @@ from litman.core.document import (
     load_yaml_or_raise,
     read_metadata,
 )
+from litman.core.id import clean_title_rename_target
 from litman.core.notes import retitle_heading
 from litman.core.relations import dangling_relation_edges, relation_refs
+from litman.core.schema import PROJECT_PRIORITY_PREFIX
 from litman.core.taxonomy import replace_value_in_field
 from litman.core.textclean import dirty_text_fields
 from litman.core.views import render_index
@@ -74,13 +76,7 @@ def _project_key_prefixes() -> tuple[str, ...]:
     a ``lit project rename`` and vanish on a ``lit project rm`` — otherwise
     ``check_relevance_orphan`` / ``check_priority_orphan`` flag what the
     command itself stranded.
-
-    Resolved lazily: ``core.checks`` imports THIS module back (the retired-
-    field migration behind ``apply_autofix``), so a module-level import would
-    close a load-time cycle.
     """
-    from litman.core.checks import PROJECT_PRIORITY_PREFIX
-
     return ("relevance-", PROJECT_PRIORITY_PREFIX)
 
 
@@ -371,7 +367,7 @@ def migrate_retired_priority(vault: Path) -> int:
     """Move every paper-level ``priority`` onto its per-project keys. Returns n.
 
     The permanent ``lit health-check --fix`` migration behind the
-    ``retired_priority`` finding (``core/checks.py``, ADR-025). Per paper
+    ``retired_priority`` finding (``core/checks/metadata.py``, ADR-025). Per paper
     holding the retired key:
 
     * a graded paper copies its letter onto ``priority-<project>`` for every
@@ -421,11 +417,10 @@ def migrate_retired_priority(vault: Path) -> int:
     the retired key, so ``check_schema`` reports it again on the re-run
     ``health-check`` does right after ``--fix``.
     """
-    # Local imports: core.checks imports THIS module back (apply_autofix's
-    # retired_priority arm) and core.correctors imports core.checks, so
-    # keeping both lazy means neither direction is a module-load edge.
-    # Mirrors the lazy reconcile import in core/project_link.py.
-    from litman.core.checks import PROJECT_PRIORITY_PREFIX
+    # Local import: core.correctors imports core.checks, which imports THIS
+    # module back (apply_autofix's retired_priority arm), so keeping it lazy
+    # means neither direction is a module-load edge. Mirrors the lazy
+    # reconcile import in core/project_link.py.
     from litman.core.correctors import reconcile_derived
 
     papers_dir = vault / "papers"
@@ -607,7 +602,7 @@ def clean_dirty_metadata(
 
     ``renames`` pairs each id derived from a title this cleans with the id the
     clean title derives — the ``lit rename`` the title finding suggests, by the
-    same rule (``checks._clean_title_rename_target``). It is worked out before
+    same rule (``core.id.clean_title_rename_target``). It is worked out before
     the rewrite, because afterwards nothing on disk shows the id came from the
     old title.
 
@@ -617,7 +612,6 @@ def clean_dirty_metadata(
     rewritten files plus ``INDEX.json`` go into ONE :func:`staged_write`.
     Idempotent: a second run finds nothing and returns ``(0, [], [])``.
     """
-    from litman.core.checks import _clean_title_rename_target
     from litman.core.correctors import reconcile_derived
 
     now = now_iso()
@@ -640,7 +634,7 @@ def clean_dirty_metadata(
         # A non-empty str whenever "title" is in dirty, the only case it is read.
         old_title: str = rt_metadata.get("title") or ""
         if "title" in dirty:
-            target = _clean_title_rename_target(paper, dirty)
+            target = clean_title_rename_target(paper, dirty)
             if target is not None:
                 renames.append((paper["id"], target))
         for field, value in dirty.items():

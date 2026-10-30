@@ -32,7 +32,10 @@ import click
 from rich.console import Console
 from rich.markup import escape
 
-from litman.commands._hub_report import hub_settlement_lines
+from litman.commands._hub_report import (
+    hub_settlement_lines,
+    project_folder_not_updated,
+)
 from litman.commands._options import library_option, vault_option
 from litman.core import confirm as confirm_mod
 from litman.core.checks import (
@@ -47,10 +50,11 @@ from litman.core.checks import (
     klass_a_checks,
     run_all_checks,
 )
-from litman.core.correctors import regen
+from litman.core.correctors import link_errors_from, regen
 from litman.core.document import list_papers
 from litman.core.library import find_vault, resolve_library_or_vault
 from litman.core.locking import ensure_truth_locked
+from litman.core.portable_link import views_line_once
 
 if TYPE_CHECKING:
     from litman.core.supplementary import SiFixPolicy
@@ -130,6 +134,7 @@ _CATEGORY_HEADERS: dict[str, str] = {
     "taxonomy_similar": "Look-alike vocabulary values (topics / methods / data)",
     "taxonomy_unused": "Vocabulary values no paper uses",
     "taxonomy_singletons": "Vocabularies mostly made of values used by one paper",
+    "config_unreadable": "Unreadable lit-config.yaml (config-dependent checks skipped)",
     "project_config_consistency": (
         "Project registry consistency (TAXONOMY.md vs lit-config.yaml)"
     ),
@@ -137,12 +142,14 @@ _CATEGORY_HEADERS: dict[str, str] = {
     "bidirectional_refs": "Bidirectional 'related' asymmetry",
     "inbox_staleness": "Inbox staleness (>14 days)",
     "stale_staging": ".litman-staging/ leftovers",
+    "stale_staging_unrecoverable": ".litman-staging/ leftovers --fix cannot clean up",
     "orphan_trash_sidecar": "Orphan .trash/ sidecars",
     "trash_size": "Trash bloat (entry count)",
     "replaced_folders": "Folders kept out of project hubs",
     "pdf_viewer": "PDF viewer availability (for `lit open`)",
     "skill_drift": "Agent skill freshness (installed vs bundled)",
     "code_clone_integrity": "Code clone integrity (clones vs metadata refs)",
+    "notes_from_trash": "Repo notes a restore set aside (notes.from-trash.md)",
     "vault_registry_drift": "Vault registry drift (registered path missing)",
     "supplementary_field": "SI records (the supplementary field in metadata.yaml)",
     "supplementary_missing": "SI files recorded but missing",
@@ -321,7 +328,10 @@ def health_check_cmd(
     # directories the check deliberately does not probe). With nothing to
     # do, _apply_fixes returns {} and this block is output-silent.
     if do_fix:
-        applied = _apply_fixes(vault, issues)
+        # The regen and each ripple fix rebuild views/ in turn: a view folder
+        # that takes no change is said once for the run, not once each.
+        with views_line_once():
+            applied = _apply_fixes(vault, issues)
         if applied:
             console.print("\n[bold]Auto-fix:[/]")
             hub_reported = False
@@ -335,6 +345,7 @@ def health_check_cmd(
                     DIRTY_NOTES_UNREADABLE,
                     DIRTY_RENAMES,
                     UNFINISHED_RENAME_LEFT,
+                    _PROJECT_FOLDERS_LEFT,
                 ):
                     continue
                 if n > 0:
@@ -354,6 +365,13 @@ def health_check_cmd(
                 # The rebuild can settle hub folders while some OTHER klass-A
                 # category is what fired it.
                 _report_hub_settlements(applied)
+            # A project folder the rebuild could not change: the report above
+            # named it, this says what to do (one line however many).
+            left = applied.get(_PROJECT_FOLDERS_LEFT)
+            if isinstance(left, list) and left:
+                console.print(
+                    f"  {project_folder_not_updated(left[0])}", soft_wrap=True
+                )
             # Re-run checks so the post-fix summary is honest.
             papers = list_papers(vault)
             issues = run_all_checks(vault, papers)
@@ -382,7 +400,7 @@ def _refresh_active_health_check_timestamp(vault: Path) -> None:
     health-check into a crash. If it cannot write, the next run simply nudges
     again — nothing silently wrong (no state was claimed to change).
     """
-    from datetime import datetime, timezone
+    from datetime import UTC, datetime
 
     from litman.core.vault_registry import (
         VaultRegistryError,
@@ -399,7 +417,7 @@ def _refresh_active_health_check_timestamp(vault: Path) -> None:
             return
         if Path(active.path).resolve() != Path(vault).resolve():
             return
-        ts = datetime.now(timezone.utc).isoformat()
+        ts = datetime.now(UTC).isoformat()
         save_registry(mark_health_checked(reg, active.name, ts))
     except (VaultRegistryError, OSError):
         pass
@@ -524,6 +542,10 @@ def _si_fix_policy() -> SiFixPolicy:
     return SiFixPolicy(confirm_drop, confirm_unverified, on_rejected)
 
 
+# _apply_fixes' detail key for the project folders its regen could not change.
+_PROJECT_FOLDERS_LEFT = "project_folders_left"
+
+
 def _apply_fixes(vault: Path, issues: list[Issue]) -> dict[str, Any]:
     """Auto-fix the fixable subset: klass-A regen + legacy validity cleanups.
 
@@ -549,9 +571,13 @@ def _apply_fixes(vault: Path, issues: list[Issue]) -> dict[str, Any]:
     ``dirty_metadata_renames`` (``checks.DIRTY_NOTES_UNREADABLE`` /
     ``checks.DIRTY_RENAMES``) when it has notes.md files or ids to name, and
     ``unfinished_rename_left`` (``checks.UNFINISHED_RENAME_LEFT``) when a
-    folder could not be renamed.
+    folder could not be renamed, and ``project_folders_left`` (the ``OSError``
+    of each project folder the regen could not change) when there is one.
     """
     counts: dict[str, Any] = {}
+    # The report's order, for the return below; read before unfinished_rename
+    # is set aside.
+    report_order = list(dict.fromkeys(i.category for i in issues))
 
     # Folders first. Until a half-renamed paper's folder carries its metadata
     # id, the rebuild links views and project hubs to a folder that is not
@@ -569,9 +595,21 @@ def _apply_fixes(vault: Path, issues: list[Issue]) -> dict[str, Any]:
     }
     if klass_a_present or moved:
         regenerated = regen(vault, issues)
+        # A project folder the rebuild could not change (no read access, a
+        # read-only mount) is not healed: project_references is not claimed,
+        # and the errors go back for the one line that says what to do.
+        folders_left = link_errors_from(regenerated)
+        if folders_left:
+            counts[_PROJECT_FOLDERS_LEFT] = folders_left
+        # Likewise a views/ folder it could not change (the regen said which).
+        views_left = bool(regenerated.get("view_errors"))
         # A regen is a single wholesale rebuild; attribute one cleaned unit to
         # each fired klass-A category so the report names what was healed.
         for cat in klass_a_present:
+            if folders_left and cat == "project_references":
+                continue
+            if views_left and cat == "views_vs_metadata":
+                continue
             counts[cat] = 1
         # Passed through, not counted: how many hub folder copies the rebuild
         # deleted, and which differing ones it kept. core does not print.
@@ -580,4 +618,9 @@ def _apply_fixes(vault: Path, issues: list[Issue]) -> dict[str, Any]:
                 counts[key] = regenerated[key]
 
     counts.update(apply_autofix(vault, issues, si_policy=_si_fix_policy()))
-    return counts
+    # In the report's order (where each category first came up), so the
+    # Auto-fix lines read in the same order as the report above them. Keys the
+    # report has no section for — the detail keys, a skill sweep with no
+    # finding — keep their relative order, last.
+    rank = {category: n for n, category in enumerate(report_order)}
+    return dict(sorted(counts.items(), key=lambda kv: rank.get(kv[0], len(rank))))

@@ -64,7 +64,7 @@ def _contain_self_update(monkeypatch: pytest.MonkeyPatch) -> dict[str, list[obje
     """
     seen: dict[str, list[object]] = {"ran": [], "spawned": []}
 
-    def _completed(cmd: object) -> subprocess.CompletedProcess[str]:
+    def _completed(cmd) -> subprocess.CompletedProcess[str]:
         return subprocess.CompletedProcess(args=cmd, returncode=0, stdout="", stderr="")
 
     monkeypatch.setattr(su.launcher_stubs, "repair_default", lambda: [])

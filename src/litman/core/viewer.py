@@ -16,7 +16,7 @@ Two responsibilities, kept here so the CLI command stays a thin wrapper:
   file here reaches a screen at all, and :func:`launch_url` hands a web page
   to the default browser with the same openers.
 
-Pure reads. No state file. Importable from ``core/checks.py`` so the
+Pure reads. No state file. Importable from ``core/checks/maintenance.py`` so the
 health-check viewer-availability probe can reuse :func:`detect_platform_viewer`
 without duplicating the platform branching.
 

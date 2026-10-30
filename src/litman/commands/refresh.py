@@ -8,11 +8,15 @@ import click
 from rich.console import Console
 from rich.markup import escape
 
-from litman.commands._hub_report import hub_settlement_lines
+from litman.commands._hub_report import (
+    hub_settlement_lines,
+    project_folder_not_updated,
+)
 from litman.commands._options import library_option, vault_option
 from litman.core.config import load_config
 from litman.core.document import list_papers
 from litman.core.library import find_vault, resolve_library_or_vault
+from litman.core.portable_link import warn_views_not_updated
 from litman.core.project_link import rebuild_all_project_links
 from litman.core.project_refs import rebuild_all_project_refs
 from litman.core.views import rebuild_views, write_index
@@ -46,7 +50,8 @@ def refresh_views_cmd(
     config = load_config(vault)
 
     write_index(vault, papers)
-    counts = rebuild_views(vault, papers)
+    view_errors: list[tuple[str, OSError]] = []
+    counts = rebuild_views(vault, papers, view_errors=view_errors)
     # review F16: rebuild the litman_reflib/<id> symlinks too, not just
     # REFERENCES.md — otherwise a `refresh-views` left dangling/missing project
     # symlinks while only the text index was current. Links first, then refs
@@ -60,8 +65,13 @@ def refresh_views_cmd(
     )
     for view_name, k in counts.items():
         console.print(f"  views/{view_name}: {k} link{'s' if k != 1 else ''}")
+    if view_errors:
+        warn_views_not_updated(*view_errors[0])
     if project_results:
-        console.print(f"[green]✓[/] Project REFERENCES.md ({len(project_results)} project{'s' if len(project_results) != 1 else ''})")
+        console.print(
+            f"[green]✓[/] Project REFERENCES.md ({len(project_results)} "
+            f"project{'s' if len(project_results) != 1 else ''})"
+        )
         for project, info in project_results.items():
             status = info["status"]
             n_papers = info["n_papers"]
@@ -93,3 +103,13 @@ def refresh_views_cmd(
         # registry has entries but rebuild returned nothing — should not happen
         console.print("[yellow]Project registry populated but no results.[/]")
     console.print(f"[dim]Vault: {vault}[/]")
+    # One line however many project folders refused (their own lines above
+    # name each one).
+    link_errors = [
+        info["error"]
+        for results in (link_results, project_results)
+        for info in results.values()
+        if info["status"] == "error"
+    ]
+    if link_errors:
+        console.print(project_folder_not_updated(link_errors[0]), soft_wrap=True)

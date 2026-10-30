@@ -138,4 +138,4 @@ def _confirm_destructive(warning_lines: list[str], *, yes: bool) -> bool:
             "Non-interactive environment — pass --yes to confirm.",
             err=True,
         )
-        raise click.Abort()
+        raise click.Abort() from None

@@ -9,6 +9,181 @@ before, and everything else is a patch — however large it was to build.
 Anything that takes something out of your library is marked **Breaking** in its
 own entry. Read those before you upgrade, whatever the number says.
 
+## Unreleased
+
+### Added
+
+- **DeepSeek Harness is a supported agent.** Pick it in the agent panel or run
+  `lit agent dsh`, and DeepSeek Harness opens — no terminal in between.
+  Install the skills from the same panel: DeepSeek Harness loads both of them.
+  It comes back to the session you used last, so the first time, add your
+  library as a workspace in DeepSeek Harness.
+
+### Fixed
+
+- **Users in mainland China now see when a new version is out.** litman
+  asked pypi.org for the newest version, which often does not answer there in
+  time, and after one failed try it did not ask again for a day, so no update
+  badge or tip appeared. It now asks the mirror litman was installed from (the
+  China installers use the Tsinghua mirror), so a version it shows is one
+  `lit self-update` can install. The web UI also waits for a slow answer, asks
+  again an hour after a failed try and every hour while it stays open. If you
+  are in mainland China and still on an older version, run `lit self-update`
+  once.
+- **`lit health-check` titles two more kinds of problem.** A `lit-config.yaml`
+  it cannot read and a `.litman-staging/` leftover it cannot clean up were
+  headed by internal names (`config_unreadable`, `stale_staging_unrecoverable`).
+  They now get a title like every other finding.
+- **`lit health-check --fix` lists what it fixed in a steady order.** The
+  **Auto-fix** lines could come out in a different order on each run. They now
+  follow the order of the report above them.
+- **The web UI keeps up when `lit-config.yaml` or `TAXONOMY.md` cannot be
+  read.** It stopped showing changes made from the terminal or by an agent
+  until the page was reloaded, and adding a project, restoring a paper or
+  removing one said only "Internal Server Error". It now stays up to date, and
+  those actions say that `lit-config.yaml` needs fixing; the health panel says
+  `lit-config.yaml` cannot be read.
+- **Changing a paper while `lit-config.yaml` cannot be read now finishes.**
+  `lit modify`, `lit code link`, `lit code unlink`, `lit code add --paper` and
+  `lit code rm --cascade` saved the change and then stopped with an error —
+  `lit code add` also removed the repo it had just added — and the web UI said
+  the edit had failed. `lit rename` and changing a paper's projects left the
+  project folders behind without a word. These commands now finish and say the
+  project folders were not updated: fix the file, then run
+  `lit health-check --fix`. The web UI now saves the edit without an error.
+- **`lit code` says when it cannot update a project's `litman_code/` folder.**
+  `lit code add --paper`, `lit code link` and `lit code unlink` left the
+  folder out of date without a word, and `lit code rm --cascade` stopped
+  before deleting the repo when the folder could not be read. They now finish
+  and say so; once the folder is fixed, `lit health-check --fix` brings it up
+  to date.
+- **`lit trash restore` finishes when it cannot update a project folder.**
+  When a folder of one of the paper's projects could not be read, the restore
+  stopped with a Python error after the paper was already back, and the web UI
+  said only "Internal Server Error". The address of a repo it still had to
+  clone again was then lost for good, and a repo it did clone again was left
+  out of the project without a word. It now finishes, clones the repo, and
+  says the project folder was not updated; once the folder is fixed,
+  `lit health-check --fix` brings it up to date.
+- **Restoring a paper keeps the address of a repo it does not clone again.**
+  When `lit rm` deleted a repo only that paper used, its address was kept only
+  in the trash. Restoring the paper from the web UI, which never clones,
+  lost it for good, and the web UI pointed to `lit trash restore -y`, which
+  no longer had anything to restore. The repo now comes back with the paper,
+  without its files: `lit code restore-all` clones it again and links it into
+  the paper's projects. The same holds when `lit trash restore` skips or fails
+  the clone. `lit code restore-all` also copies a repo added from a folder
+  without git again, instead of failing on it.
+- **A project folder that cannot be read no longer stops a command halfway.**
+  When a project's `litman_reflib/` or `litman_code/` could not be read,
+  `lit link`, `lit unlink`, `lit rm`, `lit rename`, `lit modify`,
+  `lit project rename`, `lit project rm`, `lit refresh-views` and
+  `lit health-check --fix` made their change and then stopped with a Python
+  error, the project folder half updated; in the web UI the same actions said
+  only "Internal Server Error". `lit unlink` also lost the relevance note it
+  removes, which it shows so you can copy it back. They now finish and say the
+  project folder was not updated; once it is fixed, `lit health-check --fix`
+  brings it up to date. `lit project rm` names the folder to clear by hand,
+  since nothing looks at it after. `lit health-check` and the web UI's health
+  panel, which failed the same way, now name the folder they could not read.
+- **A project folder litman can read but not change is called that.** In a
+  `litman_reflib/` or `litman_code/` that takes no changes (`chmod 555`, a
+  read-only mount, a folder another user shares), `lit unlink`, `lit rm`,
+  `lit project rm`, `lit code unlink` and `lit code rm --cascade` left the old
+  links behind without a word, and a link that could not be added (`lit link`,
+  `lit code link`, `lit code add --paper` and the rest) was blamed on the
+  drive ("this filesystem cannot hold folder links") or on an entry to remove
+  by hand;
+  `lit health-check` said the same of a project folder that took no changes
+  at all. They now end with the one line a folder they cannot read gets, and
+  `lit project rm` names the folder to clear by hand. Rebuilding a project
+  folder also leaves the links and `REFERENCES.md` that are already right as
+  they are, so a read-only folder in order raises nothing;
+  `REFERENCES.md`'s "Last updated" is now when its list last changed. Nor
+  does one such folder keep the project's other folder, or the paper's other
+  projects, from being brought up to date.
+- **A read-only folder in `views/` no longer stops a command.** When a folder
+  under the library's `views/` took no changes (`chmod 555` on
+  `views/by-status/` or one of its buckets), `lit drop`, `lit modify`,
+  `lit rename`, `lit rm`, `lit refresh-views`, `lit health-check --fix` and
+  the other commands that update `views/` either stopped with a Python error
+  after the change was already saved, or left the old link there and still
+  said "views/ refreshed"; changing a paper's status in the web UI answered
+  with a server error. They now finish and name the view they could not
+  update in one line, and `lit health-check` reports that view until the
+  folder takes changes again. A rebuild leaves the links in `views/` that are
+  already right as they are.
+- **`lit health-check` names a folder in `views/` it cannot read.** When
+  `views/`, one of its views or a bucket could not be read (`chmod 000`, or a
+  copy owned by another account), `lit health-check` stopped with a Python
+  error and the web UI's health panel answered with a server error. It now
+  names that folder and checks the other views.
+- **"could not clear" also says to make the folder writable.** When a real
+  folder sat where a project link belongs and could not be removed, the hint
+  said only to close whatever was using it, also when the folder itself did
+  not allow changes.
+- **Deleting a project in the web UI names the folder it could not clean up.**
+  When a project's `litman_reflib/` or `litman_code/` could not be read or
+  changed, the web UI said only "Removed project" and left the old links in
+  it, and nothing looks at that folder again. It now names the folder and the
+  reason, and the notice stays until you click it, as `lit project rm` already
+  said.
+- **`lit gui --make-shortcut` says in one line why it could not.** When the
+  folder the shortcut goes in could not be written (a file named like the
+  Desktop folder, an applications folder without write access), it printed a
+  whole Python traceback, and `lit setup` stopped there. It now names the
+  folder and the reason, and `lit setup` lists the shortcut as skipped and
+  finishes.
+- **On Windows, `lit gui --make-shortcut` works when `lit` is not on PATH.**
+  It stopped with "Could not locate the `lit` executable", though that was the
+  program running. It now uses the `lit.exe` it was started from.
+- **`lit rm` no longer deletes the only copy of a repo.** A folder added with
+  `lit code add --move` exists only in the library. When the paper you deleted
+  was the only one using it, `lit rm` deleted the repo too, and restoring the
+  paper could not bring it back. `lit rm` now keeps a repo it has nothing to
+  clone again from, unbound, and says so; `lit code rm` deletes it if you want.
+- **Restoring a paper brings back its repo's notes.** When `lit rm` deleted a
+  repo only that paper used, the repo's `notes.md` and the fields you filled
+  in its `repo-meta.yaml` (framework, runs-on, status) went with it, and a
+  restore put back blank ones. They now wait in the trash with the paper and
+  come back when you restore it. A paper deleted before this version cannot
+  get them back.
+- **`lit rm` no longer deletes a repo you changed.** When the paper you
+  deleted was the only one using a repo, `lit rm` deleted the whole repo, on
+  the grounds that it could be cloned again. A clone does not bring back what
+  you changed in it: edited or new files, commits you had not pushed, a stash,
+  files you put next to `repo/`. That repo is now kept, unbound, and
+  `lit rm` says so; so is one it cannot check (no git, say). The web UI's
+  delete dialog lists it too. `lit code rm` deletes it if you want.
+- **`lit trash restore -y` no longer deletes a repo that is already back.**
+  When a paper's repo had been deleted with it and its `repo/` folder was in
+  place again (a sync from another computer, or a clone by hand), the restore
+  tried to clone it again, failed because the folder was in the way, and
+  deleted that folder with everything you had changed in it. The restore now
+  binds the paper to the folder that is there.
+- **`lit trash restore` no longer writes over a repo's newer notes.** When a
+  `notes.md` was back in the folder of a repo deleted with the paper (written
+  by hand, or brought back by a sync), the restore replaced it with the copy
+  saved at the delete. It now keeps that one, puts the saved copy beside it as
+  `notes.from-trash.md`, and says so; `lit health-check` lists that copy until
+  you merge it in and delete it.
+- **A long value with a backslash is kept as you wrote it.** When litman
+  wrote a long value with a backslash or a tab, such as a LaTeX formula
+  (`$\alpha$`) or a Windows path in a paper's `metadata.yaml`, it could read
+  back with a space added: `$\ alpha`. Long values are now written on one
+  line, so each file's layout changes once, the next time litman writes it;
+  the values stay the same.
+
+### Security
+
+- **On Linux, `lit gui` refuses requests from other users of the same
+  machine, wherever the kernel can say who sent them.** On a shared machine,
+  such as an HPC login node, anyone logged in could send requests to the web
+  UI's port and read or change your library. Your own web UI, command line and
+  `ssh -L` tunnels work as before. The check does not run on Windows or macOS,
+  nor on a Linux kernel that cannot tell users apart (no `tcp_diag`, or a user
+  namespace that maps no uids); there `lit gui` behaves as before.
+
 ## 1.3.9 — 2026-10-28
 
 ### Added

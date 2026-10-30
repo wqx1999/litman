@@ -19,6 +19,12 @@ until this file has a matching `## X.Y.Z` section (tests/core/test_whatsnew.py),
 and release.sh refuses to publish without one.
 -->
 
+## 1.3.10
+
+- Open DeepSeek Harness straight from litman.
+- Fixed a number of bugs.
+- litman is safer to use on shared HPC servers.
+
 ## 1.3.9
 
 - Open your library in ZCode straight from litman.

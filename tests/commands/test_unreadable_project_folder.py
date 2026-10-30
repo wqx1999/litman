@@ -1,0 +1,309 @@
+"""A project folder litman cannot read: every command still finishes and says so.
+
+A project's ``litman_reflib/`` or ``litman_code/`` can stop being readable
+(permissions changed, a folder another user made, a read-only mount). Every
+command that touches it used to finish its own write and then die in a
+traceback, leaving the folder half updated; ``lit health-check`` died too, so
+nothing could say what was wrong. ``deny`` (tests/_project_folder.py) makes the
+folder unreadable on every platform; one test per area also runs the real thing
+with ``chmod`` where that exists.
+"""
+
+from __future__ import annotations
+
+from pathlib import Path
+
+import pytest
+from click.testing import CliRunner
+
+from litman.cli import cli
+from tests._project_folder import (
+    ACCESS_DENIED,
+    HUBS,
+    LINE,
+    Library,
+    deny,
+    make_library,
+    not_root,
+    paper_meta,
+    posix_only,
+    project_issues,
+    registered_projects,
+    run_lit,
+)
+
+
+@pytest.fixture
+def lib(tmp_path: Path) -> Library:
+    return make_library(tmp_path)
+
+
+# ---------------------------------------------------------------------------
+# lit health-check: says which folder it could not read
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("hub", HUBS)
+def test_health_check_names_a_project_folder_it_cannot_read(
+    lib: Library, monkeypatch: pytest.MonkeyPatch, hub: str
+) -> None:
+    with monkeypatch.context() as patch:
+        deny(patch, lib.hub(hub))
+        issues = project_issues(lib)
+        code, output, exc = run_lit(lib, ["health-check"])
+
+    # One finding for the project, not one per member it could not see.
+    assert len(issues) == 1
+    assert issues[0].startswith(f"could not read {lib.hub(hub)}")
+    assert issues[0].endswith(f"({ACCESS_DENIED}) — project 'pp' not checked")
+    assert code == 1
+    assert isinstance(exc, SystemExit), exc
+    assert "project 'pp' not checked" in output
+    assert "fix that, then run `lit health-check --fix`" in output
+
+
+@posix_only
+@not_root
+@pytest.mark.parametrize("hub", HUBS)
+def test_health_check_names_a_folder_chmod_took_read_access_from(
+    lib: Library, hub: str
+) -> None:
+    """The real failure, nothing injected."""
+    lib.hub(hub).chmod(0)
+    try:
+        issues = project_issues(lib)
+        code, output, exc = run_lit(lib, ["health-check"])
+    finally:
+        lib.hub(hub).chmod(0o755)
+
+    assert len(issues) == 1
+    assert issues[0].endswith("(Permission denied) — project 'pp' not checked")
+    assert code == 1
+    assert isinstance(exc, SystemExit), exc
+    assert "project 'pp' not checked" in output
+
+
+# ---------------------------------------------------------------------------
+# A write: it lands, the command finishes, one line says what to do
+# ---------------------------------------------------------------------------
+
+# (argv, did the command's own write land, the hubs whose denial it meets)
+REBUILDS = {
+    "link --rebuild-all": (["link", "--rebuild-all"], None, HUBS),
+    "refresh-views": (["refresh-views"], None, HUBS),
+    "modify --add-tag projects": (
+        ["modify", "p3", "--add-tag", "projects=pp"],
+        lambda lib: "pp" in (paper_meta(lib, "p3").get("projects") or []),
+        HUBS,
+    ),
+    # A title is in REFERENCES.md only; litman_code/ is not touched.
+    "modify --set title": (
+        ["modify", "p2", "--set", "title=New title"],
+        lambda lib: paper_meta(lib, "p2").get("title") == "New title",
+        ["litman_reflib"],
+    ),
+    "rename": (
+        ["rename", "p2", "p2b"],
+        lambda lib: bool(paper_meta(lib, "p2b")) and not paper_meta(lib, "p2"),
+        HUBS,
+    ),
+    "project rename": (
+        ["project", "rename", "pp", "pp2"],
+        lambda lib: "pp2" in registered_projects(lib),
+        HUBS,
+    ),
+}
+
+
+@pytest.mark.parametrize("hub", HUBS)
+@pytest.mark.parametrize("name", list(REBUILDS))
+def test_a_rebuild_finishes_and_says_a_project_folder_was_not_updated(
+    lib: Library, monkeypatch: pytest.MonkeyPatch, name: str, hub: str
+) -> None:
+    argv, landed, meets = REBUILDS[name]
+    with monkeypatch.context() as patch:
+        deny(patch, lib.hub(hub))
+        code, output, exc = run_lit(lib, argv)
+
+    assert code == 0, f"{output} {exc!r}"
+    assert output.count(LINE) == (1 if hub in meets else 0)
+    if landed is not None:
+        assert landed(lib)
+    assert lib.project_dir.joinpath("my_own_file.txt").is_file()
+
+    # The way out it names.
+    CliRunner().invoke(cli, ["health-check", "--fix", "--library", str(lib.vault)])
+    assert project_issues(lib) == []
+
+
+@pytest.mark.parametrize("hub", HUBS)
+def test_health_check_fix_does_not_claim_a_folder_it_could_not_change(
+    lib: Library, monkeypatch: pytest.MonkeyPatch, hub: str
+) -> None:
+    with monkeypatch.context() as patch:
+        deny(patch, lib.hub(hub))
+        code, output, exc = run_lit(lib, ["health-check", "--fix"])
+
+    assert isinstance(exc, SystemExit), exc
+    assert code == 1
+    assert "project_references: cleaned" not in output
+    assert output.count(LINE) == 1
+
+    # Fixed, the same command finishes the job.
+    code, output, exc = run_lit(lib, ["health-check", "--fix"])
+    assert project_issues(lib) == []
+
+
+@posix_only
+@not_root
+@pytest.mark.parametrize("hub", HUBS)
+def test_rename_finishes_when_chmod_took_read_access_from_a_hub(
+    lib: Library, hub: str
+) -> None:
+    """The real failure, nothing injected."""
+    lib.hub(hub).chmod(0)
+    try:
+        code, output, exc = run_lit(lib, ["rename", "p2", "p2b"])
+    finally:
+        lib.hub(hub).chmod(0o755)
+
+    assert code == 0, f"{output} {exc!r}"
+    assert output.count(
+        "warning: could not update a project folder (Permission denied). "
+        "Fix that, then run `lit health-check --fix`."
+    ) == 1
+    assert paper_meta(lib, "p2b")
+
+    CliRunner().invoke(cli, ["health-check", "--fix", "--library", str(lib.vault)])
+    assert project_issues(lib) == []
+
+
+# ---------------------------------------------------------------------------
+# One paper's links: lit link / unlink / rm
+# ---------------------------------------------------------------------------
+
+SINGLE = {
+    "link": (
+        ["link", "p3", "--project", "pp"],
+        lambda lib: "pp" in (paper_meta(lib, "p3").get("projects") or []),
+        ["litman_reflib"],  # p3 has no repo: litman_code/ is not touched
+    ),
+    "unlink": (
+        ["unlink", "p2", "--project", "pp"],
+        lambda lib: "pp" not in (paper_meta(lib, "p2").get("projects") or []),
+        ["litman_reflib"],
+    ),
+    "rm": (["rm", "p1", "-y"], lambda lib: not paper_meta(lib, "p1"), HUBS),
+    "rm --purge": (
+        ["rm", "p1", "--purge", "-y"], lambda lib: not paper_meta(lib, "p1"), HUBS
+    ),
+}
+
+
+@pytest.mark.parametrize("hub", HUBS)
+@pytest.mark.parametrize("name", list(SINGLE))
+def test_a_one_paper_write_finishes_and_says_a_project_folder_was_not_updated(
+    lib: Library, monkeypatch: pytest.MonkeyPatch, name: str, hub: str
+) -> None:
+    argv, landed, meets = SINGLE[name]
+    with monkeypatch.context() as patch:
+        deny(patch, lib.hub(hub))
+        code, output, exc = run_lit(lib, argv)
+
+    assert code == 0, f"{output} {exc!r}"
+    assert output.count(LINE) == (1 if hub in meets else 0)
+    assert landed(lib)
+    assert lib.project_dir.joinpath("my_own_file.txt").is_file()
+
+    CliRunner().invoke(cli, ["health-check", "--fix", "--library", str(lib.vault)])
+    assert project_issues(lib) == []
+
+
+def test_unlink_still_shows_the_relevance_it_drops(
+    lib: Library, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The dropped relevance- note is shown so it can be copied back from the
+    terminal; a crash after the commit used to lose it for good."""
+    run_lit(lib, ["link", "p2", "--project", "pp", "--relevance", "why it matters"])
+    with monkeypatch.context() as patch:
+        deny(patch, lib.reflib)
+        code, output, exc = run_lit(lib, ["unlink", "p2", "--project", "pp"])
+
+    assert code == 0, f"{output} {exc!r}"
+    assert "why it matters" in output
+    assert "Paper link: not removed" in output
+    assert output.count(LINE) == 1
+
+
+@posix_only
+@not_root
+@pytest.mark.parametrize("hub", HUBS)
+def test_rm_finishes_when_chmod_took_read_access_from_a_hub(
+    lib: Library, hub: str
+) -> None:
+    """The real failure, nothing injected."""
+    lib.hub(hub).chmod(0)
+    try:
+        code, output, exc = run_lit(lib, ["rm", "p1", "-y"])
+    finally:
+        lib.hub(hub).chmod(0o755)
+
+    assert code == 0, f"{output} {exc!r}"
+    assert output.count(
+        "warning: could not update a project folder (Permission denied). "
+        "Fix that, then run `lit health-check --fix`."
+    ) == 1
+    assert not paper_meta(lib, "p1")
+    # The rest of the delete ran: the trash entry is there.
+    assert any((lib.vault / ".trash").glob("p1-*"))
+
+    CliRunner().invoke(cli, ["health-check", "--fix", "--library", str(lib.vault)])
+    assert project_issues(lib) == []
+
+
+# ---------------------------------------------------------------------------
+# lit project rm: nothing looks at the folder again, so it names what is left
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("hub", HUBS)
+def test_project_rm_names_the_folder_it_could_not_clean_up(
+    lib: Library, monkeypatch: pytest.MonkeyPatch, hub: str
+) -> None:
+    other = lib.code_dir if hub == "litman_reflib" else lib.reflib
+    what = "its links and REFERENCES.md" if hub == "litman_reflib" else "its links"
+    with monkeypatch.context() as patch:
+        deny(patch, lib.hub(hub))
+        code, output, exc = run_lit(lib, ["project", "rm", "pp", "-y"])
+
+    assert code == 0, f"{output} {exc!r}"
+    assert "pp" not in registered_projects(lib)
+    assert output.count(
+        f"warning: could not clean up {lib.hub(hub)} ({ACCESS_DENIED}). "
+        f"Delete {what} by hand: lit no longer looks there."
+    ) == 1
+    assert LINE not in output  # --fix cannot reach it: not offered
+    # The hub that could be read was cleaned up as usual.
+    assert not other.exists()
+    assert lib.project_dir.joinpath("my_own_file.txt").is_file()
+
+
+@posix_only
+@not_root
+def test_project_rm_finishes_when_chmod_took_read_access_from_a_hub(
+    lib: Library,
+) -> None:
+    """The real failure, nothing injected."""
+    lib.code_dir.chmod(0)
+    try:
+        code, output, exc = run_lit(lib, ["project", "rm", "pp", "-y"])
+    finally:
+        lib.code_dir.chmod(0o755)
+
+    assert code == 0, f"{output} {exc!r}"
+    assert (
+        f"warning: could not clean up {lib.code_dir} (Permission denied). "
+        "Delete its links by hand: lit no longer looks there."
+    ) in output
+    assert "pp" not in registered_projects(lib)
+    assert not lib.reflib.exists()

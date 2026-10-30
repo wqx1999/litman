@@ -19,9 +19,9 @@ platform finds the app:
   run because, finding nothing (most users have no such app), it greps every
   ``.desktop`` file — 8 s on a network filesystem, on each status check.
 
-On Windows, an exe plus an ``app_args`` template starts the exe straight at
-the vault. Everywhere else the vault link goes to the system opener; the app
-may ask the user to confirm it.
+On Windows, an exe plus an ``app_args`` template starts the exe directly,
+at the vault when the template names it. Everywhere else the app's link goes
+to the system opener; the app may ask the user to confirm it.
 """
 
 from __future__ import annotations
@@ -31,7 +31,7 @@ import re
 import subprocess
 import sys
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 from urllib.parse import quote
 
 from litman.exceptions import LitmanError
@@ -238,6 +238,15 @@ def app_argv(spec: AgentSpec, exe: Path, vault: Path) -> list[str]:
     return [str(exe), *(arg.replace("{vault}", str(vault)) for arg in spec.app_args)]
 
 
+def opens_at_vault(spec: AgentSpec) -> bool:
+    """Does opening the app pass it the vault? Only when its link or an exe
+    argument has ``{vault}`` in it; an app taking no folder opens where it
+    was last used."""
+    return "{vault}" in (spec.open_url or "") or any(
+        "{vault}" in arg for arg in spec.app_args
+    )
+
+
 def app_installed(spec: AgentSpec) -> bool:
     """Is the app installed (on Windows: and opened once)? A row missing the
     field a platform needs is never reported as installed."""
@@ -248,7 +257,7 @@ def app_installed(spec: AgentSpec) -> bool:
         return windows_exe(spec) is not None
     if platform == "darwin":
         bundle = spec.mac_bundle
-        return bool(bundle) and any((d / bundle).is_dir() for d in _app_dirs())
+        return bool(bundle) and any((d / cast(str, bundle)).is_dir() for d in _app_dirs())
     return bool(_xdg_default_handler(spec.url_scheme))
 
 

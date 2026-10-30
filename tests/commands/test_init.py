@@ -13,11 +13,10 @@ from click.testing import CliRunner
 from ruamel.yaml import YAML
 
 from litman.cli import cli
+from litman.core import locking
 from litman.core.library import VAULT_SUBDIRS, create_vault
 from litman.core.vault_registry import add_vault, load_registry, save_registry
-from litman.core import locking
 from litman.exceptions import ParentNotFoundError, VaultExistsError
-
 
 # ---------------------------------------------------------------------------
 # Registry isolation

@@ -43,9 +43,10 @@ from __future__ import annotations
 import shutil
 import subprocess
 import uuid
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
 from harness.agents import family_of, get_adapter, known_model_strings
 from harness.scenarios import Card

@@ -403,3 +403,102 @@ def test_a_start_that_fails_reads_as_not_found(
     monkeypatch.setattr(app_launch, "_spawn", broken)
     with pytest.raises(app_launch.AppNotFound, match="no such file: open"):
         app_launch.open_app(ZCODE, tmp_path / "vault")
+
+
+# ---------------------------------------------------------------------------
+# DeepSeek Harness: no exe arguments, and a link without the vault in it
+# ---------------------------------------------------------------------------
+
+DSH = agents.get_agent("dsh")
+
+
+def _registered_dsh(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Path:
+    """The open command DSH writes for its link on its first start."""
+    exe = tmp_path / "dsh" / "DeepSeek Harness.exe"
+    exe.parent.mkdir(parents=True)
+    exe.write_bytes(b"")
+    monkeypatch.setattr(
+        app_launch,
+        "_read_scheme_command",
+        lambda scheme: f'"{exe}" "%1"' if scheme == "dsh" else None,
+    )
+    return exe
+
+
+def test_dsh_on_windows_starts_its_exe_with_the_bare_link_without_a_console(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, started: list
+) -> None:
+    """Registered, so installed; its exe gets the link as the registry's "%1"
+    would, through the start that keeps the app out of our console (handed to
+    the system opener, it logs there). The vault goes nowhere: DSH reopens its
+    last session."""
+    _on(monkeypatch, "win32")
+    exe = _registered_dsh(monkeypatch, tmp_path)
+    assert app_launch.app_installed(DSH) is True
+
+    app_launch.open_app(DSH, tmp_path / "lit 测试 库")
+
+    assert len(started) == 1
+    kind, (argv, env) = started[0]
+    assert kind == "popen"
+    assert argv == [str(exe), "dsh://open"]
+    assert env["ELECTRON_NO_ATTACH_CONSOLE"] == "1"
+
+
+def test_dsh_on_windows_never_opened_is_not_found(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, started: list
+) -> None:
+    """DSH registers its link on its first start; until then there is none."""
+    _on(monkeypatch, "win32")
+    monkeypatch.setattr(app_launch, "_read_scheme_command", lambda _scheme: None)
+    assert app_launch.app_installed(DSH) is False
+
+    with pytest.raises(app_launch.AppNotFound) as exc_info:
+        app_launch.open_app(DSH, tmp_path / "vault")
+    assert str(exc_info.value) == (
+        "DeepSeek Harness isn't installed, or hasn't been opened yet. "
+        "Open it once, then try again."
+    )
+    assert started == []
+
+
+def test_dsh_on_macos_is_its_bundle_opened_by_its_bare_link(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, started: list
+) -> None:
+    _on(monkeypatch, "darwin")
+    monkeypatch.setattr(app_launch, "_app_dirs", lambda: [tmp_path])
+    assert app_launch.app_installed(DSH) is False
+
+    (tmp_path / "DeepSeek Harness.app").mkdir()
+    assert app_launch.app_installed(DSH) is True
+
+    app_launch.open_app(DSH, tmp_path / "vault")
+
+    assert started == [("spawn", ["open", "dsh://open"])]
+
+
+def test_dsh_on_linux_is_not_installed(
+    xdg: dict[str, Path],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    started: list,
+) -> None:
+    """DSH ships no Linux desktop app, so nothing handles its link."""
+    _on(monkeypatch, "linux")
+    monkeypatch.setattr(app_launch, "_xdg_default_handler", _REAL_XDG_DEFAULT_HANDLER)
+    monkeypatch.setenv("DISPLAY", ":0")
+    assert app_launch.app_installed(DSH) is False
+
+    with pytest.raises(app_launch.AppNotFound, match="hasn't been opened yet"):
+        app_launch.open_app(DSH, tmp_path / "vault")
+    assert started == []
+
+
+def test_only_an_app_whose_link_or_arguments_name_the_vault_opens_at_it() -> None:
+    """What `lit agent` may claim: "at <vault>" only when the vault is passed on."""
+    assert app_launch.opens_at_vault(ZCODE) is True
+    assert app_launch.opens_at_vault(DSH) is False
+    assert app_launch.opens_at_vault(dataclasses.replace(DSH, app_args=("{vault}",)))
+    assert app_launch.opens_at_vault(
+        dataclasses.replace(DSH, open_url="dsh://open?path={vault}")
+    )

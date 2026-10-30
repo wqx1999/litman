@@ -228,7 +228,7 @@ def test_gone_state_can_unregister_an_unrelated_entry(tmp_path: Path) -> None:
     directory — and the manager the banner opens shows its button on every row.
     It must not be answered with the middleware's complaint about the SERVED
     vault when the user clicked a different one."""
-    beta, alpha = _register_pair(tmp_path)
+    beta, _alpha = _register_pair(tmp_path)
     client = _client(beta)
     _move_away(beta, tmp_path / "beta-moved")  # the SERVED vault is gone
 

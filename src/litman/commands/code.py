@@ -14,6 +14,7 @@ from __future__ import annotations
 import json
 import sys
 from pathlib import Path
+from typing import cast
 
 import click
 from rich.console import Console
@@ -21,6 +22,7 @@ from rich.markup import escape
 from rich.panel import Panel
 from rich.table import Table
 
+from litman.commands._hub_report import PROJECTS_NOT_UPDATED, code_links_not_updated
 from litman.commands._options import format_option, library_option, vault_option
 from litman.commands._path_lines import path_lines, print_unwrapped
 from litman.commands._usage import reject_second_positional
@@ -50,6 +52,7 @@ from litman.core.confirm import refuse_without_terminal
 from litman.core.library import find_vault, resolve_library_or_vault
 from litman.core.locking import rmtree
 from litman.core.paper_lookup import complete_paper_id, resolve_paper_input
+from litman.core.project_link import code_links_not_refreshed
 from litman.core.undecodable import printable
 from litman.exceptions import CodeError, PaperNotFoundError
 
@@ -73,6 +76,17 @@ def _is_url(arg: str) -> bool:
     at a real directory).
     """
     return arg.startswith(_URL_PREFIXES)
+
+
+def _report_project_folders(
+    vault: Path, paper_ids: list[str], link_errors: list[OSError]
+) -> None:
+    """One line when the write landed but a project's ``litman_code/`` did not
+    follow it. An unreadable config comes first: then no link was tried."""
+    if code_links_not_refreshed(vault, paper_ids):
+        console.print(PROJECTS_NOT_UPDATED, soft_wrap=True)
+    elif link_errors:
+        console.print(code_links_not_updated(link_errors[0]), soft_wrap=True)
 
 
 @click.group("code")
@@ -260,7 +274,7 @@ def code_add_cmd(
     try:
         repo_root.mkdir(parents=True)
         if use_url:
-            clone_repo(clone_url, repo_root / REPO_DIRNAME, depth=depth)
+            clone_repo(clone_url, repo_root / REPO_DIRNAME, depth=cast(int, depth))
             meta = make_repo_meta(name=repo_name, upstream=clone_url)
         else:
             assert src_path is not None  # mypy/pyright narrowing
@@ -268,8 +282,11 @@ def code_add_cmd(
         write_repo_meta(repo_root, meta)
         write_notes(repo_root, name=repo_name, upstream=meta.get("upstream"))
         bound_now = False
+        link_errors: list[OSError] = []
         if paper_id is not None:
-            bound_now = bind_paper_to_repo(vault, paper_id, repo_name)
+            bound_now = bind_paper_to_repo(
+                vault, paper_id, repo_name, link_errors=link_errors
+            )
     except Exception:
         if repo_root.exists():
             rmtree(repo_root, ignore_errors=True)
@@ -302,7 +319,7 @@ def code_add_cmd(
     # (commands/_path_lines); the panel keeps what fits in a sentence.
     path_rows: list[tuple[str, object]] = [("Folder:", repo_root)]
     if use_url:
-        depth_label = "full history" if depth < 1 else f"depth {depth}"
+        depth_label = "full history" if cast(int, depth) < 1 else f"depth {depth}"
         provenance_line = f"[bold]Clone:[/] {depth_label}"
     else:
         verb = "moved" if move_src else "copied"
@@ -330,6 +347,8 @@ def code_add_cmd(
             "update INDEX.json.",
         ],
     )
+    if paper_id is not None and bound_now:
+        _report_project_folders(vault, [paper_id], link_errors)
 
 
 # ---------------------------------------------------------------------------
@@ -519,7 +538,8 @@ def code_link_cmd(
         )
     vault = find_vault(resolve_library_or_vault(library, vault_name))
     paper_id = resolve_paper_input(vault, paper_id, paper_doi)
-    changed = bind_paper_to_repo(vault, paper_id, repo_name)
+    link_errors: list[OSError] = []
+    changed = bind_paper_to_repo(vault, paper_id, repo_name, link_errors=link_errors)
     if changed:
         console.print(
             f"[bold green]Linked:[/] {escape(paper_id)} ↔ {escape(repo_name)}"
@@ -529,6 +549,8 @@ def code_link_cmd(
             f"[yellow]No-op:[/] {escape(paper_id)} ↔ {escape(repo_name)} "
             "already bound on both sides."
         )
+    if changed:
+        _report_project_folders(vault, [paper_id], link_errors)
 
 
 # ---------------------------------------------------------------------------
@@ -586,7 +608,10 @@ def code_unlink_cmd(
         )
     vault = find_vault(resolve_library_or_vault(library, vault_name))
     paper_id = resolve_paper_input(vault, paper_id, paper_doi)
-    changed = unbind_paper_from_repo(vault, paper_id, repo_name)
+    link_errors: list[OSError] = []
+    changed = unbind_paper_from_repo(
+        vault, paper_id, repo_name, link_errors=link_errors
+    )
     if changed:
         console.print(
             f"[bold green]Unlinked:[/] {escape(paper_id)} ✕ {escape(repo_name)}"
@@ -596,6 +621,8 @@ def code_unlink_cmd(
             f"[yellow]No-op:[/] {escape(paper_id)} ✕ {escape(repo_name)} "
             "already unbound on both sides."
         )
+    if changed:
+        _report_project_folders(vault, [paper_id], link_errors)
 
 
 # ---------------------------------------------------------------------------
@@ -736,8 +763,11 @@ def code_rm_cmd(
     #    there's something to update — bound_papers is already empty when
     #    cascade is False, since the refusal above would have fired).
     affected: list[str] = []
+    link_errors: list[OSError] = []
     if cascade:
-        affected = unbind_repo_from_all_papers(vault, repo_name)
+        affected = unbind_repo_from_all_papers(
+            vault, repo_name, link_errors=link_errors
+        )
 
     # 2) Delete the repo directory itself. By the time we reach here, all
     #    paper-side cleanup has committed atomically.
@@ -753,6 +783,8 @@ def code_rm_cmd(
             + ", ".join(escape(p) for p in affected)
         )
     console.print(summary)
+    if affected:
+        _report_project_folders(vault, affected, link_errors)
 
 
 # ---------------------------------------------------------------------------
@@ -859,6 +891,8 @@ def code_restore_all_cmd(
         f"[bold]{len(report.orphan_refs)}[/] orphan ref(s)."
     )
     console.print(summary)
+    if report.link_errors:
+        console.print(code_links_not_updated(report.link_errors[0]), soft_wrap=True)
 
     if not report.is_clean:
         sys.exit(1)

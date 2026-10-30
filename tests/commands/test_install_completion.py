@@ -15,7 +15,7 @@ from litman.commands.install_completion import (
 )
 
 
-def _run(runner: CliRunner, *args: str) -> "object":
+def _run(runner: CliRunner, *args: str) -> object:
     return runner.invoke(cli, ["install-completion", *args])
 
 

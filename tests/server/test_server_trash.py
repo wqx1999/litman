@@ -284,6 +284,7 @@ def test_restore_moves_paper_back_and_rebuilds_index(vault: Path) -> None:
         "title",
         "reverse_edges_rebuilt",
         "repos_rebound",
+        "notes_beside",
         "projects_rebuilt",
         "missing_repos",
         "dead_edges_dropped",

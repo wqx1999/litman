@@ -24,8 +24,8 @@ from ruamel.yaml import YAML
 from litman.cli import cli
 from litman.core import checks, correctors
 from litman.core.library import create_vault
-from litman.core.views import load_index_ids
 from litman.core.portable_link import is_portable_link
+from litman.core.views import load_index_ids
 
 _yaml = YAML(typ="safe")
 _FAKE_PDF_BYTES = b"%PDF-1.4\n% fake content for tests\n%%EOF\n"

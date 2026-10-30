@@ -12,10 +12,8 @@ import json
 from pathlib import Path
 
 import pytest
-from ruamel.yaml import YAML
-
-from harness import checker
 from harness.checker import AssertResult, check_assertion, resolve
+from ruamel.yaml import YAML
 
 GOLDEN_DIR = Path(__file__).resolve().parent / "fixtures" / "golden"
 
@@ -314,7 +312,7 @@ def test_health_reports_catches_code_clone_dangling(tmp_path: Path) -> None:
     """The ACTUAL H1 / J1-corrupt injection: a paper's ``code-clones`` points at
     a repo with no ``codes/<name>/`` dir (Critical 2 regression).
 
-    ``core/checks.py:check_code_clone_integrity`` emits an ``error``-severity
+    ``core/checks/maintenance.py:check_code_clone_integrity`` emits an ``error``-severity
     ``code_clone_integrity`` Issue whose message reads
     ``'<pid>'.code-clones references '<repo>' but no codes/<repo>/repo-meta.yaml
     exists`` — it contains NEITHER the substring "dangling" (the original card

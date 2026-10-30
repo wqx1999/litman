@@ -76,7 +76,7 @@ async def _md_text_body(request: Request) -> str:
         raise HTTPException(status_code=400, detail="Body must be JSON.") from exc
     if not isinstance(payload, dict) or not isinstance(payload.get("text"), str):
         raise HTTPException(status_code=400, detail="Body must be {\"text\": <str>}.")
-    text = payload["text"]
+    text: str = payload["text"]
     if not text.strip():
         raise HTTPException(status_code=400, detail="Empty text.")
     return text

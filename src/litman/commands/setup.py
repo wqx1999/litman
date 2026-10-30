@@ -22,6 +22,7 @@ from pathlib import Path
 
 import click
 from rich.console import Console
+from rich.markup import escape
 from rich.panel import Panel
 
 from litman.commands.gui import display_available, gui_cmd, shortcut_path
@@ -44,6 +45,7 @@ from litman.core.skill import (
     stale_skill_copies,
 )
 from litman.core.vault_registry import (
+    VaultRegistry,
     VaultRegistryError,
     ensure_name_registrable,
     load_registry,
@@ -340,7 +342,7 @@ def _step_vault(
     did.append("vault")
 
 
-def _suggest_distinct_name(reg) -> str:
+def _suggest_distinct_name(reg: VaultRegistry) -> str:
     """Return ``DEFAULT_VAULT_NAME`` if it is free, else the first
     ``<base>_<n>`` (n=2,3,...) that is not already in the registry. Seeds
     the wizard's name prompt with a collision-free default so the common
@@ -354,12 +356,12 @@ def _suggest_distinct_name(reg) -> str:
     return f"{DEFAULT_VAULT_NAME}_{n}"
 
 
-def _prompt_vault_name(reg, default: str) -> str:
+def _prompt_vault_name(reg: VaultRegistry, default: str) -> str:
     """Loop until the user gives a name that passes ensure_name_registrable.
     The suggested default is already collision-free, so the loop only fires
     when the user types a name that clashes with an existing registration."""
     while True:
-        name = click.prompt(
+        name: str = click.prompt(
             "Vault name (used as the on-disk subdir AND the registry name)",
             type=str,
             default=default,
@@ -431,8 +433,15 @@ def _step_shortcut(
         "Create a desktop shortcut? (runs: lit gui --make-shortcut)",
         default=True,
     ):
-        ctx.invoke(gui_cmd, make_shortcut=True)
-        did.append("desktop shortcut")
+        try:
+            ctx.invoke(gui_cmd, make_shortcut=True)
+        except LitmanError as e:
+            # The steps before are done: say why this one is not, and still
+            # end on the summary.
+            console.print(f"[red]{escape(str(e))}[/]", soft_wrap=True)
+            skipped.append("shortcut (could not create it)")
+        else:
+            did.append("desktop shortcut")
     else:
         skipped.append("shortcut (declined)")
 

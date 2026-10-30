@@ -57,7 +57,15 @@ def test_get_agents_lists_supported_and_default(vault: Path) -> None:
     resp = _client(vault).get("/api/agents")
     assert resp.status_code == 200
     assert resp.json() == {
-        "agents": ["claude", "zcode", "agy", "codex", "cursor", "opencode"],
+        "agents": [
+            "claude",
+            "zcode",
+            "agy",
+            "codex",
+            "dsh",
+            "cursor",
+            "opencode",
+        ],
         "default": "claude",
     }
 
@@ -210,13 +218,14 @@ def test_launch_non_string_agent_is_400(vault: Path) -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_status_returns_six_catalog_entries(vault: Path) -> None:
+def test_status_returns_seven_catalog_entries(vault: Path) -> None:
     body = _status(_client(vault))
     assert [e["name"] for e in body["agents"]] == [
         "claude",
         "zcode",
         "agy",
         "codex",
+        "dsh",
         "cursor",
         "opencode",
     ]
@@ -226,6 +235,7 @@ def test_status_returns_six_catalog_entries(vault: Path) -> None:
         "zcode": True,
         "agy": True,
         "codex": True,
+        "dsh": True,
         "cursor": True,
         "opencode": True,
     }
@@ -407,6 +417,28 @@ def test_skill_install_agy_lands_in_antigravity_dir(vault: Path) -> None:
         assert (antigravity / name / "SKILL.md").is_file()
     assert not skill.default_skills_parent_dir().exists()
     assert not skill.standard_skills_parent_dir().exists()
+
+
+def test_skill_install_dsh_lands_in_the_open_standard_dir(vault: Path) -> None:
+    """The agent panel's install for DeepSeek Harness copies the skills into
+    the open-standard dir (no adapter stubbed), writes no approval rule, and
+    its row then reads up to date."""
+    from litman.core import skill
+
+    client = _client(vault)
+    resp = client.post("/api/agent/skill/install", json={"agent": "dsh"})
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["agent"] == "dsh"
+    assert body["permission"] == {"mode": "manual", "rule": "", "warning": None}
+
+    standard = skill.standard_skills_parent_dir()
+    for name in list_bundled_skills():
+        assert (standard / name / "SKILL.md").is_file()
+    assert not skill.default_skills_parent_dir().exists()
+    assert not skill.antigravity_skills_parent_dir().exists()
+    rows = {e["name"]: e["skill_state"] for e in _status(client)["agents"]}
+    assert rows["dsh"] == "current"
 
 
 # ---------------------------------------------------------------------------
@@ -792,3 +824,62 @@ def test_status_never_leaks_the_app_exe_path(
     assert "permission_hint" not in zcode
     assert "Secret Apps" not in resp.text
     assert "ZCode.exe" not in resp.text
+
+
+def test_launch_dsh_on_windows_starts_its_exe_with_its_link(
+    vault: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Clicking DeepSeek Harness in the picker: the real app_launch, faked down
+    to the registry and the process start, starts DSH's exe with `dsh://open`
+    and keeps it out of the server's console."""
+    from litman.core import app_launch
+
+    exe = tmp_path / "dsh" / "DeepSeek Harness.exe"
+    exe.parent.mkdir(parents=True)
+    exe.write_bytes(b"")
+    monkeypatch.setattr(app_launch, "_platform", lambda: "win32")
+    monkeypatch.setattr(
+        app_launch, "_read_scheme_command", lambda _scheme: f'"{exe}" "%1"'
+    )
+    started: list[tuple[list[str], dict[str, str]]] = []
+    monkeypatch.setattr(
+        app_launch,
+        "_popen_detached_windows",
+        lambda argv, env: started.append((argv, env)),
+    )
+    monkeypatch.setattr(
+        app_launch,
+        "_startfile",
+        lambda _url: pytest.fail("the system opener lets DSH log into our console"),
+    )
+
+    resp = _client(vault).post("/api/agent/launch", json={"agent": "dsh"})
+
+    assert resp.status_code == 200
+    assert resp.json() == {
+        "ok": True,
+        "mode": "app",
+        "agent": "dsh",
+        "command": "",
+        "permission_warning": None,
+    }
+    [(argv, env)] = started
+    assert argv == [str(exe), "dsh://open"]
+    assert env["ELECTRON_NO_ATTACH_CONSOLE"] == "1"
+
+
+def test_put_default_dsh_on_linux_is_409(
+    vault: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """DSH has no Linux desktop app, so on Linux it is not installed and
+    cannot become the default."""
+    from litman.core import app_launch
+
+    monkeypatch.setattr(app_launch, "_platform", lambda: "linux")
+    resp = _client(vault).put("/api/agent/default", json={"agent": "dsh"})
+    assert resp.status_code == 409
+    assert resp.json()["detail"] == (
+        "Agent 'dsh' cannot be the default: DeepSeek Harness isn't installed, "
+        "or hasn't been opened yet. Open it once, then try again."
+    )
+    assert agent_prefs.load_default_agent() is None

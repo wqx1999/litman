@@ -40,9 +40,13 @@ command keeps working without them.
 from __future__ import annotations
 
 import os
+import secrets
 import shutil
 import subprocess
 import sys
+from collections.abc import Iterator
+from contextlib import contextmanager
+from contextvars import ContextVar
 from pathlib import Path
 
 from rich.console import Console
@@ -152,7 +156,7 @@ def _create_junction(link_path: Path, target_path: Path) -> None:
     try:
         import _winapi
     except ImportError:
-        _winapi = None
+        _winapi = None  # type: ignore[assignment]  # no _winapi off Windows
     if _winapi is not None and hasattr(_winapi, "CreateJunction"):
         _winapi.CreateJunction(str(target_path), str(link_path))
         return
@@ -182,16 +186,24 @@ def link_mechanism(directory: Path) -> str:
     filesystem and must never run on the Tier-1 per-command hot path
     (invariant #15).
 
-    A directory that does not exist, or any ``OSError``, reads as ``"none"``.
+    A directory that does not exist reads as ``"none"``. One that takes no
+    new entry at all (permissions, a read-only mount) reads as the platform's
+    mechanism: nothing can be learned there about links, and the drive is not
+    what is wrong — so the links it lacks are still reported, and ``--fix``
+    says which folder it could not update.
     """
     key = str(directory)
     cached = _LINK_MECHANISM.get(key)
     if cached is not None:
         return cached
     if sys.platform == "win32":
-        mechanism = "junction" if _probe_junction(directory) else "none"
+        native, works = "junction", _probe_junction(directory)
     else:
-        mechanism = "symlink" if _probe_symlink(directory) else "none"
+        native, works = "symlink", _probe_symlink(directory)
+    if works or (directory.is_dir() and entry_refusal(directory) is not None):
+        mechanism = native
+    else:
+        mechanism = "none"
     _LINK_MECHANISM[key] = mechanism
     return mechanism
 
@@ -239,9 +251,10 @@ def make_portable_link(link_path: Path, target_path: Path) -> bool:
     a directory junction (absolute target by nature; staleness after a move is
     repaired by the same machinery that repairs moved project bridges).
 
-    The parent of ``link_path`` is created if missing. Any pre-existing
-    entry at ``link_path`` (link or regular file) is removed first so
-    the operation is a true upsert.
+    The parent of ``link_path`` is created if missing. A link already
+    pointing at ``target_path`` (:func:`link_points_at`) is left as it is;
+    any other pre-existing entry at ``link_path`` (link or regular file) is
+    removed first so the operation is a true upsert.
 
     On filesystems that refuse the link (FAT32/exFAT, network shares), the
     ``OSError`` is caught, a one-shot warning is emitted, and the function
@@ -251,7 +264,18 @@ def make_portable_link(link_path: Path, target_path: Path) -> bool:
 
     Returns:
         ``True`` on success, ``False`` on graceful degrade.
+
+    Raises:
+        OSError: nothing at all can be created in the link's folder (no
+            write permission, a read-only mount, a full disk) — a fact about
+            the folder, not the drive, so the caller reports the folder it
+            could not update instead of this module blaming the filesystem.
     """
+    if link_points_at(link_path, target_path):
+        # Nothing to write. A rebuild passes every link of a project folder
+        # through here, and one litman can read but not change must not fail
+        # over links that are already right.
+        return True
     link_path.parent.mkdir(parents=True, exist_ok=True)
     obstruction: OSError | None = None
     if is_portable_link(link_path) or link_path.exists():
@@ -270,10 +294,71 @@ def make_portable_link(link_path: Path, target_path: Path) -> bool:
             link_path.symlink_to(os.path.relpath(target_path, link_path.parent))
         return True
     except OSError as err:
+        if (
+            not isinstance(obstruction, IsADirectoryError)
+            and entry_refusal(link_path.parent) is not None
+        ):
+            raise (obstruction if obstruction is not None else err) from None
         if obstruction is not None:
             _warn_link_obstructed(link_path, obstruction)
         else:
             _warn_links_unsupported(link_path, err)
+        return False
+
+
+def entry_refusal(directory: Path) -> OSError | None:
+    """Why no plain file can be created in ``directory``; ``None`` if one can.
+
+    Tells a folder litman cannot write to (permissions, a read-only mount, a
+    full disk) from a drive that cannot hold links (FAT32 / exFAT, network
+    shares): the second takes a file but refuses the link. Asked of the
+    folder rather than read off the error number, which each platform and
+    filesystem spells its own way. Writes, so only reached once something has
+    already failed, or from a probe. The error names ``directory``, not the
+    scratch file it tried.
+    """
+    probe = directory / f".litman-write-probe-{os.getpid()}-{secrets.token_hex(4)}"
+    try:
+        fd = os.open(probe, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+    except OSError as err:
+        if err.errno is None:
+            return err
+        return OSError(err.errno, err.strerror, str(directory))
+    try:
+        os.close(fd)
+    finally:
+        try:
+            probe.unlink()
+        except OSError:
+            pass
+    return None
+
+
+def link_points_at(link_path: Path, target_path: Path) -> bool:
+    """Is ``link_path`` already the link :func:`make_portable_link` would make?
+
+    Strict on purpose: whatever it cannot confirm reads as ``False``, and the
+    caller re-creates the link exactly as it always did. On POSIX the stored
+    text must equal the relative target the upsert writes, so an absolute
+    link that happens to resolve to the same place is still re-created and
+    the vault stays movable as a unit. A Windows junction stores an absolute
+    target by nature, so it is compared by where it resolves: one left
+    pointing at a vault that moved resolves somewhere else.
+    """
+    try:
+        if sys.platform == "win32":
+            if not link_path.is_junction():
+                return False
+            return os.path.normcase(os.path.realpath(link_path)) == (
+                os.path.normcase(os.path.realpath(target_path))
+            )
+        if not link_path.is_symlink():
+            return False
+        return os.readlink(link_path) == os.path.relpath(
+            target_path, link_path.parent
+        )
+    except (OSError, ValueError):
+        # ValueError: Windows relpath across drives.
         return False
 
 
@@ -309,19 +394,31 @@ def remove_link_if_present(link_path: Path) -> bool:
     (graceful degrade above), this is a silent no-op returning ``False``.
 
     Returns:
-        ``True`` if a link was removed, ``False`` otherwise.
+        ``True`` if a link was removed, ``False`` if there was none.
+
+    Raises:
+        OSError: a link is there but cannot be removed (no write permission
+            on its folder, a read-only mount). Left in place without a word,
+            it would outlive the paper or project it stood for.
     """
     if not is_portable_link(link_path):
         return False
     try:
         link_path.unlink()
         return True
-    except OSError:
-        try:
-            link_path.rmdir()
-            return True
-        except OSError:
-            return False
+    except FileNotFoundError:
+        return False
+    except OSError as err:
+        unlink_error = err
+    try:
+        link_path.rmdir()
+        return True
+    except FileNotFoundError:
+        return False
+    except OSError as err:
+        # rmdir is the call that fits a junction; to a symlink it only says
+        # "not a directory".
+        raise (err if link_path.is_junction() else unlink_error) from None
 
 
 def reset_warning_state() -> None:
@@ -419,10 +516,13 @@ def warn_hub_entry_unmovable(path: Path, err: OSError) -> None:
     """Warn that a real folder in a link position could not be cleared.
 
     Raised by ``project_link.settle_hub_entry`` when the filesystem refuses to
-    delete or move the folder — a child open in another program, a read-only
-    parent. The OS reason is kept here (unlike the real-folder message above,
-    where it only misdirected): "used by another process" is exactly what the
-    user has to act on.
+    delete or move the folder — a child open in another program, or the
+    folder's own permissions (a hub that takes no change at all is said
+    before this, by the caller). The OS reason is kept here (unlike the
+    real-folder message above, where it only misdirected): "used by another
+    process" or "Permission denied" is exactly what the user has to act on,
+    and the way out names both, since on Windows the two come back as the
+    same PermissionError.
 
     Lives in this module rather than with its caller so every folder-link
     warning goes through the one stderr console, and so a test that stubs
@@ -431,8 +531,53 @@ def warn_hub_entry_unmovable(path: Path, err: OSError) -> None:
     _console.print(
         f"[yellow]warning:[/] could not clear {escape(str(path))}: "
         f"{escape(_os_error_reason(err))}.\n"
-        "[dim]    The link was not created. Close anything using that folder, "
-        "then re-run `lit health-check --fix`.[/]"
+        "[dim]    The link was not created. Close anything using that folder "
+        "or make it writable, then re-run `lit health-check --fix`.[/]"
+    )
+
+
+# Set inside views_line_once(): whether the views line was already said there.
+_VIEWS_LINE_SAID: ContextVar[list[bool] | None] = ContextVar(
+    "_VIEWS_LINE_SAID", default=None
+)
+
+
+@contextmanager
+def views_line_once() -> Iterator[None]:
+    """Say :func:`warn_views_not_updated`'s line at most once inside the block.
+
+    For a command that rebuilds views/ more than once in one run: ``lit
+    health-check --fix`` regenerates, then each ripple fix rebuilds again.
+    Scoped rather than once per process, so ``lit gui``'s server still says
+    it for every write that hits the folder.
+    """
+    token = _VIEWS_LINE_SAID.set([False])
+    try:
+        yield
+    finally:
+        _VIEWS_LINE_SAID.reset(token)
+
+
+def warn_views_not_updated(view_name: str, err: OSError) -> None:
+    """Warn that a ``views/`` folder could not be brought up to date.
+
+    One line per rebuild, however many buckets refused: the caller passes the
+    first (and inside :func:`views_line_once`, one per block). A view folder
+    made read-only by hand — views/ lives in the library, and a library that
+    takes no change at all is refused before any command gets this far. The
+    write before it is committed; ``lit health-check`` reports the view out
+    of date until the folder is fixed. Lives here for the same reason as
+    :func:`warn_hub_entry_unmovable`.
+    """
+    said = _VIEWS_LINE_SAID.get()
+    if said is not None:
+        if said[0]:
+            return
+        said[0] = True
+    _console.print(
+        f"[yellow]warning:[/] could not update views/{escape(view_name)}/ "
+        f"({escape(_os_error_reason(err))}). Fix that, then run "
+        "`lit health-check --fix`."
     )
 
 

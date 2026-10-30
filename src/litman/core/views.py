@@ -29,6 +29,7 @@ from typing import Any
 from litman.core.dates import now_iso
 from litman.core.portable_link import (
     is_portable_link,
+    link_points_at,
     make_portable_link,
     remove_link_if_present,
 )
@@ -432,27 +433,123 @@ def rewrite_index_dropping_ids(vault: Path, dead_ids: set[str]) -> int:
     return n_dropped
 
 
-def _clear_view_subdir(view_dir: Path) -> None:
-    """Empty (or create) a view bucket directory.
+def _planned_view(
+    view_dir: Path, papers: list[dict[str, Any]], field_name: str, is_list: bool
+) -> list[tuple[Path, str]]:
+    """``(bucket, paper_id)`` for every link a view should hold, in the order
+    the rebuild has always made them (duplicates kept, so counts are too)."""
+    planned: list[tuple[Path, str]] = []
+    for p in papers:
+        paper_id = p.get("id")
+        if not paper_id:
+            continue
+        if is_list:
+            values = list(p.get(field_name) or [])
+        else:
+            value = p.get(field_name)
+            values = [value] if value else []
+        for value in values:
+            planned.append((view_dir / _safe_name(str(value)), paper_id))
+    return planned
+
+
+def _clear_view_subdir(
+    view_dir: Path,
+    wanted: dict[Path, set[str]],
+    vault: Path,
+    failed: list[OSError],
+) -> bool:
+    """Empty (or create) a view directory, keeping what is already right.
 
     Deletes both symlinks and tag-bucket subdirectories under ``view_dir``
     so that paper IDs / tag values no longer present in the metadata
-    don't leave stale entries on disk.
+    don't leave stale entries on disk — except a link that already points
+    at its paper in a bucket that still wants it (``wanted``), which the
+    rebuild would only make again. An entry the filesystem will not remove (a
+    bucket made read-only by hand) is left as it is and its error appended to
+    ``failed``; the rest are still cleared. A bucket emptied but not removed
+    (``view_dir`` itself read-only) holds nothing stale, so it is not a
+    failure — the incremental update leaves those too. ``False`` when
+    ``view_dir`` itself cannot be listed or created: nothing can go in it.
     """
-    if view_dir.exists():
-        for child in view_dir.iterdir():
+    try:
+        if not view_dir.exists():
+            view_dir.mkdir(parents=True, exist_ok=True)
+            return True
+        children = list(view_dir.iterdir())
+    except OSError as err:
+        failed.append(err)
+        return False
+    for child in children:
+        try:
             if is_portable_link(child):
                 remove_link_if_present(child)
             elif child.is_file():
                 child.unlink()
+            elif child in wanted:
+                _clear_bucket(child, wanted[child], vault, failed)
             elif child.is_dir():
                 shutil.rmtree(child)
-    else:
-        view_dir.mkdir(parents=True, exist_ok=True)
+        except OSError as err:
+            if not _emptied_bucket(child):
+                failed.append(err)
+    return True
+
+
+def _clear_bucket(
+    bucket: Path, keep: set[str], vault: Path, failed: list[OSError]
+) -> None:
+    """Remove from a still-wanted bucket all but the right links to ``keep``."""
+    for entry in list(bucket.iterdir()):
+        try:
+            if entry.name in keep and link_points_at(
+                entry, vault / "papers" / entry.name
+            ):
+                continue
+            if is_portable_link(entry):
+                remove_link_if_present(entry)
+            elif entry.is_dir():
+                shutil.rmtree(entry)
+            else:
+                entry.unlink()
+        except OSError as err:
+            failed.append(err)
+
+
+def _emptied_bucket(path: Path) -> bool:
+    """A real folder with nothing left in it."""
+    try:
+        return (
+            not is_portable_link(path)
+            and path.is_dir()
+            and not any(path.iterdir())
+        )
+    except OSError:
+        return False
+
+
+def _link_into(
+    bucket: Path, paper_id: str, vault: Path, failed: list[OSError]
+) -> bool:
+    """Link ``paper_id`` into ``bucket``, making the bucket first if needed.
+
+    ``False`` with the error appended to ``failed`` when the filesystem
+    refuses either (a view folder that takes no new entry), as well as on a
+    drive without links (``make_portable_link``'s own degrade).
+    """
+    try:
+        bucket.mkdir(parents=True, exist_ok=True)
+        return make_portable_link(bucket / paper_id, vault / "papers" / paper_id)
+    except OSError as err:
+        failed.append(err)
+        return False
 
 
 def rebuild_views(
-    vault: Path, papers: list[dict[str, Any]]
+    vault: Path,
+    papers: list[dict[str, Any]],
+    *,
+    view_errors: list[tuple[str, OSError]] | None = None,
 ) -> dict[str, int]:
     """Rebuild ``views/by-*/`` link hubs from the given paper list.
 
@@ -462,43 +559,39 @@ def rebuild_views(
     junctions), individual entries are silently skipped — the count
     reflects links actually created, not requested. A one-shot warning
     is emitted by ``portable_link`` on first failure.
+
+    A link already pointing at its paper is kept rather than made again, so a
+    view folder made read-only by hand with nothing to change in it is left
+    be. One that does need a change does not stop the rest: what can be
+    changed in it is, the other views are rebuilt, and ``(view_name, first
+    error)`` goes into ``view_errors`` for the caller to report.
+    ``lit health-check`` reports the view out of date until it is fixed.
     """
     views_dir = vault / "views"
     counts: dict[str, int] = {}
+    view_specs = [
+        (view_name, field_name, True)
+        for view_name, field_name in LIST_VIEW_FIELDS.items()
+    ] + [
+        (view_name, field_name, False)
+        for view_name, field_name in SCALAR_VIEW_FIELDS.items()
+    ]
 
-    for view_name, field_name in LIST_VIEW_FIELDS.items():
+    for view_name, field_name, is_list in view_specs:
         view_dir = views_dir / view_name
-        _clear_view_subdir(view_dir)
+        planned = _planned_view(view_dir, papers, field_name, is_list)
+        wanted: dict[Path, set[str]] = {}
+        for bucket, paper_id in planned:
+            wanted.setdefault(bucket, set()).add(paper_id)
+        failed: list[OSError] = []
         n = 0
-        for p in papers:
-            paper_id = p.get("id")
-            if not paper_id:
-                continue
-            for value in p.get(field_name) or []:
-                bucket = view_dir / _safe_name(str(value))
-                bucket.mkdir(parents=True, exist_ok=True)
-                if make_portable_link(
-                    bucket / paper_id, vault / "papers" / paper_id
-                ):
+        if _clear_view_subdir(view_dir, wanted, vault, failed):
+            for bucket, paper_id in planned:
+                if _link_into(bucket, paper_id, vault, failed):
                     n += 1
         counts[view_name] = n
-
-    for view_name, field_name in SCALAR_VIEW_FIELDS.items():
-        view_dir = views_dir / view_name
-        _clear_view_subdir(view_dir)
-        n = 0
-        for p in papers:
-            paper_id = p.get("id")
-            value = p.get(field_name)
-            if not paper_id or not value:
-                continue
-            bucket = view_dir / _safe_name(str(value))
-            bucket.mkdir(parents=True, exist_ok=True)
-            if make_portable_link(
-                bucket / paper_id, vault / "papers" / paper_id
-            ):
-                n += 1
-        counts[view_name] = n
+        if failed and view_errors is not None:
+            view_errors.append((view_name, failed[0]))
 
     return counts
 
@@ -533,6 +626,8 @@ def update_views_for_paper(
     paper_id: str,
     old_fields: dict[str, Any],
     new_fields: dict[str, Any],
+    *,
+    view_errors: list[tuple[str, OSError]] | None = None,
 ) -> dict[str, int]:
     """Incrementally update ``views/by-*/`` for one paper's field edit.
 
@@ -555,11 +650,12 @@ def update_views_for_paper(
 
     Same graceful-degrade contract as ``rebuild_views``: on a filesystem
     without links, creations no-op with the one-shot warning and removals
-    find nothing to remove. Returns ``{view_name: n_links_created}``
-    (creations only, mirroring ``rebuild_views``' counting).
+    find nothing to remove; a view folder that cannot be changed is skipped,
+    its ``(view_name, first error)`` in ``view_errors``. Returns
+    ``{view_name: n_links_created}`` (creations only, mirroring
+    ``rebuild_views``' counting).
     """
     views_dir = vault / "views"
-    target = vault / "papers" / paper_id
     view_specs = [
         (view_name, field_name, True)
         for view_name, field_name in LIST_VIEW_FIELDS.items()
@@ -573,9 +669,16 @@ def update_views_for_paper(
         old_buckets = _bucket_names(old_fields, field_name, is_list)
         new_buckets = _bucket_names(new_fields, field_name, is_list)
         n = 0
+        # A views/ folder that cannot be changed: the write this follows is
+        # committed, so the paper's other buckets still move, and
+        # `lit health-check` reports the view out of date.
+        failed: list[OSError] = []
         for bucket_name in sorted(old_buckets - new_buckets):
             bucket = views_dir / view_name / bucket_name
-            remove_link_if_present(bucket / paper_id)
+            try:
+                remove_link_if_present(bucket / paper_id)
+            except OSError as err:
+                failed.append(err)
             try:
                 # Only succeeds when the bucket is now empty — matching the
                 # full rebuild, which never materializes an empty bucket.
@@ -584,8 +687,9 @@ def update_views_for_paper(
                 pass
         for bucket_name in sorted(new_buckets - old_buckets):
             bucket = views_dir / view_name / bucket_name
-            bucket.mkdir(parents=True, exist_ok=True)
-            if make_portable_link(bucket / paper_id, target):
+            if _link_into(bucket, paper_id, vault, failed):
                 n += 1
         counts[view_name] = n
+        if failed and view_errors is not None:
+            view_errors.append((view_name, failed[0]))
     return counts

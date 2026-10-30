@@ -28,11 +28,12 @@ from litman.commands.init import apply_init
 from litman.commands.modify import ORDERED_LIST_FIELDS, _apply_modify
 from litman.commands.read import apply_read, apply_unread
 from litman.commands.revisit import apply_revisit
-from litman.commands.rm import discover_rm_impact, execute_rm
+from litman.commands.rm import RmPlan, discover_rm_impact, execute_rm
 from litman.core.config import load_config
 from litman.core.dates import today_iso, validate_iso_date
 from litman.core.id import is_valid_id
 from litman.core.library import DEFAULT_VAULT_NAME
+from litman.core.portable_link import _os_error_reason
 from litman.core.project_link import (
     LinkError,
     add_project,
@@ -363,13 +364,20 @@ async def post_unread(request: Request, paper_id: str) -> dict[str, object]:
     return {"ok": True, "changed": changed, "message": message}
 
 
-def _rm_impact_summary(plan: object) -> dict[str, object]:
+def _unchecked(repos: dict[str, str]) -> list[dict[str, str]]:
+    """``[{"name", "reason"}]`` for the repos a delete could not check."""
+    return [{"name": name, "reason": why} for name, why in repos.items()]
+
+
+def _rm_impact_summary(plan: RmPlan) -> dict[str, object]:
     """Project an :class:`RmPlan` into the JSON the confirm dialog renders.
 
     Lists every external link the delete would break so the GUI can warn before
     removing: which papers' references get cleared, which repos are unbound
-    (1:N) vs deleted as now-orphaned clones (1:1), which projects are unlinked,
-    and which referencing notes get tagged ``(deleted)``.
+    (1:N) vs deleted as now-orphaned clones (1:1) vs kept because nothing could
+    clone them again, because they hold the user's own changes, or because they
+    could not be checked for any, which projects are unlinked, and which
+    referencing notes get tagged ``(deleted)``.
     """
     return {
         "id": plan.paper_id,
@@ -377,6 +385,9 @@ def _rm_impact_summary(plan: object) -> dict[str, object]:
         "references": sorted(plan.touched_ref_ids),
         "reposUnbound": plan.repos_unbound,
         "reposRemoved": sorted(plan.orphan_repos),
+        "reposKept": plan.kept_repos,
+        "reposEdited": plan.edited_repos,
+        "reposUnchecked": _unchecked(plan.unchecked_repos),
         "projects": sorted(plan.projects),
         "notes": sorted(plan.note_updates),
     }
@@ -436,6 +447,9 @@ async def delete_paper(request: Request, paper_id: str) -> dict[str, object]:
         "references": sorted(result.touched_ref_ids),
         "reposUnbound": result.repos_unbound,
         "reposRemoved": result.orphan_repos,
+        "reposKept": result.kept_repos,
+        "reposEdited": result.edited_repos,
+        "reposUnchecked": _unchecked(result.unchecked_repos),
         "projects": result.projects,
         "notes": result.note_files,
         "warnings": result.warnings,
@@ -704,14 +718,25 @@ async def delete_project(request: Request, name: str) -> dict[str, object]:
     the project directory itself (invariant #16: no second write path). Confirm-
     free — the GUI's confirm dialog is the confirmation.
 
-    An unregistered project surfaces as TaxonomyError → 400.
+    An unregistered project surfaces as TaxonomyError → 400. ``foldersLeft``
+    names each project folder the teardown could not clean, with the OS's
+    reason: the project is out of the config, so nothing looks there again
+    and the GUI has to say so now (the CLI prints the same).
     """
     vault = request.app.state.vault
+    hubs_left: dict[Path, OSError] = {}
     try:
-        n_changed, _ = remove_project(vault, name)
+        n_changed, _ = remove_project(vault, name, hubs_left=hubs_left)
     except TaxonomyError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
-    return {"ok": True, "changed": n_changed}
+    return {
+        "ok": True,
+        "changed": n_changed,
+        "foldersLeft": [
+            {"path": str(hub), "reason": _os_error_reason(err)}
+            for hub, err in hubs_left.items()
+        ],
+    }
 
 
 @router.put("/projects/{name}")

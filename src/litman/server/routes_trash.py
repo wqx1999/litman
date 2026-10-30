@@ -5,8 +5,9 @@ wrapper over ``core.trash`` (the same layer ``lit trash {list, restore}`` uses).
 The server NEVER re-implements trash enumeration or restore logic — restore
 mirrors ``commands/trash.py:trash_restore_cmd`` exactly (resolve →
 ``restore_from_trash`` → ``reconcile_derived``), minus the interactive re-clone
-step (decision (b): the endpoint never re-clones; it only hands ``missing_repos``
-back for the CLI / health-check to act on).
+step (decision (b): the endpoint never re-clones; it hands ``missing_repos``
+back, and ``restore_from_trash`` has put each one's ``repo-meta.yaml`` back
+with its upstream, for ``lit code restore-all`` to clone).
 
 Path-traversal defense (red line ⑤): ``entry_name`` arrives from the URL, so a
 file-serving handler must NEVER synthesize ``vault/'.trash'/entry_name`` from
@@ -22,6 +23,7 @@ The vault is read from ``request.app.state.vault`` (set by
 from __future__ import annotations
 
 from pathlib import Path
+from typing import cast
 
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import FileResponse
@@ -41,7 +43,7 @@ router = APIRouter(prefix="/api")
 
 
 def _vault(request: Request) -> Path:
-    return request.app.state.vault
+    return cast(Path, request.app.state.vault)
 
 
 def _resolve(vault: Path, entry_name: str) -> TrashEntry:
@@ -181,8 +183,9 @@ def post_trash_restore(request: Request, entry_name: str) -> dict[str, object]:
     ``reconcile_derived`` (INDEX + views recomputed together; ``project_refs``
     False because ``restore_from_trash`` already rebuilt the paper's project
     symlinks). It deliberately does NOT call ``_handle_missing_repos`` /
-    re-clone (decision (b)): a hard-deleted 1:1 repo stays bound and is reported
-    via ``missing_repos`` for the CLI / ``lit health-check`` to handle.
+    re-clone (decision (b)): a hard-deleted 1:1 repo stays bound, comes back as
+    a ``repo-meta.yaml`` without a checkout, and is reported via
+    ``missing_repos``; ``lit code restore-all`` clones it.
 
     Errors:
         * entry not found → 404 (via ``_resolve``).
@@ -222,6 +225,7 @@ def post_trash_restore(request: Request, entry_name: str) -> dict[str, object]:
         "title": result.title,
         "reverse_edges_rebuilt": sorted(result.reverse_edges_rebuilt),
         "repos_rebound": sorted(result.repos_rebound),
+        "notes_beside": dict(result.notes_beside),
         "projects_rebuilt": sorted(result.projects_rebuilt),
         "missing_repos": dict(result.missing_repos),
         "dead_edges_dropped": sorted(result.dead_edges_dropped),

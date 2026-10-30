@@ -15,6 +15,7 @@ Trash storage layout and atomicity rules live in :mod:`litman.core.trash`.
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 from typing import Any
 
@@ -23,14 +24,19 @@ from rich.console import Console
 from rich.markup import escape
 from rich.table import Table
 
-from litman.commands._hub_report import hub_settlement_lines
+from litman.commands._hub_report import (
+    hub_settlement_lines,
+    project_folder_not_updated,
+)
 from litman.commands._options import format_option, library_option, vault_option
 from litman.core import confirm as confirm_mod
 from litman.core.code import (
     CODES_DIRNAME,
+    NOTES_FILENAME,
     REPO_DIRNAME,
+    REPO_META_FILENAME,
     bind_paper_to_repo,
-    clone_repo,
+    fetch_repo,
     make_repo_meta,
     write_notes,
     write_repo_meta,
@@ -49,7 +55,7 @@ from litman.core.trash import (
     resolve_trash_entry,
     restore_from_trash,
 )
-from litman.exceptions import CodeError, TrashError
+from litman.exceptions import CodeError
 
 console = Console()
 
@@ -139,18 +145,32 @@ def trash_list_cmd(
 
 
 def _reclone_missing_repo(
-    vault: Path, paper_id: str, repo_name: str, upstream: str
+    vault: Path,
+    paper_id: str,
+    repo_name: str,
+    upstream: str,
+    *,
+    link_errors: list[OSError],
 ) -> None:
     """Re-clone a 1:1 hard-deleted repo and re-bind it to ``paper_id``.
 
     POST-transaction (step 3): reuses the INTERNAL clone + repo-meta + bind
     logic of ``core.code`` for the single repo A needs, NOT the vault-level
-    ``restore_missing_repos``. Builds ``codes/<repo>/{repo, repo-meta.yaml,
-    notes.md}`` then binds via ``bind_paper_to_repo`` (papers:[A]).
+    ``restore_missing_repos``. The restore already put back
+    ``codes/<repo>/repo-meta.yaml`` (papers:[A]) and the saved ``notes.md``;
+    this fetches ``repo/`` into it, adds a ``notes.md`` when there was none to
+    put back, and binds via ``bind_paper_to_repo``, which also
+    links the repo into A's projects. A project ``litman_code/`` the bind
+    could not update lands in ``link_errors``.
+
+    A failed attempt rolls back only what it made: never a ``repo/`` that was
+    already there (the restore re-binds one of those instead of handing it
+    here), nor what else ``codes/<repo>/`` held.
 
     Raises:
-        CodeError: empty upstream, clone failure, or bind failure. The caller
-            turns this into a kept-binding + warning (decision #3).
+        CodeError: empty upstream, ``repo/`` already there, clone failure, or
+            bind failure. The caller turns this into a kept-binding + warning
+            (decision #3).
     """
     if not upstream:
         raise CodeError(
@@ -158,29 +178,37 @@ def _reclone_missing_repo(
         )
     repo_root = vault / CODES_DIRNAME / repo_name
     repo_dir = repo_root / REPO_DIRNAME
+    if os.path.lexists(repo_dir):
+        raise CodeError(f"{repo_dir} is already there")
+    had_meta = (repo_root / REPO_META_FILENAME).is_file()
+    made_root = not repo_root.exists()
     repo_root.mkdir(parents=True, exist_ok=True)
     try:
-        clone_repo(upstream, repo_dir)
-        meta = make_repo_meta(name=repo_name, upstream=upstream, papers=[])
-        write_repo_meta(repo_root, meta)
-        write_notes(repo_root, repo_name, upstream)
+        fetch_repo(upstream, repo_dir)
+        if not had_meta:
+            write_repo_meta(
+                repo_root, make_repo_meta(name=repo_name, upstream=upstream)
+            )
+        if not (repo_root / NOTES_FILENAME).exists():
+            write_notes(repo_root, repo_name, upstream)
         # Bind INSIDE the guard so a bind failure also rolls back the
-        # half-built dir (invariant #12: no clone without link).
-        bind_paper_to_repo(vault, paper_id, repo_name)
+        # half-built checkout (invariant #12: no clone without link).
+        bind_paper_to_repo(vault, paper_id, repo_name, link_errors=link_errors)
     except Exception as e:
-        # Roll back the half-built codes/<repo>/ so a failed re-clone (clone,
-        # repo-meta, OR bind) leaves no dangling dir — the binding on the
-        # paper side is kept (caller's warning path); health-check backstops
-        # the missing repo. Normalize to CodeError so the caller's single
-        # ``except CodeError`` handles every failure uniformly:
-        # ``bind_paper_to_repo`` can raise PaperNotFoundError, which is not a
-        # CodeError and would otherwise escape and crash an already-committed
-        # restore.
+        # Roll back what this attempt built so a failed re-clone (clone,
+        # repo-meta, OR bind) leaves no half-built checkout — the binding on
+        # the paper side is kept (caller's warning path). The repo-meta.yaml
+        # the restore put back stays: it holds the upstream, and
+        # `lit code restore-all` re-clones from it. Normalize to CodeError so
+        # the caller's single ``except CodeError`` handles every failure
+        # uniformly: ``bind_paper_to_repo`` can raise PaperNotFoundError,
+        # which is not a CodeError and would otherwise escape and crash an
+        # already-committed restore.
         # locking.rmtree, not shutil: a half-finished `git clone` already
         # wrote read-only .git objects, which Windows refuses to unlink — a
         # bare rmtree would strand them and wedge every future re-clone on
         # "directory not empty".
-        rmtree(repo_root, ignore_errors=True)
+        rmtree(repo_root if made_root else repo_dir, ignore_errors=True)
         if isinstance(e, CodeError):
             raise
         raise CodeError(f"re-clone of {repo_name!r} failed: {e}") from e
@@ -191,40 +219,30 @@ def _handle_missing_repos(
     result: RestoreResult,
     *,
     skip_confirm: bool,
+    link_errors: list[OSError],
 ) -> None:
     """Step 3: re-clone any 1:1 hard-deleted repo A still binds.
 
     With ``-y`` (``skip_confirm``) the re-clone is auto-attempted with no
     prompt; otherwise the user is prompted per repo (the only interactive
-    point in restore), and with no terminal to ask it counts as a refusal
-    that also prints the ``lit code add`` doing the clone. On refuse OR
-    failure the binding A.code-clones:[X] is KEPT and a warning is emitted —
-    re-clone is never a precondition for the restore's success (decision
-    #2/#3); health-check backstops the dangling code ref.
+    point in restore), and with no terminal to ask it counts as a refusal.
+    On refuse OR failure the binding A.code-clones:[X] is KEPT and a warning
+    is emitted — re-clone is never a precondition for the restore's success
+    (decision #2/#3). The restore put ``codes/<repo>/repo-meta.yaml`` back
+    with the upstream, so the way out it names is ``lit code restore-all``;
+    with no upstream recorded there is nothing to clone, and it names
+    ``lit health-check``.
     """
     for repo_name, upstream in sorted(result.missing_repos.items()):
-        # The trash sidecar (sole on-disk record of this 1:1 orphan's upstream
-        # URL) is already gone by now, and it is auto-fix-deletable anyway, so
-        # the URL must be echoed on every non-success path or it is lost for
-        # good (review F20). `upstream` is carried in result.missing_repos, so
-        # we always have it here even with -y (no prompt shown).
+        # The upstream is also on screen (review F20), though repo-meta.yaml
+        # now keeps it on disk too.
         url_note = f" [dim](upstream: {escape(upstream)})[/]" if upstream else ""
+        how = "lit code restore-all" if upstream else "lit health-check"
         if not skip_confirm and not confirm_mod._stdin_is_tty():
             # Nobody to ask: no clone, as with a "no", and never read stdin.
-            # The command carries the upstream; a local import is recorded as
-            # local:<path>, and code add takes the path.
-            from litman.core.supplementary import shell_path
-
-            source = upstream.removeprefix("local:") if upstream else ""
-            how = (
-                f"lit code add {shell_path(source)} --paper {result.paper_id} "
-                f"--name {repo_name}"
-                if source
-                else "lit health-check"
-            )
             console.print(
                 f"  [yellow]Kept binding to '{escape(repo_name)}' without "
-                f"re-clone[/] [dim](run `{escape(how)}`)[/]",
+                f"re-clone[/]{url_note} [dim](run `{how}`)[/]",
                 soft_wrap=True,
             )
             continue
@@ -237,20 +255,22 @@ def _handle_missing_repos(
             if not do_clone:
                 console.print(
                     f"  [yellow]Kept binding to '{escape(repo_name)}' "
-                    f"without re-clone[/]{url_note} [dim](run "
-                    "`lit health-check`)[/]"
+                    f"without re-clone[/]{url_note} [dim](run `{how}`)[/]",
+                    soft_wrap=True,
                 )
                 continue
         try:
             _reclone_missing_repo(
-                vault, result.paper_id, repo_name, upstream
+                vault, result.paper_id, repo_name, upstream,
+                link_errors=link_errors,
             )
         except CodeError as e:
             first_line = str(e).splitlines()[0] if str(e) else "clone failed"
             console.print(
                 f"  [yellow]Re-clone of '{escape(repo_name)}' failed[/] "
                 f"[dim]({escape(first_line)})[/]; binding kept{url_note}, "
-                "run `lit health-check`."
+                f"run `{how}` once it can be reached.",
+                soft_wrap=True,
             )
             continue
         console.print(
@@ -306,7 +326,7 @@ def trash_restore_cmd(
     # REFERENCES.md (result.projects_rebuilt) — behavior unchanged.
     # task-write-perf: reuse the list the staged INDEX.json was rendered from
     # and add just the reappearing paper's view links ({} → snapshot).
-    reconcile_derived(
+    derived = reconcile_derived(
         vault,
         papers=result.surviving_papers,
         project_refs=False,
@@ -330,6 +350,13 @@ def trash_restore_cmd(
             f"  Re-bound to [bold]{n}[/] repo{'s' if n != 1 else ''} "
             f"[dim]({escape(', '.join(sorted(result.repos_rebound)))})[/]"
         )
+    # A note written since the delete is not overwritten (core/trash.py).
+    for repo_name, name in sorted(result.notes_beside.items()):
+        console.print(
+            f"  Kept the notes.md already in codes/{escape(repo_name)}/; the "
+            f"one saved with the paper is beside it as {escape(name)}",
+            soft_wrap=True,
+        )
     if result.projects_rebuilt:
         n = len(result.projects_rebuilt)
         console.print(
@@ -345,13 +372,23 @@ def trash_restore_cmd(
 
     # Step 3: re-clone any 1:1 hard-deleted repo (POST-transaction, may fail
     # without rolling back the restore).
-    _handle_missing_repos(vault, result, skip_confirm=skip_confirm)
+    link_errors = list(result.link_errors)
+    _handle_missing_repos(
+        vault, result, skip_confirm=skip_confirm, link_errors=link_errors
+    )
 
     # TAXONOMY drift is intentionally left to health-check — restore never
     # edits TAXONOMY (invariant #2). The `[[A]] (deleted)` de-annotation is
     # done inside restore_from_trash's transaction (M24).
 
-    console.print("[dim]INDEX.json + views/ refreshed.[/]")
+    # A views/ folder it could not change was said by the rebuild itself.
+    console.print(
+        f"[dim]INDEX.json{'' if derived['view_errors'] else ' + views/'} "
+        "refreshed.[/]"
+    )
+    # One line however many project folders refused, from either step.
+    if link_errors:
+        console.print(project_folder_not_updated(link_errors[0]), soft_wrap=True)
 
 
 # ---------------------------------------------------------------------------

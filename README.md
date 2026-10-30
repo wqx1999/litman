@@ -84,9 +84,10 @@ whatever you already pay for. **Start with Claude Code.**
 
 These also work — last checked with litman 1.3.8:
 
-| Agent CLI | Recommended model |
+| Agent | Recommended model |
 |:---|:---|
 | [Codex](https://developers.openai.com/codex/cli/) | Official subscription |
+| [DeepSeek Harness](https://www.deepseek.com/harness/) | DeepSeek |
 | [Antigravity CLI](https://antigravity.google/download#antigravity-cli) | Official subscription |
 | [Cursor](https://cursor.com/cli) | Composer 2.5 |
 | [OpenCode](https://opencode.ai/) | MiniMax-M3 |
@@ -107,8 +108,8 @@ upgrades, and reopens by itself.
 From a terminal, `lit self-update` does the same through whichever tool
 installed litman, uv or pipx. It prints `current → latest` and asks once.
 
-litman asks PyPI for the newest version number once a day, and mentions it when
-yours is older; `lit hello` tells you every time you ask.
+litman asks PyPI (or the mirror it was installed from) for the newest version
+number once a day, and mentions it when yours is older; `lit hello` tells you every time you ask.
 `LITMAN_NO_UPDATE_CHECK=1` switches all of it off —
 [what it checks](https://litman.dev/docs/4-commands/#lit-self-update).
 

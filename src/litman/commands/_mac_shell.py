@@ -199,7 +199,7 @@ def run_shell(
         else:
             window.load_html(_error_html())
 
-    ready_kwargs: dict[str, float] = {}
+    ready_kwargs: dict[str, Any] = {}
     if ready_timeout is not None:
         ready_kwargs["ready_timeout"] = ready_timeout
     if ready_poll is not None:

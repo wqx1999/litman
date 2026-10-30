@@ -14,9 +14,9 @@ startup path stays fastapi-free even though fastapi is now a core dependency).
 from __future__ import annotations
 
 import threading
+from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import AsyncIterator
 
 from fastapi import FastAPI, Request, Response
 from fastapi.responses import JSONResponse, PlainTextResponse
@@ -24,13 +24,20 @@ from fastapi.staticfiles import StaticFiles
 
 from litman.core.config import CONFIG_FILENAME
 from litman.core.presence import PresenceTracker
-from litman.exceptions import CorruptMetadataError, UnreadableTaxonomyError
+from litman.exceptions import (
+    ConfigError,
+    CorruptMetadataError,
+    LitmanError,
+    UnreadableTaxonomyError,
+)
+from litman.server import peer_owner
 from litman.server.local_guard import LocalPageGuard
 from litman.server.routes_agent import router as agent_router
 from litman.server.routes_ingest import router as ingest_router
 from litman.server.routes_ingest import sweep_uploads
 from litman.server.routes_presence import router as presence_router
 from litman.server.routes_read import router as read_router
+from litman.server.routes_si import config_problem
 from litman.server.routes_si import router as si_router
 from litman.server.routes_structured import router as structured_router
 from litman.server.routes_trash import router as trash_router
@@ -138,7 +145,7 @@ def _vaultless_allowed(method: str, path: str) -> bool:
 
 @asynccontextmanager
 async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
-    """On real server startup, refresh the PyPI update-check cache in the
+    """On real server startup, refresh the update-check cache in the
     background (silent-fail) so a GUI-only user's version badge can populate
     even if they never touch the CLI. The ``GET /api/version`` route only reads
     the cache — the network never touches the request path (task-self-update D4).
@@ -146,16 +153,29 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
     Fires only when the server actually starts (uvicorn / a `with TestClient`
     context), so a bare ``TestClient(create_app(...))`` used in tests never hits
     the network. The refresh helper is itself TTL-gated + opt-out-aware + fully
-    silent; the daemon thread just keeps startup non-blocking.
+    silent; the daemon thread keeps startup non-blocking, and asks again every
+    hour for as long as the server runs (a GUI left open for days still learns
+    of a release; the TTL decides whether that touches the network).
+    ``app.state.update_checking`` is true until the first attempt settles, so
+    the page knows to read the version again.
     """
+    stop_checking = threading.Event()
+    app.state.update_checking = True
 
     def _refresh() -> None:
-        try:
-            from litman.core.update_check import refresh_cache_if_stale
+        from litman.core import update_check
 
-            refresh_cache_if_stale()
-        except Exception:
-            pass
+        while True:
+            try:
+                update_check.refresh_cache_if_stale(
+                    timeout=update_check.GUI_NETWORK_TIMEOUT_SECONDS,
+                    retry_after=update_check.GUI_RETRY_SECONDS,
+                )
+            except Exception:
+                pass
+            app.state.update_checking = False
+            if stop_checking.wait(update_check.GUI_RETRY_SECONDS):
+                return
 
     # A failed one-click update leaves a flag beside the registry (written by
     # the detached helper — see core/self_update_helper.py). Consume it here so
@@ -208,6 +228,7 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
     try:
         yield
     finally:
+        stop_checking.set()
         if registration is not None:
             from litman.core.gui_registry import unregister_gui
 
@@ -310,6 +331,15 @@ def create_app(vault: Path | None) -> FastAPI:
     # Added after ``_guard_vault`` so it wraps it: a request from another web
     # page is refused before anything reads the vault — WebSockets included.
     app.add_middleware(LocalPageGuard)
+    # Open the guard's kernel lookup now, before the server opens its port: a
+    # client cannot be using up the server's file descriptors yet.
+    try:
+        peer_owner.sock_diag()
+    except OSError as error:
+        raise LitmanError(
+            "lit gui could not set up its check on which user is connecting. "
+            "Try again in a moment."
+        ) from error
 
     @app.exception_handler(CorruptMetadataError)
     async def _corrupt_metadata(request: Request, exc: CorruptMetadataError) -> JSONResponse:
@@ -328,6 +358,18 @@ def create_app(vault: Path | None) -> FastAPI:
         registering a value, tagging a paper, adding or renaming a project —
         worded as the CLI words it, instead of "Internal Server Error"."""
         return JSONResponse(status_code=500, content={"detail": str(exc)})
+
+    @app.exception_handler(ConfigError)
+    async def _config_unreadable(request: Request, exc: ConfigError) -> JSONResponse:
+        """lit-config.yaml cannot be read: a 500 saying so in one line, for
+        every route that reads it — the project list, adding, renaming or
+        removing a project, linking a paper, restoring one from the trash —
+        instead of "Internal Server Error". The CLI's own message carries the
+        file's path and pydantic's full report, too long for a toast."""
+        return JSONResponse(
+            status_code=500,
+            content={"detail": config_problem(exc, "fix it and try again")},
+        )
 
     app.include_router(read_router)
     app.include_router(write_router)

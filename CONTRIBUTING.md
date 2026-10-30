@@ -73,7 +73,11 @@ A few things that make a patch easy to accept:
 - Keep the change to one thing.
 - Match the surrounding code rather than the style you prefer.
 - Run `ruff check .` and `mypy` before you push. Both are configured in
-  `pyproject.toml`, so they need no arguments.
+  `pyproject.toml`, so they need no arguments. CI runs them with the exact
+  versions in `.github/lint-constraints.txt`.
+- If you change anything under `frontend/`, run `bash frontend/build.sh` and
+  commit the rebuilt `src/litman/assets/webui/` together with the source. CI
+  rebuilds it and fails if the two differ.
 
 litman is licensed under AGPL-3.0-or-later. By contributing you agree that your
 contribution is licensed the same way.

@@ -77,7 +77,7 @@ from pydantic import (
 from litman.core.id import find_case_fold_collision
 from litman.core.undecodable import config_refusal, printable, refusal
 from litman.core.yaml_pool import ThreadLocalYAML
-from litman.exceptions import VaultRegistryError
+from litman.exceptions import VaultRegistryError as VaultRegistryError
 
 # Env var that, when set, overrides the platformdirs default. Point at a
 # cloud-synced directory to get backup + cross-machine sync for free.
@@ -267,7 +267,7 @@ class VaultRegistry(BaseModel):
     )
 
     @model_validator(mode="after")
-    def _check_invariants(self) -> "VaultRegistry":
+    def _check_invariants(self) -> VaultRegistry:
         names = [v.name for v in self.vaults]
         if len(names) != len(set(names)):
             dups = sorted({n for n in names if names.count(n) > 1})

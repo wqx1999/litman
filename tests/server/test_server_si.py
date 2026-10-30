@@ -800,7 +800,10 @@ def test_a_dropped_connection_leaves_no_half_file(
             (b"x-litman-filename", b"ci9b00237_si_001.bin"),
             (b"content-length", b"100000"),
         ],
-        "client": ("127.0.0.1", 50000),
+        # TestClient's name rather than an address: no socket stands behind
+        # this scope, and the guard takes a real address with none for a
+        # client that has hung up.
+        "client": ("testclient", 50000),
         "server": ("127.0.0.1", 8765),
     }
     incoming: list[dict[str, Any]] = [

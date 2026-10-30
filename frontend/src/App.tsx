@@ -165,8 +165,10 @@ function useDarkMode(): readonly [boolean, () => void] {
 /** The state a resync diffs: the last-seen truth vs the freshly-fetched truth. */
 interface ResyncSnapshot {
   papers: IndexPaper[]
+  // Null when that list has not been read: TAXONOMY.md or lit-config.yaml
+  // cannot be read, or not since the vault was opened. The diff skips it.
   taxonomy: Taxonomy | null
-  projects: ProjectEntry[]
+  projects: ProjectEntry[] | null
   trash: TrashEntry[]
   mtimes: DocMtimes | null
 }
@@ -253,12 +255,14 @@ function diffResync(
 
   // Projects registry (owns project add/remove — D3; a rename reads as one
   // removed + one added, which is acceptable).
-  const prevProjects = new Set(prev.projects.map((p) => p.name))
-  const freshProjects = new Set(fresh.projects.map((p) => p.name))
-  for (const name of freshProjects)
-    if (!prevProjects.has(name)) add(`project: + ${name}`)
-  for (const name of prevProjects)
-    if (!freshProjects.has(name)) add(`project: − ${name}`)
+  if (prev.projects && fresh.projects) {
+    const prevProjects = new Set(prev.projects.map((p) => p.name))
+    const freshProjects = new Set(fresh.projects.map((p) => p.name))
+    for (const name of freshProjects)
+      if (!prevProjects.has(name)) add(`project: + ${name}`)
+    for (const name of prevProjects)
+      if (!freshProjects.has(name)) add(`project: − ${name}`)
+  }
 
   // Doc mtimes: a notes/discussion edit made outside the GUI bumps the file
   // mtime. Only papers tracked in the previous snapshot are compared — a brand-
@@ -600,6 +604,12 @@ export default function App() {
   useEffect(() => {
     trashRef.current = trashEntries
   }, [trashEntries])
+  // The taxonomy and project lists fail on their own when TAXONOMY.md or
+  // lit-config.yaml cannot be read. Until one has been read from this vault,
+  // its ref holds a stand-in (empty, or the previous vault's list), and a diff
+  // against it would log every entry as added or removed.
+  const taxonomyKnownRef = useRef(false)
+  const projectsKnownRef = useRef(false)
   const docMtimesRef = useRef<DocMtimes | null>(null)
   // Flipped true only after the mount seed Promise.all settles (D5), so the
   // first resync has a real baseline (never logs every paper as "+ added").
@@ -773,11 +783,23 @@ export default function App() {
     fetchFixedEnums().then(setFixedEnums).catch(classifyFetchError)
     // Update-check chip: pure cache read, best-effort (a failure just leaves
     // the chip off — this is a passive reminder, never blocking). A null
-    // `latest` on the FIRST read can also mean the server's background cache
-    // refresh (its network fetch is bounded at 2s) hasn't landed yet — without
-    // a retry the chip would always be one app start late. One re-read at 3s
-    // is strictly after that refresh has finished or given up.
+    // `latest` on the FIRST read can also mean the server's background check
+    // is still out on the network (a slow link can take many seconds) —
+    // `checking` says so, and the page reads again each second until it is
+    // done, rather than being one app start late.
     let versionRetry: ReturnType<typeof setTimeout> | undefined
+    const rereadWhileChecking = (tries: number) => {
+      versionRetry = setTimeout(() => {
+        fetchVersion()
+          .then((again) => {
+            setUpdateLatest(again.latest)
+            if (!again.latest && again.checking && tries > 1) {
+              rereadWhileChecking(tries - 1)
+            }
+          })
+          .catch(() => {})
+      }, 1000)
+    }
     fetchVersion()
       .then((v) => {
         setVersionCurrent(v.current)
@@ -812,12 +834,7 @@ export default function App() {
             if (w.bullets.length > 0) setWhatsNew(w)
           })
           .catch(() => {})
-        if (v.latest) return
-        versionRetry = setTimeout(() => {
-          fetchVersion()
-            .then((again) => setUpdateLatest(again.latest))
-            .catch(() => {})
-        }, 3000)
+        if (!v.latest && v.checking) rereadWhileChecking(60)
       })
       .catch(() => {})
     // Host capabilities: cheap (one cached probe server-side) so they run
@@ -835,18 +852,31 @@ export default function App() {
       })
       .catch(() => {})
     // Seed the resync diff baseline (D5): gate resyncReadyRef on a Promise.all
-    // over ALL of papers / taxonomy / projects / trash / doc-mtimes so the first
-    // resync never diffs against an empty baseline (which would log every paper
-    // as "+ added"). The four state-backed refs seed themselves via the mirror
-    // effects above; docMtimesRef (never rendered) is seeded here directly. The
-    // full INDEX (no view) also backs global id/title matching + wikilink lookup.
+    // over papers / trash / doc-mtimes so the first resync never diffs against
+    // an empty baseline (which would log every paper as "+ added"). The four
+    // state-backed refs seed themselves via the mirror effects above;
+    // docMtimesRef (never rendered) is seeded here directly. The full INDEX (no
+    // view) also backs global id/title matching + wikilink lookup. The taxonomy
+    // and project lists are seeded too but do not hold the gate: when one cannot
+    // be read it stays empty, the health panel says why, and the diff skips it
+    // until it is read.
     void Promise.all([
       fetchPapers().then((ps) => {
         setAllPapers(ps)
         setAllLoaded(true)
       }),
-      fetchTaxonomy().then(setTaxonomy),
-      fetchProjects().then(setProjects),
+      fetchTaxonomy()
+        .then((t) => {
+          setTaxonomy(t)
+          taxonomyKnownRef.current = true
+        })
+        .catch(() => {}),
+      fetchProjects()
+        .then((p) => {
+          setProjects(p)
+          projectsKnownRef.current = true
+        })
+        .catch(() => {}),
       loadTrash(),
       fetchDocMtimes().then((m) => {
         docMtimesRef.current = m
@@ -868,6 +898,20 @@ export default function App() {
       })
     return () => clearTimeout(versionRetry)
   }, [served, loadTrash, classifyFetchError, notify])
+
+  // A window left open for days: the server asks again every hour, so read
+  // the cached answer whenever the page comes back into view.
+  useEffect(() => {
+    if (!served) return
+    const onVisible = () => {
+      if (document.visibilityState !== 'visible') return
+      fetchVersion()
+        .then((v) => setUpdateLatest(v.latest))
+        .catch(() => {})
+    }
+    document.addEventListener('visibilitychange', onVisible)
+    return () => document.removeEventListener('visibilitychange', onVisible)
+  }, [served])
 
   useEffect(() => {
     if (!served) return
@@ -1114,9 +1158,19 @@ export default function App() {
   // values. Decoupled from refreshAfterWrite (which refreshes per-paper + lists)
   // so a plain status/tag-attach write doesn't pay for two extra fetches.
   const refreshVocab = useCallback(() => {
-    fetchTaxonomy().then(setTaxonomy)
-    fetchProjects().then(setProjects)
-  }, [])
+    fetchTaxonomy()
+      .then((t) => {
+        setTaxonomy(t)
+        taxonomyKnownRef.current = true
+      })
+      .catch(classifyFetchError)
+    fetchProjects()
+      .then((p) => {
+        setProjects(p)
+        projectsKnownRef.current = true
+      })
+      .catch(classifyFetchError)
+  }, [classifyFetchError])
 
   // After a project create/delete from the TopBar manager: refresh the project
   // list + taxonomy (refreshVocab) AND the papers/selected/list (refreshAfterWrite).
@@ -1146,8 +1200,8 @@ export default function App() {
     // mirrored from every commit path (D1), so this is the true prior baseline.
     const prev: ResyncSnapshot = {
       papers: allPapersRef.current,
-      taxonomy: taxonomyRef.current,
-      projects: projectsRef.current,
+      taxonomy: taxonomyKnownRef.current ? taxonomyRef.current : null,
+      projects: projectsKnownRef.current ? projectsRef.current : null,
       trash: trashRef.current,
       mtimes: docMtimesRef.current,
     }
@@ -1162,8 +1216,13 @@ export default function App() {
         await Promise.all([
           fetchPapers(),
           fetchPapers(listView),
-          fetchTaxonomy(),
-          fetchProjects(),
+          // The one exception to all-or-nothing: when TAXONOMY.md or
+          // lit-config.yaml cannot be read, that list keeps its last value
+          // (null here) and the rest of the sweep still lands. Without this, a
+          // broken file froze the whole view; the health panel says what is
+          // wrong.
+          fetchTaxonomy().catch(() => null),
+          fetchProjects().catch(() => null),
           fetchTrash(),
           fetchDocMtimes(),
           fetchVaults(),
@@ -1192,8 +1251,14 @@ export default function App() {
       setAllPapers(freshAll)
       setAllLoaded(true)
       setPapers(freshList)
-      setTaxonomy(freshTax)
-      setProjects(freshProjects)
+      if (freshTax) {
+        setTaxonomy(freshTax)
+        taxonomyKnownRef.current = true
+      }
+      if (freshProjects) {
+        setProjects(freshProjects)
+        projectsKnownRef.current = true
+      }
       setTrashEntries(freshTrash)
       setVaults(freshVaults)
       // Track the server's binding, not just the registry list: a vault switch
@@ -1920,6 +1985,9 @@ export default function App() {
     // The doc-mtime baseline is per-vault; drop it so the first resync in the new
     // vault seeds afresh instead of diffing it against the old vault's mtimes.
     docMtimesRef.current = null
+    // Likewise the taxonomy and project lists, until the new vault's are read.
+    taxonomyKnownRef.current = false
+    projectsKnownRef.current = false
     // The switch that brought us here just succeeded, so the server answered
     // and is bound to a live vault again — retire both banners now rather than
     // leaving the red one to claim (for up to one 5s sweep) that the NEW
@@ -1938,8 +2006,18 @@ export default function App() {
         setServed(v.served)
       })
       .catch(classifyFetchError)
-    fetchProjects().then(setProjects).catch(classifyFetchError)
-    fetchTaxonomy().then(setTaxonomy).catch(classifyFetchError)
+    fetchProjects()
+      .then((p) => {
+        setProjects(p)
+        projectsKnownRef.current = true
+      })
+      .catch(classifyFetchError)
+    fetchTaxonomy()
+      .then((t) => {
+        setTaxonomy(t)
+        taxonomyKnownRef.current = true
+      })
+      .catch(classifyFetchError)
     fetchFixedEnums().then(setFixedEnums).catch(classifyFetchError)
     fetchPapers()
       .then((ps) => {
@@ -2080,13 +2158,13 @@ export default function App() {
           parts.push(`${res.projectsRebuilt.length} project(s)`)
         let msg = `Restored “${res.paperId}”`
         if (parts.length) msg += ` · rebuilt ${parts.join(', ')}`
-        const missing = Object.keys(res.missingRepos).length
-        if (missing) {
+        const missing = Object.keys(res.missingRepos)
+        if (missing.length) {
           // The 1:1 code repo(s) were hard-deleted on rm and the GUI deliberately
-          // does NOT re-clone (decision b) — warn prominently and don't auto-
-          // dismiss, since the code-clones link now dangles until the CLI
-          // re-clones it.
-          msg += ` · ⚠ ${missing} code repo(s) were deleted and NOT re-cloned — finish in the CLI: lit trash restore -y (or lit health-check)`
+          // does NOT re-clone (decision b). The restore put each one's record
+          // (upstream included) back, so one CLI command clones them all —
+          // warn prominently and don't auto-dismiss until it has been run.
+          msg += ` · ⚠ code not cloned again: ${missing.join(', ')} — run lit code restore-all`
           notify(msg, 'warning', { sticky: true })
         } else {
           notify(msg, 'success')

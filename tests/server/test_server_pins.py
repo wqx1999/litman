@@ -12,7 +12,6 @@ collects when the optional ``web`` extra is absent (invariant #5)."""
 
 from __future__ import annotations
 
-import shutil
 from pathlib import Path
 
 import pytest

@@ -688,7 +688,7 @@ def build_seed(
         raise KeyError(f"unknown seed {name!r}; known: {sorted(SEED_SPECS)}")
     spec = SEED_SPECS[name]
 
-    global GOLDEN_DIR  # noqa: PLW0603 — allow per-call override of the golden src
+    global GOLDEN_DIR  # allow per-call override of the golden src
     prev_golden = GOLDEN_DIR
     GOLDEN_DIR = golden_dir
 

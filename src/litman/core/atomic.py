@@ -54,7 +54,7 @@ import shutil
 import sys
 import uuid
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath, PureWindowsPath
 from types import TracebackType
 from typing import Literal
@@ -105,7 +105,7 @@ def _make_op_id(prefix: str = "op") -> str:
     ``op-20260428T112545-abc123``. Two calls in the same second still get
     distinct ids via the uuid4 suffix.
     """
-    ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    ts = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
     suffix = uuid.uuid4().hex[:6]
     return f"{prefix}-{ts}-{suffix}"
 
@@ -263,7 +263,7 @@ def _manifest_unreadable_message(op_id: str) -> str:
 
     Single source of truth shared by the mutating recoverer
     (:func:`_recover_one_op`) and the read-only classifier
-    (``checks._classify_torn_op``) so the data-loss-path wording cannot
+    (``checks.maintenance._classify_torn_op``) so the data-loss-path wording cannot
     drift between the two call sites.
     """
     return (
@@ -283,7 +283,7 @@ def _unrecoverable_message(
 
     Single source of truth shared by the mutating recoverer
     (:func:`_recover_one_op`) and the read-only classifier
-    (``checks._classify_torn_op``). One parameterized template, two
+    (``checks.maintenance._classify_torn_op``). One parameterized template, two
     voices, so the data-loss-path wording cannot drift between the call
     sites:
 
@@ -708,7 +708,7 @@ class StagedWrite:
         self._moves: list[tuple[str, str]] = []
         self._moved: list[tuple[str, str]] = []
 
-    def __enter__(self) -> "StagedWrite":
+    def __enter__(self) -> StagedWrite:
         # exist_ok=False: a collision means another op already grabbed this
         # id. With the auto-generated uuid suffix this is effectively
         # impossible; with a caller-supplied op_id it surfaces a real bug.
@@ -1000,7 +1000,7 @@ class StagedWrite:
         """
         if self._committed and not self._promoted:
             return
-        if not self._committed and self._moved:
+        if not self._committed and self._moved:  # noqa: SIM102 — the inner if runs the rollback
             if not self._drop_sentinel() or not self._undo_moves():
                 return
         if self.staging_root.exists():

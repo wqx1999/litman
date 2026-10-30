@@ -21,9 +21,9 @@ from litman.core import checks
 from litman.core.config import load_config
 from litman.core.document import list_papers
 from litman.core.library import create_vault
+from litman.core.portable_link import is_portable_link
 from litman.core.taxonomy import parse_taxonomy
 from litman.exceptions import TaxonomyError
-from litman.core.portable_link import is_portable_link
 
 _yaml = YAML(typ="safe")
 

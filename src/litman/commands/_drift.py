@@ -6,7 +6,7 @@ deferred to a manual ``lit health-check`` they have to remember to run.
 
 **M30 Phase 2:** the *detection* of these two B-external drifts (registry ↔
 vault dir, ledger #4; config project path ↔ project dir, #5) now lives in the
-single tagged check core ``core/checks.py`` (``check_vault_registry_drift`` /
+single tagged check core ``core/checks/`` (``check_vault_registry_drift`` /
 ``check_project_path_exists``), both using the mount-safe bounded-stat below.
 This module keeps the ``[Y/n]`` **prompt + repair** machinery — it is the
 ``resolve`` corrector for those two checks. ``LitGroup.invoke`` runs the
@@ -53,19 +53,26 @@ from __future__ import annotations
 
 import sys
 import threading
+from collections.abc import Callable
 from pathlib import Path
-from typing import Callable
+from typing import TYPE_CHECKING, cast
 
 import click
 from rich.console import Console
 
-from litman.commands._hub_report import hub_settlement_lines
+from litman.commands._hub_report import (
+    hub_settlement_lines,
+    project_folder_not_updated,
+)
 from litman.core.confirm import is_interactive
 from litman.core.vault_registry import (
     VaultRegistryError,
     find_active,
     load_registry,
 )
+
+if TYPE_CHECKING:
+    from litman.core.config import LitConfig
 
 
 def _default_tty_probe() -> bool:
@@ -99,7 +106,7 @@ def _exists_bounded(
     instead abandon the wait. The leaked daemon thread dies with the
     short-lived CLI process — acceptable per ADR-014.
     """
-    result: dict[str, bool | None] = {p: None for p in paths}
+    result: dict[str, bool | None] = dict.fromkeys(paths)
 
     def _probe() -> None:
         for p in paths:
@@ -233,7 +240,7 @@ def check_and_prompt_registry_drift(
         # no prompt, no auto-prune (mutating registry without consent in
         # automation is a foot-gun even with default Y).
         err = Console(stderr=True)
-        joined = ", ".join(f"{n} ({p})" for n, p in zip(names, paths))
+        joined = ", ".join(f"{n} ({p})" for n, p in zip(names, paths, strict=False))
         # soft_wrap so Rich never hard-wraps mid-line: the message embeds a
         # copy-paste command (`lit vault remove <name>`) and a vault path, and a
         # default 80-col wrap would split the command across lines (breaking a
@@ -368,12 +375,13 @@ def check_and_prompt_project_drift(
         return
 
     if load_config_fn is None:
-        from litman.core.config import load_config as load_config_fn  # type: ignore[assignment]
+        from litman.core.config import load_config as load_config_fn
 
     vault = Path(active.path)
     try:
-        config = load_config_fn(vault)
-        projects: dict[str, str] = dict(config.projects)
+        # mypy does not narrow load_config_fn through the import above.
+        config = load_config_fn(vault)  # type: ignore[misc]
+        projects: dict[str, str] = dict(cast("LitConfig", config).projects)
     except Exception:
         # A broken config surfaces its own diagnostic on the next config-using
         # command; don't crash the user's actual command from inside the hook.
@@ -452,7 +460,8 @@ def check_and_prompt_project_drift(
     # deliberately cannot tell us apart).
     if removal_attempted:
         try:
-            projects = dict(load_config_fn(vault).projects)  # type: ignore[union-attr]
+            # mypy does not narrow load_config_fn through the import above.
+            projects = dict(cast("LitConfig", load_config_fn(vault)).projects)  # type: ignore[misc]
         except Exception:
             # Config unreadable right after a mutation: do not guess at a write.
             console.print(
@@ -498,6 +507,13 @@ def check_and_prompt_project_drift(
                 f"[green]✓ Updated[/] {name} → {healed[name]} "
                 f"and rebuilt its litman_reflib.",
                 soft_wrap=True,
+            )
+        elif info.get("status") == "error":
+            console.print(
+                f"[green]✓ Updated[/] {name} → {healed[name]}", soft_wrap=True
+            )
+            console.print(
+                f"  {project_folder_not_updated(info['error'])}", soft_wrap=True
             )
         else:
             console.print(
@@ -577,12 +593,13 @@ def check_and_prompt_bridge_drift(
         return
 
     if load_config_fn is None:
-        from litman.core.config import load_config as load_config_fn  # type: ignore[assignment]
+        from litman.core.config import load_config as load_config_fn
 
     vault = Path(active.path)
     try:
-        config = load_config_fn(vault)
-        projects: dict[str, str] = dict(config.projects)
+        # mypy does not narrow load_config_fn through the import above.
+        config = load_config_fn(vault)  # type: ignore[misc]
+        projects: dict[str, str] = dict(cast("LitConfig", config).projects)
     except Exception:
         # A broken config surfaces its own diagnostic elsewhere; never crash
         # the user's actual command from inside the hook.
@@ -665,4 +682,7 @@ def check_and_prompt_bridge_drift(
     ]
     for line in hub_settlement_lines(n_replaced, aside):
         console.print(f"  {line}", soft_wrap=True)
+    errors = [i["error"] for i in link_status.values() if i.get("status") == "error"]
+    if errors:
+        console.print(f"  {project_folder_not_updated(errors[0])}", soft_wrap=True)
     console.print()

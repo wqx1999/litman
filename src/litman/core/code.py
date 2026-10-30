@@ -29,15 +29,15 @@ import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, Literal, cast
 from urllib.parse import urlsplit
 
-from ruamel.yaml import YAMLError
+from ruamel.yaml.error import YAMLError
 
 from litman.core.atomic import staged_write
 from litman.core.dates import now_iso
 from litman.core.document import list_papers, load_yaml_or_raise
-from litman.core.locking import rmtree
+from litman.core.locking import is_file_manager_dropping, rmtree
 from litman.core.undecodable import printable
 from litman.core.views import render_index
 from litman.core.yaml_pool import ThreadLocalYAML
@@ -556,6 +556,13 @@ def write_repo_meta(repo_dir: Path, meta: dict[str, Any]) -> Path:
     return target
 
 
+def repo_meta_text(meta: dict[str, Any]) -> str:
+    """``meta`` as :func:`write_repo_meta` writes it, for a staged write."""
+    buf = io.StringIO()
+    _yaml.dump(meta, buf)
+    return buf.getvalue()
+
+
 _NOTES_TEMPLATE = """\
 # {name}
 
@@ -581,7 +588,13 @@ def write_notes(repo_dir: Path, name: str, upstream: str | None) -> Path:
 # ---------------------------------------------------------------------------
 
 
-def bind_paper_to_repo(vault: Path, paper_id: str, repo_name: str) -> bool:
+def bind_paper_to_repo(
+    vault: Path,
+    paper_id: str,
+    repo_name: str,
+    *,
+    link_errors: list[OSError] | None = None,
+) -> bool:
     """Atomically bind a paper ↔ repo on BOTH sides.
 
     Writes both ``papers/<paper_id>/metadata.yaml`` (appends ``<repo_name>`` to
@@ -594,6 +607,10 @@ def bind_paper_to_repo(vault: Path, paper_id: str, repo_name: str) -> bool:
     Idempotent on both sides: if both sides already record the binding,
     returns ``False`` and no file is touched. If only one side is missing,
     only that side is rewritten.
+
+    The project folders' ``litman_code/`` links are refreshed after the bind
+    commits; an ``OSError`` there does not undo it, and is appended to
+    ``link_errors`` (when given) for the command to report.
 
     Returns:
         ``True`` if any side was written, ``False`` for the no-op.
@@ -679,18 +696,26 @@ def bind_paper_to_repo(vault: Path, paper_id: str, repo_name: str) -> bool:
 
     try:
         refresh_project_code_links(vault, paper_id)
-    except OSError:
+    except OSError as err:
         # Best-effort convenience symlinks: the paper↔repo bind is already
         # committed (staged_write above). A symlink fs fault must NOT propagate
         # — code_add's except would otherwise roll back by rmtree'ing the
         # just-cloned repo, leaving the committed code-clones entry dangling. A
         # stale/missing symlink self-heals on the next bind/link, and
-        # `lit health-check` surfaces any project-symlink drift.
-        pass
+        # `lit health-check` surfaces any project-symlink drift; the command
+        # says so in one line (link_errors).
+        if link_errors is not None:
+            link_errors.append(err)
     return changed
 
 
-def unbind_paper_from_repo(vault: Path, paper_id: str, repo_name: str) -> bool:
+def unbind_paper_from_repo(
+    vault: Path,
+    paper_id: str,
+    repo_name: str,
+    *,
+    link_errors: list[OSError] | None = None,
+) -> bool:
     """Atomically drop a single paper ↔ repo binding from BOTH sides.
 
     The inverse of :func:`bind_paper_to_repo`: removes ``<repo_name>`` from the
@@ -709,6 +734,9 @@ def unbind_paper_from_repo(vault: Path, paper_id: str, repo_name: str) -> bool:
     Idempotent on both sides: if the paper does not list the repo AND the
     repo-meta (when present) does not list the paper, returns ``False`` and no
     file is touched.
+
+    ``link_errors`` collects an ``OSError`` from the ``litman_code/`` refresh
+    that follows, as in :func:`bind_paper_to_repo`.
 
     Raises:
         PaperNotFoundError: paper missing.
@@ -775,7 +803,9 @@ def unbind_paper_from_repo(vault: Path, paper_id: str, repo_name: str) -> bool:
                     "INDEX.json", render_index(all_papers, now_iso())
                 )
             if repo_changed:
-                stage.write_text(rel_repo_meta, _dump_yaml_to_string(repo_meta))
+                stage.write_text(
+                    rel_repo_meta, _dump_yaml_to_string(cast(dict[str, Any], repo_meta))
+                )
 
     # Tear down the now-orphaned project-side litman_code/ symlink(s): the repo
     # is gone from this paper's code-clones, so for each project the paper is in
@@ -786,22 +816,26 @@ def unbind_paper_from_repo(vault: Path, paper_id: str, repo_name: str) -> bool:
 
     try:
         refresh_project_code_links(vault, paper_id)
-    except OSError:
+    except OSError as err:
         # Best-effort symlink teardown: the unbind is already committed
         # (staged_write above). A symlink fs fault must not propagate — the
         # metadata change stands and a stale symlink self-heals / is surfaced
-        # by `lit health-check`.
-        pass
+        # by `lit health-check`; the command says so (link_errors).
+        if link_errors is not None:
+            link_errors.append(err)
     return changed
 
 
-def unbind_repo_from_all_papers(vault: Path, repo_name: str) -> list[str]:
+def unbind_repo_from_all_papers(
+    vault: Path, repo_name: str, *, link_errors: list[OSError] | None = None
+) -> list[str]:
     """Remove ``<repo_name>`` from every paper's ``code-clones`` list.
 
     Used by ``lit code rm --cascade``. Single ``staged_write`` covers all
     affected papers + ``INDEX.json``. Does NOT touch the repo's own
     ``repo-meta.yaml`` because the caller is about to delete the repo
-    directory.
+    directory. ``link_errors`` collects an ``OSError`` from the
+    ``litman_code/`` refresh that follows, as in :func:`bind_paper_to_repo`.
 
     Returns:
         Ordered list of paper ids whose metadata.yaml was rewritten.
@@ -865,7 +899,15 @@ def unbind_repo_from_all_papers(vault: Path, repo_name: str) -> list[str]:
     from litman.core.project_link import refresh_project_code_links
 
     for pid, _ in affected:
-        refresh_project_code_links(vault, pid)
+        try:
+            refresh_project_code_links(vault, pid)
+        except OSError as err:
+            # Best-effort, as in bind/unbind above: the strip is already
+            # committed, and propagating would stop `lit code rm` before it
+            # deletes the clone. A symlink left behind is surfaced by
+            # `lit health-check`, and the command says so (link_errors).
+            if link_errors is not None:
+                link_errors.append(err)
     return [pid for pid, _ in affected]
 
 
@@ -1085,10 +1127,13 @@ class RestoreReport:
     ``code-clones`` field names a repo whose ``codes/<name>/repo-meta.yaml``
     is itself missing — we have no upstream URL to clone from, so the user
     must restore the metadata from backup or drop the dangling reference.
+    ``link_errors`` holds each ``OSError`` from linking a restored repo into
+    its papers' project ``litman_code/`` folders, for the command to report.
     """
 
     items: list[RestoreItem] = field(default_factory=list)
     orphan_refs: list[tuple[str, str]] = field(default_factory=list)
+    link_errors: list[OSError] = field(default_factory=list)
 
     @property
     def restored(self) -> int:
@@ -1132,6 +1177,149 @@ def find_orphan_code_refs(vault: Path) -> list[tuple[str, str]]:
     return sorted(seen)
 
 
+def fetch_repo(
+    upstream: str, target_path: Path, depth: int = DEFAULT_CLONE_DEPTH
+) -> None:
+    """Re-create a ``repo/`` checkout from its recorded ``upstream``.
+
+    ``git clone`` it, or — for a folder that was imported without git and so
+    recorded as ``local:<path>`` — copy that folder again, as ``lit code add``
+    did the first time.
+
+    Raises:
+        CodeError: the clone or the copy failed, or ``target_path`` exists.
+    """
+    if upstream.startswith("local:"):
+        import_local_repo(Path(upstream.removeprefix("local:")), target_path)
+        return
+    clone_repo(upstream, target_path, depth=depth)
+
+
+def can_fetch_again(upstream: str) -> bool:
+    """Whether :func:`fetch_repo` has a source to re-create a checkout from.
+
+    A clone URL has one (when the network allows); ``local:<path>`` only while
+    that folder exists — ``lit code add --move`` consumed it, so the vault holds
+    the only copy; an empty upstream never has one.
+    """
+    if not upstream:
+        return False
+    if upstream.startswith("local:"):
+        return Path(upstream.removeprefix("local:")).is_dir()
+    return True
+
+
+# What `lit rm` reads before it deletes a repo it could clone again.
+RepoState = Literal["clean", "changed", "unchecked"]
+
+# A git call that takes longer than this counts as "could not check": the
+# repo is kept, and a large checkout cannot hold up the delete.
+_CHANGES_TIMEOUT_S = 15.0
+# Who commits the folder _init_git_repo_at imports without git.
+_IMPORT_IDENTITY = "litman@localhost"
+# Variables that would point `git -C <dir>` at another repository.
+_GIT_LOCATION_VARS = frozenset(
+    {
+        "GIT_DIR",
+        "GIT_WORK_TREE",
+        "GIT_INDEX_FILE",
+        "GIT_OBJECT_DIRECTORY",
+        "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+        "GIT_COMMON_DIR",
+        "GIT_NAMESPACE",
+    }
+)
+
+
+def _git_read(repo_dir: Path, *args: str) -> subprocess.CompletedProcess[str]:
+    """Run a read-only git command in ``repo_dir``, bounded in time.
+
+    ``GIT_OPTIONAL_LOCKS=0`` keeps ``git status`` from refreshing (and
+    locking) the index: the check writes nothing.
+    """
+    env = {k: v for k, v in os.environ.items() if k.upper() not in _GIT_LOCATION_VARS}
+    env["GIT_OPTIONAL_LOCKS"] = "0"
+    return subprocess.run(
+        ["git", "-C", str(repo_dir), *args],
+        check=False,
+        capture_output=True,
+        text=True,
+        errors="surrogateescape",
+        env=env,
+        timeout=_CHANGES_TIMEOUT_S,
+    )
+
+
+def _has_own_files(status: str) -> bool:
+    """Whether ``git status --porcelain -z`` lists a change of the user's.
+
+    Anything but an untracked file a file manager left (``.DS_Store``, ...).
+    """
+    for entry in status.split("\0"):
+        if not entry:
+            continue
+        code, path = entry[:2], entry[3:]
+        if code != "??" or not is_file_manager_dropping(path.rsplit("/", 1)[-1]):
+            return True
+    return False
+
+
+def repo_changes(repo_root: Path) -> tuple[RepoState, str]:
+    """Whether ``codes/<repo>/`` holds anything a fresh clone would not bring back.
+
+    ``("changed", "")`` when it does: a file next to ``repo/`` other than
+    ``repo-meta.yaml`` and ``notes.md`` (and what a file manager leaves), a
+    stash, a commit on no remote, or a changed, staged or untracked file in
+    the checkout (ignored files and a file manager's do not count).
+    ``("clean", "")`` when it does not, or when there is no ``repo/`` at all
+    (a sync that leaves checkouts out). ``("unchecked", why)`` when it cannot
+    tell: ``repo/`` is not a git checkout, or git is missing, fails or takes
+    too long — ``why`` says which.
+    """
+    try:
+        names = [child.name for child in repo_root.iterdir()]
+    except OSError:
+        return "unchecked", "cannot read the folder"
+    own = {REPO_DIRNAME, REPO_META_FILENAME, NOTES_FILENAME}
+    if any(n not in own and not is_file_manager_dropping(n) for n in names):
+        return "changed", ""
+    repo_dir = repo_root / REPO_DIRNAME
+    if not os.path.lexists(repo_dir):
+        return "clean", ""
+    # Before any git call: without its own .git, git would walk up and
+    # answer for an enclosing repository (a vault kept in git).
+    if not os.path.lexists(repo_dir / ".git"):
+        return "unchecked", "not a git checkout"
+    try:
+        stash = _git_read(repo_dir, "rev-parse", "--verify", "--quiet", "refs/stash")
+        if stash.returncode == 0:
+            return "changed", ""
+        # Commits on no remote, by committer: --branches as well as HEAD (a
+        # commit on another local branch). The one litman makes importing a
+        # folder without git is not the user's — a re-import makes it again —
+        # unless they amended it, which makes them its committer.
+        log = _git_read(
+            repo_dir, "log", "--format=%ce", "HEAD", "--branches", "--not", "--remotes"
+        )
+        if log.returncode != 0:
+            return "unchecked", "git failed"
+        if any(line.lower() != _IMPORT_IDENTITY for line in log.stdout.splitlines()):
+            return "changed", ""
+        # Every untracked file, explicitly: a repo set to hide them still
+        # shows them, and each is named, so what a file manager leaves (in
+        # any folder it was shown) can be told apart.
+        status = _git_read(repo_dir, "status", "--porcelain", "-z", "--untracked-files=all")
+        if status.returncode != 0:
+            return "unchecked", "git failed"
+        return ("changed", "") if _has_own_files(status.stdout) else ("clean", "")
+    except FileNotFoundError:
+        return "unchecked", "git not found"
+    except subprocess.TimeoutExpired:
+        return "unchecked", "git took too long"
+    except OSError:
+        return "unchecked", "git failed"
+
+
 def restore_missing_repos(
     vault: Path,
     depth: int = DEFAULT_CLONE_DEPTH,
@@ -1162,6 +1350,7 @@ def restore_missing_repos(
         references.
     """
     items: list[RestoreItem] = []
+    link_errors: list[OSError] = []
     for meta in list_repos(vault):
         name = str(meta.get("name") or meta["_path"].name)
         upstream = str(meta.get("upstream") or "")
@@ -1201,7 +1390,7 @@ def restore_missing_repos(
             continue
 
         try:
-            clone_repo(upstream, repo_dir, depth=depth)
+            fetch_repo(upstream, repo_dir, depth=depth)
         except CodeError as e:
             first_line = str(e).splitlines()[0] if str(e) else "git clone failed"
             items.append(
@@ -1221,6 +1410,18 @@ def restore_missing_repos(
                 detail=f"cloned from {upstream}",
             )
         )
+        # The checkout is back, so its papers' projects can link to it again
+        # (a project's litman_code/ skips a repo with no repo/). Lazy import,
+        # as in bind_paper_to_repo.
+        from litman.core.project_link import refresh_project_code_links
+
+        for paper_id in meta.get("papers") or []:
+            try:
+                refresh_project_code_links(vault, str(paper_id))
+            except OSError as err:
+                link_errors.append(err)
 
     orphan_refs = find_orphan_code_refs(vault)
-    return RestoreReport(items=items, orphan_refs=orphan_refs)
+    return RestoreReport(
+        items=items, orphan_refs=orphan_refs, link_errors=link_errors
+    )

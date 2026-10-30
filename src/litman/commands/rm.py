@@ -27,7 +27,13 @@ Cascade teardown (one ``staged_write`` transaction, invariant #9/#12):
   ``codes/<repo>/repo-meta.yaml::papers``. If that empties the repo's binder
   list (1:1, the common case) the orphan ``codes/<repo>/`` dir is
   hard-deleted and ``{name: upstream}`` is recorded in the trash sidecar for
-  M23.2 re-clone. A still-bound repo (1:N) only loses the binding.
+  M23.2 re-clone, along with its ``repo-meta.yaml`` and ``notes.md`` (the
+  user's fields and notes, which a re-clone cannot bring back). A 1:1 repo
+  with nothing to clone it from again (a ``lit code add --move`` folder, no
+  upstream) is the only copy: it is unbound and kept, never deleted. So is one
+  holding the user's own changes (:func:`repo_changes`: edited or new files,
+  commits on no remote, a stash, files put next to ``repo/``), or one it
+  cannot check. A still-bound repo (1:N) only loses the binding.
 * Project: for each project in A's ``projects``, the ``litman_reflib/A``
   symlink is removed, the parallel ``litman_code/<repo>`` symlink is removed only
   when no other paper in that project still binds the repo, and
@@ -70,9 +76,16 @@ import click
 from rich.console import Console
 from rich.markup import escape
 
+from litman.commands._hub_report import project_folder_not_updated
 from litman.commands._options import library_option, vault_option
 from litman.core.atomic import staged_write
-from litman.core.code import CODES_DIRNAME, REPO_META_FILENAME
+from litman.core.code import (
+    CODES_DIRNAME,
+    NOTES_FILENAME,
+    REPO_META_FILENAME,
+    can_fetch_again,
+    repo_changes,
+)
 from litman.core.config import load_config
 from litman.core.confirm import _confirm_destructive
 from litman.core.correctors import reconcile_derived
@@ -214,7 +227,14 @@ def _build_cascade_code_updates(
     target_meta: dict[str, Any],
     target_id: str,
     now: str,
-) -> tuple[dict[str, str], dict[str, str]]:
+) -> tuple[
+    dict[str, str],
+    dict[str, str],
+    list[str],
+    list[str],
+    dict[str, str],
+    dict[str, dict[str, str | bytes]],
+]:
     """Build staged repo-meta.yaml writes that unbind A from each repo.
 
     Mirrors ``bind_paper_to_repo`` in reverse, single-paper-single-repo:
@@ -222,16 +242,37 @@ def _build_cascade_code_updates(
     Does NOT use ``unbind_repo_from_all_papers`` (that strips a repo from
     *every* paper and skips repo-meta — the wrong direction here).
 
-    Returns ``(staged_writes, orphan_repos)`` where:
+    Returns ``(staged_writes, orphan_repos, kept_repos, edited_repos,
+    unchecked_repos, orphan_repo_files)`` where:
         * ``staged_writes`` maps ``codes/<repo>/repo-meta.yaml`` relpath →
-          new yaml text (only for repos that stay, i.e. 1:N survivors)
+          new yaml text (only for repos that stay: 1:N survivors and the
+          three kinds of kept 1:1 repo below)
         * ``orphan_repos`` maps ``repo_name → upstream_url`` for repos whose
           binder list became empty (1:1) — caller hard-deletes the dir and
           records the url in the trash sidecar. Orphan repos are NOT staged
           (their dir is removed wholesale post-stage).
+        * ``kept_repos`` names the 1:1 repos with nothing to clone them from
+          again (:func:`can_fetch_again`): the vault holds their only copy, so
+          they are unbound and stay — ``lit code rm`` is the way to delete one.
+        * ``edited_repos`` names the 1:1 repos that could be cloned again but
+          hold the user's own changes (:func:`repo_changes`), which a clone
+          would not bring back: kept the same way.
+        * ``unchecked_repos`` maps the 1:1 repos it could not check for such
+          changes to why (``git not found``, ...): kept the same way.
+        * ``orphan_repo_files`` holds each orphan's ``repo-meta.yaml`` and
+          ``notes.md`` as they are (text, or bytes for a note that is not
+          UTF-8), for the trash sidecar.
+
+    Raises:
+        RmError: an orphan's ``notes.md`` exists but cannot be read — deleting
+            the repo would lose it.
     """
     staged: dict[str, str] = {}
     orphan_repos: dict[str, str] = {}
+    kept_repos: list[str] = []
+    edited_repos: list[str] = []
+    unchecked_repos: dict[str, str] = {}
+    orphan_repo_files: dict[str, dict[str, str | bytes]] = {}
     for repo_name in target_meta.get("code-clones") or []:
         repo_meta_path = (
             vault / CODES_DIRNAME / str(repo_name) / REPO_META_FILENAME
@@ -246,15 +287,61 @@ def _build_cascade_code_updates(
         papers = rt.get("papers") or []
         remaining = [p for p in papers if p != target_id]
         if not remaining:
-            # 1:1 — A was the last (or only) binder. Orphan the dir.
-            orphan_repos[str(repo_name)] = rt.get("upstream") or ""
-            continue
+            # 1:1 — A was the last (or only) binder. Orphan the dir, unless
+            # it is the only copy of the code, or of the user's changes to it.
+            upstream = str(rt.get("upstream") or "")
+            if not can_fetch_again(upstream):
+                kept_repos.append(str(repo_name))
+            else:
+                state, why = repo_changes(repo_meta_path.parent)
+                if state == "clean":
+                    orphan_repos[str(repo_name)] = upstream
+                    orphan_repo_files[str(repo_name)] = _repo_user_files(
+                        repo_meta_path.parent
+                    )
+                    continue
+                if state == "changed":
+                    edited_repos.append(str(repo_name))
+                else:
+                    unchecked_repos[str(repo_name)] = why
         rt["papers"] = remaining
         rt["updated-at"] = now
         staged[f"{CODES_DIRNAME}/{repo_name}/{REPO_META_FILENAME}"] = (
             _dump_yaml_to_string(rt)
         )
-    return staged, orphan_repos
+    return (
+        staged,
+        orphan_repos,
+        sorted(kept_repos),
+        sorted(edited_repos),
+        dict(sorted(unchecked_repos.items())),
+        orphan_repo_files,
+    )
+
+
+def _repo_user_files(repo_root: Path) -> dict[str, str | bytes]:
+    """An orphan repo's ``repo-meta.yaml`` and ``notes.md``, as they are.
+
+    The two files a re-clone cannot bring back: the fields the user filled in
+    and their notes. Decoded when UTF-8 (readable in the sidecar), the raw
+    bytes otherwise. A missing ``notes.md`` is simply left out.
+    """
+    saved: dict[str, str | bytes] = {}
+    for name in (REPO_META_FILENAME, NOTES_FILENAME):
+        path = repo_root / name
+        try:
+            raw = path.read_bytes()
+        except FileNotFoundError:
+            continue
+        except OSError as e:
+            raise RmError(
+                f"Cannot read {path}: {e}. Fix its permissions, then retry."
+            ) from e
+        try:
+            saved[name] = raw.decode("utf-8")
+        except UnicodeDecodeError:
+            saved[name] = raw
+    return saved
 
 
 def _teardown_project_links(
@@ -263,6 +350,7 @@ def _teardown_project_links(
     target_id: str,
     registry: dict[str, str],
     surviving_papers: list[dict[str, Any]],
+    link_errors: list[OSError],
 ) -> None:
     """Remove A's project symlinks + re-render REFERENCES.md (post-stage).
 
@@ -275,6 +363,9 @@ def _teardown_project_links(
 
     Unregistered or missing project dirs are skipped silently — the metadata
     side of the delete already succeeded; symlinks are a convenience layer.
+    A project folder that cannot be listed or written is not skipped
+    silently: each step is tried on its own and its ``OSError`` lands in
+    ``link_errors``, for the caller to say so.
     """
     code_clones = [str(r) for r in (target_meta.get("code-clones") or [])]
     for project in target_meta.get("projects") or []:
@@ -287,18 +378,24 @@ def _teardown_project_links(
             continue
 
         paper_link = project_dir / LITERATURE_SUBDIR / target_id
-        remove_link_if_present(paper_link)
+        try:
+            remove_link_if_present(paper_link)
+        except OSError as err:
+            link_errors.append(err)
 
         for repo_name in code_clones:
             link_path = project_dir / CODE_SUBDIR / repo_name
-            if not is_portable_link(link_path):
-                continue
             still_used = _papers_using_repo_in_project(
                 surviving_papers, project, repo_name,
                 exclude_paper_id=target_id,
             )
-            if not still_used:
-                remove_link_if_present(link_path)
+            if still_used:
+                continue
+            try:
+                if is_portable_link(link_path):
+                    remove_link_if_present(link_path)
+            except OSError as err:
+                link_errors.append(err)
 
         # REFERENCES.md re-renders from the member-scoped list the caller
         # loaded; A is already in trash, so it drops out naturally.
@@ -308,6 +405,8 @@ def _teardown_project_links(
             )
         except FileNotFoundError:
             continue
+        except OSError as err:
+            link_errors.append(err)
 
 
 # ---------------------------------------------------------------------------
@@ -339,6 +438,15 @@ class RmPlan:
     cascade_repo_updates: dict[str, str]
     # Repos orphaned (1:1): repo name → upstream url; their dir is hard-deleted.
     orphan_repos: dict[str, str]
+    # Their repo-meta.yaml / notes.md as they are, kept in the trash sidecar.
+    orphan_repo_files: dict[str, dict[str, str | bytes]]
+    # 1:1 repos with nothing to clone them from again: unbound (their write
+    # is in cascade_repo_updates) and kept.
+    kept_repos: list[str]
+    # 1:1 repos holding the user's own changes, and those it could not check
+    # (repo name -> why): unbound and kept the same way.
+    edited_repos: list[str]
+    unchecked_repos: dict[str, str]
     projects: list[str]
     # Referencing notes/discussion to tag `(deleted)`: relpath → annotated text.
     note_updates: dict[str, str]
@@ -355,7 +463,9 @@ class RmPlan:
     @property
     def repos_unbound(self) -> list[str]:
         """Bare repo names for the 1:N survivors (keyed by repo-meta relpath)."""
-        return sorted(k.split("/")[1] for k in self.cascade_repo_updates)
+        names = (k.split("/")[1] for k in self.cascade_repo_updates)
+        kept = {*self.kept_repos, *self.edited_repos, *self.unchecked_repos}
+        return sorted(n for n in names if n not in kept)
 
 
 @dataclass
@@ -367,12 +477,20 @@ class RmResult:
     touched_ref_ids: set[str]
     repos_unbound: int
     orphan_repos: list[str]
+    kept_repos: list[str]
+    edited_repos: list[str]
+    unchecked_repos: dict[str, str]
     projects: list[str]
     note_files: list[str]
     evicted: list[str]
     # Post-commit filesystem hiccups (locked dir, unremovable repo). Collected
     # rather than printed so the CLI and the route each surface them their way.
     warnings: list[str]
+    # A project folder the teardown could not change: the CLI ends with the
+    # one line every write command uses for it.
+    link_errors: list[OSError]
+    # A views/ folder the rebuild could not change (it said which itself).
+    views_left: bool
 
 
 def _si_name(record: dict[str, Any]) -> str:
@@ -536,9 +654,14 @@ def discover_rm_impact(vault: Path, paper_id: str) -> RmPlan:
     cascade_ref_updates, touched_ref_ids = _build_cascade_ref_updates(
         vault, target_meta, paper_id, now, safe_papers
     )
-    cascade_repo_updates, orphan_repos = _build_cascade_code_updates(
-        vault, target_meta, paper_id, now
-    )
+    (
+        cascade_repo_updates,
+        orphan_repos,
+        kept_repos,
+        edited_repos,
+        unchecked_repos,
+        orphan_repo_files,
+    ) = _build_cascade_code_updates(vault, target_meta, paper_id, now)
 
     # ----- Drop the target from the in-memory paper list (for INDEX) -----
     surviving = [p for p in safe_papers if p.get("id") != paper_id]
@@ -584,6 +707,10 @@ def discover_rm_impact(vault: Path, paper_id: str) -> RmPlan:
         touched_ref_ids=touched_ref_ids,
         cascade_repo_updates=cascade_repo_updates,
         orphan_repos=orphan_repos,
+        orphan_repo_files=orphan_repo_files,
+        kept_repos=kept_repos,
+        edited_repos=edited_repos,
+        unchecked_repos=unchecked_repos,
         projects=projects,
         note_updates=note_updates,
         new_index=new_index,
@@ -627,7 +754,12 @@ def execute_rm(plan: RmPlan, *, purge: bool = False) -> RmResult:
         if purge:
             rmtree(plan.paper_dir)
         else:
-            move_to_trash(vault, paper_id, orphan_repos=plan.orphan_repos)
+            move_to_trash(
+                vault,
+                paper_id,
+                orphan_repos=plan.orphan_repos,
+                orphan_repo_files=plan.orphan_repo_files,
+            )
     except OSError as e:
         moved_ok = False
         # The staged metadata + INDEX write already committed: the library now
@@ -662,6 +794,7 @@ def execute_rm(plan: RmPlan, *, purge: bool = False) -> RmResult:
                     )
 
     # ----- Phase 3b: project symlink teardown + REFERENCES re-render -----
+    link_errors: list[OSError] = []
     if plan.projects:
         # Full metadata is needed only for the victim's projects' members
         # (REFERENCES renders relevance-*, the repo check reads code-clones —
@@ -677,6 +810,7 @@ def execute_rm(plan: RmPlan, *, purge: bool = False) -> RmResult:
             load_project_member_metas(
                 vault, plan.projects, exclude_ids={paper_id}
             ),
+            link_errors,
         )
 
     # ----- Phase 3c: post-commit derived rebuild via the shared funnel -----
@@ -685,7 +819,7 @@ def execute_rm(plan: RmPlan, *, purge: bool = False) -> RmResult:
     # INDEX) and drop just the victim's own view links — the single-paper
     # delta path _apply_modify established; a full rebuild remains the
     # repair path (`lit health-check --fix`).
-    reconcile_derived(
+    derived = reconcile_derived(
         vault,
         papers=plan.surviving,
         project_refs=False,
@@ -701,12 +835,17 @@ def execute_rm(plan: RmPlan, *, purge: bool = False) -> RmResult:
         paper_id=paper_id,
         purged=purge,
         touched_ref_ids=plan.touched_ref_ids,
-        repos_unbound=len(plan.cascade_repo_updates),
+        repos_unbound=len(plan.repos_unbound),
         orphan_repos=sorted(plan.orphan_repos),
+        kept_repos=plan.kept_repos,
+        edited_repos=plan.edited_repos,
+        unchecked_repos=plan.unchecked_repos,
         projects=list(plan.projects),
         note_files=sorted(plan.note_updates),
         evicted=evicted,
         warnings=warnings,
+        link_errors=link_errors,
+        views_left=bool(derived["view_errors"]),
     )
 
 
@@ -866,7 +1005,7 @@ def rm_cmd(
                 "  Would clear references in: "
                 f"[dim]{escape(', '.join(sorted(plan.touched_ref_ids)))}[/]"
             )
-        if plan.cascade_repo_updates:
+        if plan.repos_unbound:
             console.print(
                 "  Would unbind from repos (still bound by others): "
                 f"[dim]{escape(', '.join(plan.repos_unbound))}[/]"
@@ -875,6 +1014,24 @@ def rm_cmd(
             console.print(
                 "  Would remove orphan repos: "
                 f"[dim]{escape(', '.join(sorted(plan.orphan_repos)))}[/]"
+            )
+        if plan.kept_repos:
+            console.print(
+                "  Would keep repos with no copy to clone again: "
+                f"[dim]{escape(', '.join(plan.kept_repos))}[/]"
+            )
+        if plan.edited_repos:
+            console.print(
+                "  Would keep repos with your own changes: "
+                f"[dim]{escape(', '.join(plan.edited_repos))}[/]"
+            )
+        if plan.unchecked_repos:
+            listed = ", ".join(
+                f"{name} ({why})" for name, why in plan.unchecked_repos.items()
+            )
+            console.print(
+                "  Would keep repos it could not check for changes: "
+                f"[dim]{escape(listed)}[/]"
             )
         if plan.projects:
             console.print(
@@ -933,6 +1090,30 @@ def rm_cmd(
             f"  Removed [bold]{n}[/] orphan repo{'s' if n != 1 else ''} "
             f"[dim]({escape(', '.join(sorted(result.orphan_repos)))})[/]"
         )
+    if result.kept_repos:
+        n = len(result.kept_repos)
+        console.print(
+            f"  Kept [bold]{n}[/] repo{'s' if n != 1 else ''} with no copy to "
+            f"clone again [dim]({escape(', '.join(result.kept_repos))}; "
+            "`lit code rm` deletes one)[/]"
+        )
+    if result.edited_repos:
+        n = len(result.edited_repos)
+        console.print(
+            f"  Kept [bold]{n}[/] repo{'s' if n != 1 else ''} with your own "
+            f"changes [dim]({escape(', '.join(result.edited_repos))}; "
+            "`lit code rm` deletes one)[/]"
+        )
+    if result.unchecked_repos:
+        n = len(result.unchecked_repos)
+        listed = ", ".join(
+            f"{name}: {why}" for name, why in result.unchecked_repos.items()
+        )
+        console.print(
+            f"  Kept [bold]{n}[/] repo{'s' if n != 1 else ''} it could not "
+            f"check for changes [dim]({escape(listed)}; "
+            "`lit code rm` deletes one)[/]"
+        )
     if result.projects:
         console.print(
             f"  Unlinked from [bold]{len(result.projects)}[/] project"
@@ -944,4 +1125,10 @@ def rm_cmd(
             f"  Tagged [bold]{n}[/] referencing note{'s' if n != 1 else ''} "
             f"[dim](`[[{escape(paper_id)}]] (deleted)`)[/]"
         )
-    console.print("[dim]INDEX.json + views/ refreshed.[/]")
+    console.print(
+        f"[dim]INDEX.json{'' if result.views_left else ' + views/'} refreshed.[/]"
+    )
+    if result.link_errors:
+        console.print(
+            project_folder_not_updated(result.link_errors[0]), soft_wrap=True
+        )

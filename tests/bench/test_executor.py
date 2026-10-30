@@ -17,7 +17,6 @@ import subprocess
 from pathlib import Path
 
 import pytest
-
 from harness import executor as executor_mod
 from harness.agents import claude as claude_mod
 from harness.agents.claude import _lit_calls_from_bash, executor_env, parse_stream

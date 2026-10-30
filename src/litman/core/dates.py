@@ -9,7 +9,7 @@ Centralised here so the two commands cannot drift (review F28).
 from __future__ import annotations
 
 import re
-from datetime import date, datetime, timezone
+from datetime import UTC, date, datetime
 
 import click
 
@@ -81,7 +81,7 @@ def now_iso() -> str:
     copies cannot drift. Distinct from ``trash``'s compact
     ``%Y%m%dT%H%M%SZ`` entry-name stamp, which stays local to that module.
     """
-    return datetime.now(timezone.utc).astimezone().isoformat(timespec="seconds")
+    return datetime.now(UTC).astimezone().isoformat(timespec="seconds")
 
 
 def today_iso() -> str:
@@ -93,7 +93,7 @@ def today_iso() -> str:
     stamps. Centralised so the two sugar commands and the date-ordering guard
     share one definition of "today".
     """
-    return datetime.now(timezone.utc).astimezone().date().isoformat()
+    return datetime.now(UTC).astimezone().date().isoformat()
 
 
 def _as_iso_date_str(value: object) -> str | None:

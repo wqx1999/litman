@@ -13,6 +13,7 @@ from ruamel.yaml import YAML
 
 from litman.cli import cli
 from litman.core.library import create_vault
+from litman.core.portable_link import is_portable_link
 from litman.core.project_link import (
     LinkError,
     link_paper_to_project,
@@ -20,7 +21,7 @@ from litman.core.project_link import (
     unlink_paper_from_project,
 )
 from litman.exceptions import PaperNotFoundError
-from litman.core.portable_link import is_portable_link
+from tests.commands.test_trash import ESCAPED_PHRASES
 
 _yaml_safe = YAML(typ="safe")
 _yaml = YAML()
@@ -174,7 +175,7 @@ def test_link_preserves_user_set_relevance_when_none_passed(
     _make_paper(
         vault, "p1",
         projects=["pepforge"],
-        **{"relevance-pepforge": "Manually set note"},
+        **{"relevance-pepforge": "Manually set note"},  # type: ignore[arg-type]  # a hyphenated metadata key, so it goes in via **
     )
     link_paper_to_project(
         vault, "p1", "pepforge", {"pepforge": str(project_dir)}
@@ -499,6 +500,33 @@ def test_cli_link_with_relevance(vault: Path, project_dir: Path) -> None:
     assert result.exit_code == 0, result.output
     meta = _read_paper_meta(vault, "p1")
     assert meta["relevance-pepforge"] == "Direct baseline"
+
+
+@pytest.mark.parametrize("kind", list(ESCAPED_PHRASES))
+def test_cli_link_keeps_a_long_multi_line_relevance_as_written(
+    vault: Path, project_dir: Path, kind: str
+) -> None:
+    """A relevance note with line breaks read back with a space added after
+    a backslash or a tab: `$\\ Delta`, `C:\\data\\ raw`. Its lines
+    repeat the phrase once per shift of it, so a fold at a fixed column lands
+    next to every character of it."""
+    _write_config_with_project(vault, "pepforge", project_dir)
+    _make_paper(vault, "p1")
+    phrase = ESCAPED_PHRASES[kind]
+    relevance = "".join(
+        "x" * shift + phrase * 5 + "\n" for shift in range(len(phrase))
+    )
+
+    result = CliRunner().invoke(
+        cli,
+        ["link", "p1", "--project", "pepforge",
+         "--relevance", relevance,
+         "--library", str(vault)],
+    )
+
+    assert result.exit_code == 0, result.output
+    meta = _read_paper_meta(vault, "p1")
+    assert meta["relevance-pepforge"] == relevance
 
 
 def test_cli_link_unregistered_project_friendly_error(

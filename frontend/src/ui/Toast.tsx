@@ -98,7 +98,9 @@ export default function Toast({
         // The ring is supplied by `ring` above: a coloured edge for error/
         // warning that holds in BOTH themes (D3), else the neutral black/white
         // edge. No `dark:ring-*` here — it would override the coloured ring.
-        className={`pointer-events-auto flex animate-grow-in items-center gap-2 rounded-xl bg-stone-900/90 px-4 py-2 text-sm text-white shadow-lg ring-1 ${ring} backdrop-blur-sm dark:bg-stone-50/95`}
+        // Capped width: a message carrying a long path wraps into a block
+        // instead of stretching edge to edge, and the path may break anywhere.
+        className={`pointer-events-auto flex max-w-[min(36rem,calc(100vw-2rem))] animate-grow-in items-center gap-2 rounded-xl [overflow-wrap:anywhere] bg-stone-900/90 px-4 py-2 text-sm text-white shadow-lg ring-1 ${ring} backdrop-blur-sm dark:bg-stone-50/95`}
         onClick={onDismiss}
       >
         {glyph ? (

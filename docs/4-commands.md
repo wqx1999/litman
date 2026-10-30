@@ -156,10 +156,10 @@ without them. Copies files only; does not install an agent or configure any
 keys.
 
 Skills go where the agent auto-discovers them: `~/.claude/skills` for Claude
-Code, the open-standard `~/.agents/skills` for ZCode, Cursor, Codex, and OpenCode, and
-`~/.gemini/antigravity-cli/skills` for Antigravity CLI. With no flags the
-command targets your default agent's directory; `--agent` targets another
-agent's.
+Code, the open-standard `~/.agents/skills` for ZCode, DeepSeek Harness, Cursor,
+Codex, and OpenCode, and `~/.gemini/antigravity-cli/skills` for Antigravity
+CLI. With no flags the command targets your default agent's directory;
+`--agent` targets another agent's.
 
 Safe to re-run after upgrading litman: skills that already match the bundled
 content report "up to date", out-of-date ones are offered a refresh (`[Y/n]`,
@@ -178,7 +178,7 @@ lit install-skill --skill lit-reading
 | Flag | What it does |
 |---|---|
 | `--skill <name>` | Install only this skill. Default: install all bundled skills. |
-| `--agent <name>` | Install into this agent's skills directory (`claude`, `zcode`, `agy`, `codex`, `cursor`, `opencode`). Default: your default agent. Mutually exclusive with `--parent-dir`. |
+| `--agent <name>` | Install into this agent's skills directory (`claude`, `zcode`, `agy`, `codex`, `dsh`, `cursor`, `opencode`). Default: your default agent. Mutually exclusive with `--parent-dir`. |
 | `--parent-dir <path>` | Install into this exact directory instead. Mutually exclusive with `--agent`. |
 | `--force` | Overwrite files inside an existing target without asking. Files not part of the bundled skill are left in place. |
 
@@ -556,8 +556,15 @@ Remove a paper. By default moves `papers/<id>/`, SI files included, to
 `<vault>/.trash/` (recoverable via `lit trash restore`); `--purge` deletes
 permanently. All external links to the paper (other papers' relation fields,
 repo bindings, project links) are torn down atomically; the paper's own fields
-ride into trash so a later restore can rebuild them. A `y/N` prompt guards the
-delete (default N). With `--si`, it deletes one or more of the paper's SI files
+ride into trash so a later restore can rebuild them. A repo no other paper
+uses is deleted with the paper, its `repo-meta.yaml` and `notes.md` kept in the
+trash for a restore; one with nothing to clone it again from (a folder added
+with `lit code add --move`, or no upstream) is kept and only unbound. So is one
+holding your own changes, which a clone would not bring back: changed or new
+files in `repo/` (ignored ones do not count), commits not pushed, a stash, or
+files you put next to `repo/`; and one it cannot check for them (no git, say).
+`lit code rm` deletes a kept repo. A `y/N`
+prompt guards the delete (default N). With `--si`, it deletes one or more of the paper's SI files
 instead — see below.
 
 ```
@@ -725,7 +732,7 @@ lit code restore-all [--dry-run]
 | `list` | List repos and their paper bindings. `--format json` emits each repo's `repo-meta.yaml`, so the bindings come out as ids rather than a summary cell. |
 | `update <repo-name>` | `git pull --ff-only` inside the repo. |
 | `rm <repo-name>` | Permanently delete `codes/<repo-name>/`. Hard delete (re-clonable from the recorded upstream). |
-| `restore-all` | Re-clone every repo whose `repo/` checkout is missing (cross-machine recovery). |
+| `restore-all` | Re-clone every repo whose `repo/` checkout is missing (cross-machine recovery, or a restored paper's repo), and link it into its papers' projects. A `local:<path>` repo is copied from that folder again. |
 
 Per-subcommand flags:
 
@@ -890,7 +897,7 @@ lit trash empty [--dry-run] [-y]
 | Subcommand | What it does |
 |---|---|
 | `list` | Show trash entries, newest first. `--format json` adds each entry's path and the repos a restore would re-clone. Kept project folders are not listed. |
-| `restore <id-or-entry>` | Restore a trashed paper to `papers/<id>/` and rebuild its relations (opposite papers' reverse edges, surviving repo bindings, project links + `REFERENCES.md`). A 1:1 repo hard-deleted at `rm` time is re-cloned (`-y` to auto-attempt without prompting); with no terminal and no `-y` it is skipped, and the `lit code add` that clones it is printed. |
+| `restore <id-or-entry>` | Restore a trashed paper to `papers/<id>/` and rebuild its relations (opposite papers' reverse edges, surviving repo bindings, project links + `REFERENCES.md`). A 1:1 repo hard-deleted at `rm` time comes back as its `repo-meta.yaml` and `notes.md` and is re-cloned (`-y` to auto-attempt without prompting); with no terminal and no `-y`, after a "no", or when the clone fails, it stays without a checkout and `lit code restore-all` clones it later. A `repo/` already in its place is bound as it is, not cloned again; a different `notes.md` already there is kept, the saved one going beside it as `notes.from-trash.md`, which `lit health-check` lists until you merge it in and delete it. A restore from the web UI never clones. |
 | `empty` | Permanently delete every trash entry and every kept project folder. `--dry-run` lists the entries and counts the folders; `-y` skips the prompt. |
 
 ### `lit sync`
@@ -982,7 +989,8 @@ See [3-concepts.md](3-concepts.md) §1.4 for what each config field controls.
 Launch the litman Web UI — a localhost browser app for browsing, reading PDFs,
 annotating, and everyday curation. It serves the active vault and binds
 `127.0.0.1` only and answers only its own page: requests sent by other
-websites are refused. When your session has a display, the UI also opens in
+websites are refused, and on Linux, wherever the kernel can tell users apart,
+so are requests from other users of the same machine. When your session has a display, the UI also opens in
 your browser automatically; on a headless box (HPC) it never tries — it prints a
 ready-to-paste `ssh -L` tunnel line so you can open the printed URL in your
 local browser. If the default port is busy it walks upward to the next free
@@ -1084,18 +1092,27 @@ lit agent --set-default claude  # record the machine-level default agent
 The default agent is machine-level, not per-vault: it is recorded in
 `preferences.yaml` next to the vault registry, set by `lit setup`, the GUI
 agent panel, or `lit agent --set-default`. Claude Code, ZCode, Antigravity CLI
-(`agy`), Codex, Cursor, and OpenCode are the supported agents.
+(`agy`), Codex, DeepSeek Harness (`dsh`), Cursor, and OpenCode are the
+supported agents.
 
 ZCode is a desktop app, not a terminal agent: `lit agent zcode` opens ZCode at
 the vault and returns at once. If ZCode is already open, it switches to the
 vault. Open ZCode once after installing it, so litman can find it.
 
+DeepSeek Harness is a desktop app too: `lit agent dsh` opens it and returns at
+once. It comes back to the session you used last, so the first time, add the
+vault as a workspace in DeepSeek Harness. Open DeepSeek Harness once after
+installing it, so litman can find it. If every command in DeepSeek Harness on
+Windows fails with exit code 3221225794, that is a known DeepSeek Harness
+sandbox bug: update DeepSeek Harness, and if it persists, approve with
+"Allow once".
+
 Two things fail with a one-line error: a NAME that is not in the catalog, and an
-agent whose command is missing from PATH (for ZCode: not installed, or never
-opened). The Web UI's agent button launches the same default agent: on a machine
-with a display it opens the agent in a new terminal window, or opens ZCode;
-when the server runs on a remote box (HPC) it shows the `lit agent` line to
-copy into your own terminal.
+agent whose command is missing from PATH (for ZCode and DeepSeek Harness: not
+installed, or never opened). The Web UI's agent button launches the same default
+agent: on a machine with a display it opens the agent in a new terminal window,
+or opens the desktop app; when the server runs on a remote box (HPC) it shows
+the `lit agent` line to copy into your own terminal.
 
 ### `lit self-update`
 
@@ -1129,10 +1146,14 @@ lit self-update --yes
 |---|---|
 | `-y` / `--yes` | Skip the confirmation prompt. |
 
-**The daily check.** Once a day, any `lit` command may ask PyPI for the newest
-version number and print a line when yours is older. The answer is cached for
-24 hours at `<registry dir>/update-check.json`, the request times out after two
-seconds, and a failure — offline, slow, malformed — is swallowed silently.
+**The daily check.** Once a day, any `lit` command may ask for the newest
+version number and print a line when yours is older. It asks the package index
+litman was installed from — the Tsinghua mirror for the China installers — or
+PyPI when uv recorded none. The answer is cached for 24 hours at
+`<registry dir>/update-check.json`, the request times out after two seconds,
+and a failure — offline, slow, malformed — is swallowed silently. The web UI
+asks in the background, waits longer, retries a failure after an hour, and asks
+again every hour while it is open.
 
 That line appears once a day, so it cannot trail every command in a working
 session. `lit hello` is the exception: it reports a newer release every time
@@ -1140,5 +1161,5 @@ you run it, and it is the one command that reports it to a coding agent as
 well — so an agent working on your library can pass a new release on to you.
 
 Set `LITMAN_NO_UPDATE_CHECK=1` to switch it off, cache and all. litman sends no
-telemetry: the request asks PyPI for a version number and says nothing about
-you.
+telemetry: the request asks the index for litman's list of releases and says
+nothing about you.

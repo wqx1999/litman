@@ -35,18 +35,19 @@ import click
 from rich.console import Console
 from rich.markup import escape
 
-from litman.commands._hub_report import hub_settlement_lines
+from litman.commands._hub_report import (
+    PROJECTS_NOT_UPDATED,
+    hub_settlement_lines,
+    project_folder_not_updated,
+)
 from litman.commands._options import library_option, vault_option
 from litman.core.atomic import staged_write
-from litman.core.checks import (
-    PROJECT_PRIORITY_PREFIX,
-    PROJECT_PRIORITY_VALUES,
-    fixed_enum_allows_none,
-    fixed_enum_values,
-    retired_field_replacement,
-)
 from litman.core.config import load_config
-from litman.core.correctors import moved_aside_from, reconcile_derived
+from litman.core.correctors import (
+    link_errors_from,
+    moved_aside_from,
+    reconcile_derived,
+)
 from litman.core.dates import date_ordering_violations, now_iso
 from litman.core.dedup import find_paper_by_doi
 from litman.core.document import (
@@ -68,6 +69,13 @@ from litman.core.relations import (
     REVERSE_REF_FIELDS,
     relation_refs,
 )
+from litman.core.schema import (
+    PROJECT_PRIORITY_PREFIX,
+    PROJECT_PRIORITY_VALUES,
+    fixed_enum_allows_none,
+    fixed_enum_values,
+    retired_field_replacement,
+)
 from litman.core.supplementary import SUPPLEMENTARY_FIELD
 from litman.core.taxonomy import USER_DICTS, parse_taxonomy, read_taxonomy_text
 from litman.core.textclean import TEXT_FIELDS, clean_metadata_text
@@ -77,7 +85,7 @@ from litman.core.views import (
     view_fields_snapshot,
 )
 from litman.core.yaml_pool import ThreadLocalYAML
-from litman.exceptions import ModifyError, PaperNotFoundError
+from litman.exceptions import ConfigError, ModifyError, PaperNotFoundError
 
 console = Console()
 
@@ -926,9 +934,19 @@ def _apply_modify(
     # its member entries carry full metadata by construction (this condition
     # is exactly the member-upgrade branch above). Best-effort like
     # rebuild_all_project_refs: a project whose dir is missing on this
-    # machine is silently skipped.
+    # machine is silently skipped. A config that cannot be read skips every
+    # project, as reconcile_derived does above — the edit is committed, so the
+    # command finishes and says the project folders were not updated.
+    project_side_skipped = bool(derived["config_unreadable"])
+    # A project folder that could not be changed (no read access, a read-only
+    # mount): the edit is committed, so the command finishes and says so.
+    link_errors = link_errors_from(derived)
     if not projects_changed and refs_fields_changed and member_projects:
-        registry = load_config(vault).projects
+        try:
+            registry = load_config(vault).projects
+        except ConfigError:
+            registry = {}
+            project_side_skipped = True
         for proj in member_projects:
             project_dir_str = registry.get(proj)
             if not project_dir_str:
@@ -936,9 +954,12 @@ def _apply_modify(
             project_dir = Path(project_dir_str).expanduser()
             if not project_dir.is_dir():
                 continue
-            write_references_md(
-                vault, proj, project_dir, papers=all_papers
-            )
+            try:
+                write_references_md(
+                    vault, proj, project_dir, papers=all_papers
+                )
+            except OSError as err:
+                link_errors.append(err)
 
     # ----- Output -----
     console.print(f"[bold green]✓ Modified[/] {paper_id}")
@@ -962,12 +983,17 @@ def _apply_modify(
     # rather than only in `health-check --fix`.
     for line in hub_settlement_lines(0, moved_aside_from(derived)):
         console.print(f"  {line}", soft_wrap=True)
-    refreshed = "INDEX.json + views/"
+    # A views/ folder it could not change was said by the rebuild itself.
+    refreshed = "INDEX.json" if derived["view_errors"] else "INDEX.json + views/"
     if retitled_notes is not None:
         refreshed += " + notes.md heading"
-    if projects_changed:
+    if projects_changed and not project_side_skipped and not link_errors:
         refreshed += " + project litman_reflib/REFERENCES.md"
     console.print(f"[dim]{refreshed} refreshed.[/]")
+    if project_side_skipped:
+        console.print(PROJECTS_NOT_UPDATED, soft_wrap=True)
+    elif link_errors:
+        console.print(project_folder_not_updated(link_errors[0]), soft_wrap=True)
     return True
 
 

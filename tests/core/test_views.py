@@ -10,7 +10,7 @@ per-paper load. ``created-at`` stays out (spec §7).
 from __future__ import annotations
 
 import json
-from datetime import date, datetime, timezone
+from datetime import UTC, date, datetime
 from pathlib import Path
 
 from litman.core.views import INDEX_PAPER_FIELDS, project_paper
@@ -51,7 +51,7 @@ def test_project_paper_coerces_date_object_to_iso_string() -> None:
 
 def test_project_paper_coerces_datetime_to_calendar_date() -> None:
     out = project_paper(
-        {"id": "p1", "read-date": datetime(2026, 5, 1, 9, 0, tzinfo=timezone.utc)}
+        {"id": "p1", "read-date": datetime(2026, 5, 1, 9, 0, tzinfo=UTC)}
     )
     assert out["read-date"] == "2026-05-01"
     json.dumps(out)
@@ -107,7 +107,7 @@ def test_project_paper_keeps_updated_at_time_of_day() -> None:
     out = project_paper(
         {
             "id": "p1",
-            "updated-at": datetime(2026, 5, 1, 9, 30, 15, tzinfo=timezone.utc),
+            "updated-at": datetime(2026, 5, 1, 9, 30, 15, tzinfo=UTC),
         }
     )
     assert out["updated-at"] == "2026-05-01T09:30:15+00:00"
@@ -121,7 +121,7 @@ def test_project_paper_updated_at_round_trips_to_the_same_instant() -> None:
     from litman.core.query import recency_key
 
     for raw in (
-        datetime(2026, 5, 1, 9, 30, 15, tzinfo=timezone.utc),
+        datetime(2026, 5, 1, 9, 30, 15, tzinfo=UTC),
         datetime(2026, 5, 1, 9, 30, 15),  # naive (local)
         date(2026, 5, 1),  # under-specified value in the yaml
     ):

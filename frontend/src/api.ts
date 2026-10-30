@@ -363,6 +363,12 @@ export interface RmPreview {
   reposUnbound: string[]
   /** Cloned repos no other paper uses — their `codes/<repo>/` dir is deleted. */
   reposRemoved: string[]
+  /** Repos no other paper uses with no copy to clone again — unbound, kept. */
+  reposKept: string[]
+  /** Repos no other paper uses that hold your own changes — unbound, kept. */
+  reposEdited: string[]
+  /** Repos no other paper uses it could not check for changes — unbound, kept. */
+  reposUnchecked: { name: string; reason: string }[]
   /** Projects this paper is unlinked from (reflib symlink + REFERENCES.md). */
   projects: string[]
   /** Referencing notes/discussion that get a `(deleted)` tag. */
@@ -370,9 +376,10 @@ export interface RmPreview {
 }
 
 /** Preview the cascade of removing a paper, without deleting (GET, pure read).
- * Backs the tab trash-icon confirm dialog. */
+ * Backs the tab trash-icon confirm dialog. Detailed, so the dialog says why
+ * the preview failed — an unreadable lit-config.yaml — not just "500". */
 export function fetchRmPreview(id: string): Promise<RmPreview> {
-  return getJSON<RmPreview>(`/api/paper/${encodeURIComponent(id)}/rm-preview`)
+  return getJSONDetailed<RmPreview>(`/api/paper/${encodeURIComponent(id)}/rm-preview`)
 }
 
 /** Soft-delete a paper through the `lit rm` backend: move it to `.trash/`
@@ -395,14 +402,17 @@ export function fetchVaults(): Promise<VaultsPayload> {
 
 /** Running litman version + the latest available release (or null when none /
  * unknown). PURE READ of the server's update-check cache — the request path
- * never hits PyPI; the server's startup task populates the cache. Backs the
- * TopBar update dot. */
+ * never hits the network; the server's background task populates the cache.
+ * Backs the TopBar update dot. */
 export interface VersionInfo {
   current: string
   latest: string | null
   /** Message a failed one-click update left behind (surfaced once per server
    * run), else null. */
   selfUpdateFailed?: string | null
+  /** True while the server's startup check is still out on the network: read
+   * again until it is false. */
+  checking?: boolean
 }
 
 export function fetchVersion(): Promise<VersionInfo> {
@@ -869,9 +879,9 @@ export function launchAgent(name?: string): Promise<AgentLaunchResult> {
 
 /** One agent's onboarding view: display name, beginner-facing brand, whether
  * litman supports it today
- * (Claude Code, ZCode, Antigravity CLI, Codex, Cursor and OpenCode — all
- * supported today), whether it is installed (launch command on PATH, or the
- * desktop app registered), its
+ * (Claude Code, ZCode, Antigravity CLI, Codex, DeepSeek Harness, Cursor and
+ * OpenCode — all supported today), whether it is installed (launch command on
+ * PATH, or the desktop app registered), its
  * official install page, and `skill_state` — the server's content-level verdict
  * for THIS agent's skill install ('absent' | 'stale' | 'current'; null for an
  * unsupported placeholder, which is never probed). Agents sharing a skills
@@ -1044,11 +1054,16 @@ export function createProject(
 /** Unregister a project through the `lit project rm` backend (atomic TAXONOMY +
  * config rewrite, then cascade: unlink every paper, drop relevance keys, tear
  * down reflib symlinks + REFERENCES.md). The on-disk project directory is left
- * intact. `changed` counts the papers unlinked. Throws the backend's
- * TaxonomyError (400) verbatim on rejection. */
+ * intact. `changed` counts the papers unlinked; `foldersLeft` lists the project
+ * folders the teardown could not clean, with the OS's reason. Throws the
+ * backend's TaxonomyError (400) verbatim on rejection. */
 export function deleteProject(
   name: string,
-): Promise<{ ok: boolean; changed: number }> {
+): Promise<{
+  ok: boolean
+  changed: number
+  foldersLeft: { path: string; reason: string }[]
+}> {
   return mutateJSON(`/api/projects/${encodeURIComponent(name)}`, 'DELETE')
 }
 
@@ -1305,7 +1320,8 @@ interface RestoreResultWire {
 /** Restore a trashed paper through the `lit trash restore` backend
  * (resolve → restore_from_trash → reconcile_derived). The endpoint never
  * re-clones a hard-deleted 1:1 repo (decision b): those surface in
- * `missingRepos` for the CLI / health-check. Throws the backend's verbatim
+ * `missingRepos`, their records back on disk for `lit code restore-all` to
+ * clone. Throws the backend's verbatim
  * message — 409 when a live paper already holds the id slot, 404 when the entry
  * is gone. */
 export async function restorePaper(entryName: string): Promise<RestoreResult> {

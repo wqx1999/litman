@@ -29,7 +29,7 @@ import re
 from pathlib import Path
 from typing import Any
 
-from ruamel.yaml import YAMLError
+from ruamel.yaml.error import YAMLError
 
 from litman.core.id import derive_keyword_alternatives
 from litman.core.views import load_index_papers

@@ -19,19 +19,17 @@ import pytest
 from click.testing import CliRunner
 
 from litman.cli import cli
+from litman.core import locking
 from litman.core.library import create_vault
 from litman.core.vault_registry import (
+    VaultRegistry,
     add_vault,
     find_active,
     find_by_name,
     load_registry,
-    registry_path,
     save_registry,
 )
-from litman.core.vault_registry import VaultRegistry
 from litman.exceptions import VaultRegistryError
-from litman.core import locking
-
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -362,7 +360,6 @@ def test_cli_vault_add_dead_name_points_at_set_path(
 ) -> None:
     """AC5: re-adding a name whose folder is gone points at set-path, not a
     dead-end 'already registered'."""
-    import shutil
 
     runner = CliRunner()
     runner.invoke(cli, ["vault", "add", "main", str(vault_a)])
@@ -495,7 +492,6 @@ def test_cli_vault_info_stale_path_warns(
     panel rather than crashing."""
     runner = CliRunner()
     runner.invoke(cli, ["vault", "add", "main", str(vault_a)])
-    import shutil
     locking.rmtree(vault_a)
 
     result = runner.invoke(cli, ["vault", "info", "main"])

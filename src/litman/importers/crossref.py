@@ -13,7 +13,7 @@ Split into two functions so unit tests can verify parsing without HTTP:
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, cast
 
 import httpx
 
@@ -40,7 +40,7 @@ def fetch_crossref(doi: str, client: httpx.Client | None = None) -> dict[str, An
     try:
         url = _CROSSREF_URL.format(doi=doi)
         try:
-            resp = client.get(
+            resp = cast(httpx.Client, client).get(
                 url,
                 headers={"User-Agent": _USER_AGENT},
                 follow_redirects=True,
@@ -69,10 +69,10 @@ def fetch_crossref(doi: str, client: httpx.Client | None = None) -> dict[str, An
                 f"CrossRef response missing 'message' key for DOI {doi!r}"
             )
 
-        return data["message"]
+        return cast(dict[str, Any], data["message"])
     finally:
         if own_client:
-            client.close()
+            cast(httpx.Client, client).close()
 
 
 def _extract_year(message: dict[str, Any]) -> int | None:

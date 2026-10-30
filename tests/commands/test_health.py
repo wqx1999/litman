@@ -7,11 +7,13 @@ code, and ``--fix`` round-trip.
 
 from __future__ import annotations
 
+import ast
 import json
 import os
 import shlex
+import subprocess
 import sys
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -20,9 +22,10 @@ from click.testing import CliRunner
 from ruamel.yaml import YAML
 
 from litman.cli import cli
-from litman.commands.health import _CATEGORY_PREVIEW
+from litman.commands.health import _CATEGORY_HEADERS, _CATEGORY_PREVIEW
+from litman.core import checks as checks_pkg
+from litman.core import locking
 from litman.core import viewer as viewer_mod
-from litman.core.locking import unlock_truth_file
 from litman.core.checks import (
     AUTO_FIXABLE_CATEGORIES,
     INBOX_STALE_DAYS,
@@ -32,8 +35,8 @@ from litman.core.checks import (
     check_dangling_refs,
     check_dangling_wikilinks,
     check_dirty_metadata,
-    check_inbox_staleness,
     check_discussion_scaffold,
+    check_inbox_staleness,
     check_paper_dir_validity,
     check_pdf_viewer,
     check_project_config_consistency,
@@ -42,19 +45,19 @@ from litman.core.checks import (
     check_skill_drift,
     check_stale_staging,
     check_taxonomy_drift,
-    check_taxonomy_singletons,
     check_taxonomy_similar,
+    check_taxonomy_singletons,
     check_taxonomy_unused,
     check_trash_health,
     run_all_checks,
 )
 from litman.core.document import list_papers
 from litman.core.id import derive_id
-from litman.core.ripple import clean_dirty_metadata, drop_dangling_relations
 from litman.core.library import create_vault
+from litman.core.locking import unlock_truth_file
 from litman.core.notes import WIKILINK_REMINDER, discussion_scaffold
 from litman.core.portable_link import is_portable_link
-from litman.core import locking
+from litman.core.ripple import clean_dirty_metadata, drop_dangling_relations
 
 _yaml = YAML(typ="safe")
 _yaml_dump = YAML()
@@ -842,7 +845,7 @@ def test_a_half_renamed_folder_reads_no_other_metadata_without_a_twin(
     def no_scan(paper_dir: Path) -> object:
         raise AssertionError(f"read {paper_dir} with no twin to name")
 
-    monkeypatch.setattr(checks_mod, "_declared_id", no_scan)
+    monkeypatch.setattr(checks_mod.metadata, "_declared_id", no_scan)
 
     assert _mismatch(vault, "2020_A_x").category == "unfinished_rename"
 
@@ -955,7 +958,6 @@ def test_index_vs_disk_vanished_id_is_error(vault: Path) -> None:
     _write_paper(vault, "2024_Foo_Bar")
     _build_index(vault)
     # Manual rm of the paper dir, INDEX not rebuilt.
-    import shutil
 
     locking.rmtree(vault / "papers" / "2024_Foo_Bar")
     issues = check_index_vs_disk(vault, [])
@@ -2285,7 +2287,7 @@ def test_vocabulary_findings_survive_fix_and_do_not_gate_the_exit_code(
 def _iso_days_ago(n: int) -> str:
     """ISO 8601 timestamp `n` days ago (UTC)."""
     return (
-        datetime.now(timezone.utc) - timedelta(days=n)
+        datetime.now(UTC) - timedelta(days=n)
     ).isoformat(timespec="seconds")
 
 
@@ -3083,6 +3085,71 @@ def test_run_all_checks_aggregates_categories(vault: Path) -> None:
     assert "stale_staging" in cats
 
 
+# Run in a child interpreter so the hash seed can be pinned: in this process
+# PYTHONHASHSEED is random, and sets that happened to iterate in the right
+# order would let the test pass by luck. Only the slow or outside-the-vault
+# work is stubbed; the ordering runs through the real _apply_fixes and
+# apply_autofix.
+_AUTOFIX_ORDER_SCRIPT = """
+import sys
+from pathlib import Path
+
+import litman.core.ripple as ripple
+import litman.core.skill as skill
+import litman.core.supplementary as supplementary
+from litman.commands import health
+from litman.core.checks import Issue, registry
+
+health.regen = lambda vault, issues: {}
+health._si_fix_policy = lambda: None
+registry._default_agent_skill_probe = lambda: None
+registry.cleanup_stale_staging = lambda vault: 1
+skill.refresh_stale_copies = lambda dirs: {"claude": ["litman"]}
+ripple.clean_dirty_metadata = lambda vault: (1, [], [])
+ripple.drop_dangling_relations = lambda vault: 1
+supplementary.fix_supplementary = lambda vault, ids, policy=None: {
+    "supplementary_missing": 1,
+    "supplementary_unrecorded": 1,
+}
+issues = [Issue(c, "warning", "2024_Doe_X", "drift") for c in sys.argv[1:]]
+print(" ".join(health._apply_fixes(Path("unused"), issues)))
+"""
+
+# One finding of each kind --fix cleans here — the validity arms, klass-A and
+# SI — in the order run_all_checks reports them.
+_FIXABLE_IN_REGISTRY_ORDER = [
+    "dirty_metadata",
+    "index_vs_disk",
+    "views_vs_metadata",
+    "project_references",
+    "project_bridge_dangling",
+    "dangling_refs",
+    "stale_staging",
+    "skill_drift",
+    "supplementary_missing",
+    "supplementary_unrecorded",
+]
+
+
+@pytest.mark.parametrize("order", ["registry", "reversed"])
+@pytest.mark.parametrize("seed", ["0", "1", "2", "3"])
+def test_apply_fixes_lists_in_report_order(seed: str, order: str) -> None:
+    """The Auto-fix lines of --fix come in the order of the report above them,
+    on every run. Reversed, the issues are out of registry order, so passing
+    both shows the order followed is the report's, not the registry's."""
+    categories = list(_FIXABLE_IN_REGISTRY_ORDER)
+    if order == "reversed":
+        categories.reverse()
+    result = subprocess.run(
+        [sys.executable, "-c", _AUTOFIX_ORDER_SCRIPT, *categories],
+        env={**os.environ, "PYTHONHASHSEED": seed},
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.split() == categories
+
+
 def test_apply_autofix_clears_staging(vault: Path) -> None:
     op_dir = vault / ".litman-staging" / "op-crashed"
     op_dir.mkdir()
@@ -3165,6 +3232,76 @@ def test_health_check_with_issues_exits_one(vault: Path) -> None:
     assert result.exit_code == 1
     assert "Dangling references" in result.output
     assert "GHOST" in result.output
+
+
+def _emitted_categories() -> dict[str, str]:
+    """Every category a check under core/checks/ can emit, read off the source.
+
+    A literal ``category=`` keyword, or the first argument of ``Issue(...)`` or
+    of the ``add(...)`` helper the SI check uses; both arms of a conditional
+    expression count. Maps each category to where it was first seen.
+    """
+
+    def literals(node: ast.expr) -> list[str]:
+        if isinstance(node, ast.Constant) and isinstance(node.value, str):
+            return [node.value]
+        if isinstance(node, ast.IfExp):
+            return literals(node.body) + literals(node.orelse)
+        return []
+
+    found: dict[str, str] = {}
+    for path in sorted(Path(checks_pkg.__file__).parent.glob("*.py")):
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            name = node.func.id if isinstance(node.func, ast.Name) else ""
+            values = [
+                v for kw in node.keywords if kw.arg == "category"
+                for v in literals(kw.value)
+            ]
+            if name in ("Issue", "add") and node.args:
+                values += literals(node.args[0])
+            for value in values:
+                found.setdefault(value, f"{path.name}:{node.lineno}")
+    return found
+
+
+def test_every_emitted_category_has_a_header() -> None:
+    """A category with no entry in _CATEGORY_HEADERS prints its raw id as the
+    section title of the report."""
+    found = _emitted_categories()
+    # The scan sees each way a category is written: a keyword (schema), the
+    # SI helper's first argument (supplementary_missing), a conditional
+    # (unfinished_rename).
+    assert {"schema", "supplementary_missing", "unfinished_rename"} <= set(found)
+    missing = {c: where for c, where in found.items() if c not in _CATEGORY_HEADERS}
+    assert not missing
+
+
+def test_health_check_titles_an_unreadable_config(vault: Path) -> None:
+    (vault / "lit-config.yaml").write_text(": : [bad", encoding="utf-8")
+    result = CliRunner().invoke(cli, ["health-check", "--library", str(vault)])
+    flat = " ".join(result.output.split())
+    assert "Unreadable lit-config.yaml (config-dependent checks skipped)" in flat
+    assert "config_unreadable" not in result.output
+    assert "Summary:" in flat
+
+
+def test_health_check_titles_an_unrecoverable_staging_leftover(vault: Path) -> None:
+    # An op with no commit record whose folder moves cannot be read: kept as
+    # evidence, never cleaned up by --fix.
+    op = vault / ".litman-staging" / "op-unreadable"
+    op.mkdir()
+    (op / "MANIFEST.json").write_text(
+        '{"op_id": "op-unreadable", "files": [], "dirs": "not a list"}',
+        encoding="utf-8",
+    )
+    result = CliRunner().invoke(cli, ["health-check", "--library", str(vault)])
+    flat = " ".join(result.output.split())
+    assert ".litman-staging/ leftovers --fix cannot clean up" in flat
+    assert "stale_staging_unrecoverable" not in result.output
+    assert "Summary:" in flat
 
 
 @pytest.mark.skipif(
@@ -3342,9 +3479,9 @@ def test_apply_fixes_propagates_project_refs_rebuild_failure(
     swallowed and falsely surfaced as "project_references: 1". This test uses
     the REAL ``regen`` (not a fake) so it pins the swallow narrowing end-to-end.
     """
+    import litman.core.project_refs as project_refs
     from litman.commands import health
     from litman.core.checks import Issue
-    import litman.core.project_refs as project_refs
 
     _write_paper(vault, "2024_A_Foo", title="Foo", projects=["pep"])
     proj_dir = tmp_path / "pep_project"
@@ -3716,15 +3853,15 @@ def _linkless_vault(
     # Patch the probe, not sys.platform: ``viewer_mod.sys`` IS the global sys
     # module, so faking "darwin" there also sent core.atomic._fsync_dir down
     # its POSIX arm on a Windows host, where os.O_DIRECTORY does not exist.
-    # checks.py imports this function at call time, so the module attribute is
-    # the seam. Windows would answer its own sentinel here anyway.
+    # checks/maintenance.py imports this function at call time, so the module
+    # attribute is the seam. Windows would answer its own sentinel here anyway.
     monkeypatch.setattr(viewer_mod, "detect_platform_viewer", lambda: "open")
 
     proj = tmp_path / "myproj"
     proj.mkdir()
     add_project(vault, "myproj", proj)
-    add_taxonomy_values(vault, "topics", ["peptides"])
-    add_taxonomy_values(vault, "methods", ["diffusion"])
+    add_taxonomy_values(vault, "topics", ["peptides"])  # type: ignore[arg-type]  # a list works as well as the tuple the CLI passes
+    add_taxonomy_values(vault, "methods", ["diffusion"])  # type: ignore[arg-type]  # a list works as well as the tuple the CLI passes
     _write_paper(
         vault,
         "2024_Foo_Bar",

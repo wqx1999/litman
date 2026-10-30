@@ -177,7 +177,7 @@ def update_user_dict_section(
 
 
 def find_referencing_papers(
-    papers: list[dict], dict_name: str, value: str
+    papers: list[dict[str, Any]], dict_name: str, value: str
 ) -> list[str]:
     """Return ids of papers whose ``dict_name`` list contains ``value``.
 
@@ -222,7 +222,7 @@ def count_usage(
 
 
 def replace_value_in_field(
-    metadata: dict, field: str, replacements: dict[str, str]
+    metadata: dict[str, Any], field: str, replacements: dict[str, str]
 ) -> bool:
     """Apply ``old → new`` substitutions inside ``metadata[field]``.
 
@@ -242,8 +242,8 @@ def replace_value_in_field(
             "(a scalar value would be corrupted character-by-character). "
             "Fix the field by hand or via `lit modify`."
         )
-    new_list: list = []
-    seen: set = set()
+    new_list: list[Any] = []
+    seen: set[Any] = set()
     changed = False
     for item in current:
         replaced = replacements.get(item, item)

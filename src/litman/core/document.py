@@ -10,7 +10,8 @@ from collections.abc import Iterable, Mapping
 from pathlib import Path
 from typing import Any
 
-from ruamel.yaml import YAML, YAMLError
+from ruamel.yaml import YAML
+from ruamel.yaml.error import YAMLError
 
 from litman.core.id import is_valid_id
 from litman.core.yaml_pool import ThreadLocalYAML

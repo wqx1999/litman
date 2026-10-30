@@ -79,7 +79,7 @@ def test_put_leaves_no_staging_residue(
     assert resp.status_code == 200
 
     staging = vault / ".litman-staging"
-    leftover = [p for p in staging.iterdir()] if staging.is_dir() else []
+    leftover = list(staging.iterdir()) if staging.is_dir() else []
     assert leftover == []
 
 
@@ -381,5 +381,5 @@ def test_put_md_leaves_no_staging_residue(
     )
 
     staging = vault / ".litman-staging"
-    leftover = [p for p in staging.iterdir()] if staging.is_dir() else []
+    leftover = list(staging.iterdir()) if staging.is_dir() else []
     assert leftover == []

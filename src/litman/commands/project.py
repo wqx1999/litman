@@ -37,7 +37,10 @@ from rich.console import Console
 from rich.markup import escape
 from rich.table import Table
 
-from litman.commands._hub_report import hub_settlement_lines
+from litman.commands._hub_report import (
+    hub_settlement_lines,
+    project_folder_not_updated,
+)
 from litman.commands._options import format_option, library_option, vault_option
 from litman.commands._paper_count import (
     duplicate_count,
@@ -49,6 +52,7 @@ from litman.core.config import config_to_yaml_dict, load_config
 from litman.core.confirm import _confirm_destructive, is_interactive
 from litman.core.document import list_papers
 from litman.core.library import find_vault, resolve_library_or_vault
+from litman.core.portable_link import _os_error_reason
 from litman.core.project_link import (
     add_project,
     rebuild_all_project_links,
@@ -309,7 +313,10 @@ def project_rename_cmd(
     # Single write path (invariant #16): validation + atomic dual-write +
     # derived rebuild all live in core.project_link.rename_project, shared with
     # the webUI's PUT /api/projects/{name}. The command only renders the result.
-    n_changed, referencing, hub_moved_aside = rename_project(vault, old, new)
+    link_errors: list[OSError] = []
+    n_changed, referencing, hub_moved_aside = rename_project(
+        vault, old, new, link_errors=link_errors
+    )
 
     console.print(
         f"[bold green]✓ Renamed[/] project {escape(old.strip())} → "
@@ -320,6 +327,8 @@ def project_rename_cmd(
     )
     for line in hub_settlement_lines(0, hub_moved_aside):
         console.print(f"  {line}", soft_wrap=True)
+    if link_errors:
+        console.print(project_folder_not_updated(link_errors[0]), soft_wrap=True)
 
 
 # ---------------------------------------------------------------------------
@@ -387,10 +396,15 @@ def project_set_path_cmd(
         }
         link_status = rebuild_all_project_links(vault, registry)
         rebuild_all_project_refs(vault, registry)
-        if link_status.get(name_str, {}).get("status") == "rebuilt":
+        status = link_status.get(name_str, {})
+        if status.get("status") == "rebuilt":
             console.print(
                 f"[green]✓ Rebuilt[/] {escape(name_str)}'s links at the new "
                 "location."
+            )
+        elif status.get("status") == "error":
+            console.print(
+                project_folder_not_updated(status["error"]), soft_wrap=True
             )
         else:
             console.print(
@@ -510,7 +524,8 @@ def project_rm_cmd(
     # rebuild, then symlink/REFERENCES teardown) lives in the core so the webUI
     # DELETE endpoint shares the exact write path (invariant #16). The command
     # keeps only the confirm gate + console output.
-    n_changed, removed_from = remove_project(vault, name)
+    hubs_left: dict[Path, OSError] = {}
+    n_changed, removed_from = remove_project(vault, name, hubs_left=hubs_left)
 
     console.print(
         f"[bold green]✓ Removed[/] project {escape(name)}."
@@ -518,3 +533,17 @@ def project_rm_cmd(
     console.print(
         f"  Untagged {paper_count(n_changed, duplicate_count(removed_from))}."
     )
+    # Not `lit health-check --fix`: the project is out of the config, so no
+    # later command looks at this folder again. Name it, with what to remove.
+    for hub, err in hubs_left.items():
+        what = (
+            f"its links and {REFERENCES_FILENAME}"
+            if hub.name == LITERATURE_SUBDIR
+            else "its links"
+        )
+        console.print(
+            f"[yellow]warning:[/] could not clean up {escape(str(hub))} "
+            f"({escape(_os_error_reason(err))}). Delete {what} by hand: "
+            "lit no longer looks there.",
+            soft_wrap=True,
+        )

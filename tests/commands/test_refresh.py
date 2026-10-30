@@ -14,6 +14,7 @@ from ruamel.yaml import YAML
 
 from litman.cli import cli
 from litman.core.library import create_vault
+from litman.core.portable_link import is_portable_link
 from litman.core.views import (
     LIST_VIEW_FIELDS,
     SCALAR_VIEW_FIELDS,
@@ -21,8 +22,6 @@ from litman.core.views import (
     render_index,
     write_index,
 )
-from litman.core.portable_link import is_portable_link
-
 
 _yaml = YAML(typ="safe")
 
@@ -208,7 +207,9 @@ def test_rebuild_views_creates_relative_symlinks(tmp_path: Path) -> None:
 def test_rebuild_views_empty_lists_create_no_symlinks(tmp_path: Path) -> None:
     vault = create_vault(tmp_path)
     _write_paper(vault, "2024_Foo_Bar", topics=[], projects=[], methods=[])
-    papers = [{"id": "2024_Foo_Bar", "topics": [], "projects": [], "methods": [], "status": "inbox"}]
+    papers = [
+        {"id": "2024_Foo_Bar", "topics": [], "projects": [], "methods": [], "status": "inbox"}
+    ]
     counts = rebuild_views(vault, papers)
     assert counts["by-topic"] == 0
     assert counts["by-project"] == 0

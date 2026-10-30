@@ -30,12 +30,13 @@ from rich.console import Console
 from litman.core import views
 from litman.core.checks import Issue
 from litman.core.notes import annotate_deleted_wikilinks, enumerate_markdown_files
+from litman.core.portable_link import warn_views_not_updated
 
 __all__ = [
+    "annotate",
     "reconcile_derived",
     "regen",
     "regen_index_drop_ids",
-    "annotate",
 ]
 
 
@@ -47,9 +48,9 @@ __all__ = [
 def reconcile_derived(
     vault: Path,
     *,
-    papers: list[dict] | None = None,
+    papers: list[dict[str, Any]] | None = None,
     project_refs: bool = True,
-    views_delta: list[tuple[str, dict, dict]] | None = None,
+    views_delta: list[tuple[str, dict[str, Any], dict[str, Any]]] | None = None,
 ) -> dict[str, Any]:
     """Recompute the derived artifacts (INDEX.json + views/ [+ project refs]) from TRUTH.
 
@@ -98,10 +99,18 @@ def reconcile_derived(
             → wholesale ``rebuild_views``.
 
     Returns ``{"index": 1, "views": <n_symlinks>, "project_refs": <n_projects>,
-    "hub_replaced_copies": <n>, "hub_moved_aside": [<path>, ...]}`` — the last
-    two summarise what the project-link rebuild had to do with hub positions
-    occupied by real folders, so the caller can report it without ``core``
-    printing anything.
+    "hub_replaced_copies": <n>, "hub_moved_aside": [<path>, ...],
+    "config_unreadable": <bool>, "link_errors": [<OSError>, ...]}`` — the two
+    ``hub_*`` keys summarise what the project-link rebuild had to do with hub
+    positions occupied by real folders, ``config_unreadable`` says the project
+    side was asked for but skipped because ``lit-config.yaml`` cannot be read,
+    and ``link_errors`` holds one ``OSError`` per project folder that could not
+    be brought up to date, so the caller can report any of them without
+    ``core`` printing anything. ``view_errors`` holds ``(view_name, OSError)``
+    for each ``views/`` folder that could not be: those, and only those, are
+    also said here, one line on stderr for the first — every write command and
+    the web UI funnel through this call, and a delta of fifty papers would
+    otherwise say it fifty times.
 
     Tier-2 only when ``papers is None``: it calls ``list_papers`` (reads every
     metadata.yaml), so it MUST NOT run inside the Tier-1 hook (invariant #15).
@@ -116,20 +125,25 @@ def reconcile_derived(
         papers = list_papers(vault)
 
     views.write_index(vault, papers)
+    view_errors: list[tuple[str, OSError]] = []
     if views_delta is None:
-        view_counts = views.rebuild_views(vault, papers)
+        view_counts = views.rebuild_views(vault, papers, view_errors=view_errors)
     else:
         view_counts = {}
         for changed_id, old_fields, new_fields in views_delta:
             created = views.update_views_for_paper(
-                vault, changed_id, old_fields, new_fields
+                vault, changed_id, old_fields, new_fields, view_errors=view_errors
             )
             for view_name, n in created.items():
                 view_counts[view_name] = view_counts.get(view_name, 0) + n
+    if view_errors:
+        warn_views_not_updated(*view_errors[0])
 
     n_projects = 0
     hub_replaced = 0
     hub_moved_aside: list[str] = []
+    config_unreadable = False
+    link_errors: list[OSError] = []
     if project_refs:
         # Project-side derived artifacts (#3). Only when projects are
         # configured; rebuild_all_* skip unreachable project dirs internally.
@@ -142,15 +156,19 @@ def reconcile_derived(
         # lit-config.yaml surfaces via `lit config show`, and
         # check_project_references already returns [] on a broken config — so
         # there is no #3 drift to repair and we skip the project-side rebuild
-        # entirely. The rebuild calls themselves are NOT in this try: a genuine
-        # filesystem failure (permission error writing REFERENCES.md, symlink
-        # failure on a reachable project dir) must propagate so
-        # health.py:_apply_fixes does not falsely report "project_references: 1"
-        # for a repair that actually failed (invariant #14 — no silent-skip).
+        # entirely. A write command's change is committed by now, so it says
+        # the project folders were not updated (config_unreadable below). The
+        # rebuild calls themselves are NOT in this try. A filesystem failure in
+        # one project's folder (permission error writing REFERENCES.md, a hub
+        # that cannot be listed) comes back as that project's "error" status
+        # and lands in link_errors, so health.py:_apply_fixes does not falsely
+        # report "project_references: 1" for a repair that failed (invariant
+        # #14 — no silent-skip) and a write command can finish and say so.
         try:
             config = load_config(vault)
         except ConfigError:
             config = None
+            config_unreadable = True
         if config is not None:
             projects = dict(config.projects)
             if projects:
@@ -164,7 +182,17 @@ def reconcile_derived(
                 for per_project in rebuilt.values():
                     hub_replaced += int(per_project["n_replaced_copies"])
                     hub_moved_aside.extend(per_project["aside_paths"])
-                rebuild_all_project_refs(vault, projects, papers=papers)
+                    if per_project["status"] == "error":
+                        link_errors.append(per_project["error"])
+                refs = rebuild_all_project_refs(vault, projects, papers=papers)
+                for project, per_project in refs.items():
+                    # One per project: its link rebuild already failed on the
+                    # same folder in the ordinary case.
+                    if (
+                        per_project["status"] == "error"
+                        and rebuilt.get(project, {}).get("status") != "error"
+                    ):
+                        link_errors.append(per_project["error"])
                 n_projects = len(projects)
 
     return {
@@ -173,6 +201,9 @@ def reconcile_derived(
         "project_refs": n_projects,
         "hub_replaced_copies": hub_replaced,
         "hub_moved_aside": hub_moved_aside,
+        "config_unreadable": config_unreadable,
+        "link_errors": link_errors,
+        "view_errors": view_errors,
     }
 
 
@@ -185,6 +216,13 @@ def moved_aside_from(derived: dict[str, Any]) -> list[str]:
     """
     aside = derived.get("hub_moved_aside")
     return [str(p) for p in aside] if isinstance(aside, list) else []
+
+
+def link_errors_from(derived: dict[str, Any]) -> list[OSError]:
+    """The project folders a :func:`reconcile_derived` could not bring up to
+    date, narrowed the same way as :func:`moved_aside_from`."""
+    errors = derived.get("link_errors")
+    return [e for e in errors if isinstance(e, OSError)] if isinstance(errors, list) else []
 
 
 # ---------------------------------------------------------------------------

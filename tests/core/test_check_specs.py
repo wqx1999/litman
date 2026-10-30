@@ -12,17 +12,17 @@ import inspect
 from pathlib import Path
 
 from litman.core import checks
-from litman.core.library import create_vault
 from litman.core.checks import (
+    _CHECK_REGISTRY,
     AUTO_FIXABLE_CATEGORIES,
     CORRECTIONS,
     KLASSES,
     TIERS,
     CheckSpec,
-    _CHECK_REGISTRY,
     cheap_checks,
     klass_a_checks,
 )
+from litman.core.library import create_vault
 
 # The checks present after M30 Phase 2. Phase 1 had 14; Phase 2 added
 # ``vault_registry_drift`` (#4) — de-duped out of _drift.py + health.py into the
@@ -61,13 +61,14 @@ _EXPECTED_CATEGORIES = (
     "pdf_viewer",
     "skill_drift",
     "code_clone_integrity",
+    "notes_from_trash",
     "supplementary",
     "supplementary_cited",
 )
 
 
 def test_registry_has_all_checks() -> None:
-    assert len(_CHECK_REGISTRY) == 34
+    assert len(_CHECK_REGISTRY) == 35
     assert tuple(spec.category for spec in _CHECK_REGISTRY) == _EXPECTED_CATEGORIES
 
 
@@ -162,6 +163,15 @@ def test_supplementary_cited_is_full_b_auth_report() -> None:
     spec = next(s for s in _CHECK_REGISTRY if s.category == "supplementary_cited")
     assert (spec.tier, spec.klass, spec.correction) == ("full", "B-auth", "report")
     assert "supplementary_cited" not in AUTO_FIXABLE_CATEGORIES
+
+
+def test_notes_from_trash_is_full_validity_report_and_never_fixed() -> None:
+    """A repo note a restore set aside beside a different notes.md: both are
+    the user's and nothing is derived, so it reports (info) and --fix leaves
+    it; listing every codes/ folder keeps it out of the Tier-1 hook."""
+    spec = next(s for s in _CHECK_REGISTRY if s.category == "notes_from_trash")
+    assert (spec.tier, spec.klass, spec.correction) == ("full", "validity", "report")
+    assert "notes_from_trash" not in AUTO_FIXABLE_CATEGORIES
 
 
 def test_cheap_checks_returns_only_cheap_tier() -> None:
@@ -415,7 +425,7 @@ def test_vault_registry_drift_uses_bounded_stat_not_find_dangling(
         )
     )
     monkeypatch.setattr(
-        _drift, "_exists_bounded", lambda paths, budget_s=0.5: {p: None for p in paths}
+        _drift, "_exists_bounded", lambda paths, budget_s=0.5: dict.fromkeys(paths)
     )
     assert checks.check_vault_registry_drift(tmp_path, []) == []
 

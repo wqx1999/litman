@@ -12,6 +12,8 @@ agent alongside the skills:
 * ZCode: none. Its approvals live in its own session database, which litman
   never writes; installing its skills tells the user to turn on Autonomous
   mode instead (the catalog's ``permission_hint``).
+* DeepSeek Harness: none. It approves a command once at a time and keeps no
+  rule, so there is nothing to write; its default approvals already run lit.
 
 Only commands whose executable is ``lit`` are approved.  This module never
 enables an agent's global bypass/auto-approve mode.  Existing configuration is

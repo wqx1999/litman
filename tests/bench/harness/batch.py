@@ -58,9 +58,10 @@ from __future__ import annotations
 import json
 import statistics
 import sys
+from collections.abc import Callable
 from dataclasses import asdict, dataclass, field, is_dataclass
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
 from harness.checker import _split_assertion, resolve
 from harness.routing import RoutingResult, score_routing
@@ -316,7 +317,7 @@ def _sum_usage(usages: list[dict]) -> dict:
     contributing = [u for u in usages if u]
     if not contributing:
         return {}
-    out: dict[str, Any] = {k: 0 for k in _USAGE_KEYS}
+    out: dict[str, Any] = dict.fromkeys(_USAGE_KEYS, 0)
     for u in contributing:
         for k in _USAGE_KEYS:
             out[k] += int(u.get(k, 0) or 0)
@@ -329,7 +330,7 @@ def _merge_usage_buckets(*buckets: dict) -> dict:
     present = [b for b in buckets if b]
     if not present:
         return {}
-    out: dict[str, Any] = {k: 0 for k in _USAGE_KEYS}
+    out: dict[str, Any] = dict.fromkeys(_USAGE_KEYS, 0)
     spawns = 0
     for b in present:
         for k in _USAGE_KEYS:
@@ -431,7 +432,7 @@ def build_live_run_card_fn(
 
         ensure_seed_impl = _default_ensure_seed
 
-    def _run(card: Any, *, round: int, model: str, **_: Any) -> dict:  # noqa: A002
+    def _run(card: Any, *, round: int, model: str, **_: Any) -> dict:
         seed_name = _card_field(card, "seed")
         if not seed_name:
             raise ValueError(
@@ -523,7 +524,7 @@ def build_live_routing_run_fn(
 
     default_observe = observe_impl is None
     if observe_impl is None:
-        from harness.executor import observe_skill_for_utterance as observe_impl  # type: ignore[assignment]
+        from harness.executor import observe_skill_for_utterance as observe_impl  # type: ignore[assignment]  # noqa: I001
     if ensure_seed_impl is None:
         from harness.seeds import build_seed
 
@@ -541,13 +542,13 @@ def build_live_routing_run_fn(
             utt = _case_field(case, "utt")
             rv = RunVault(Path(seed_vault), run_root=Path(work_root))
             rv.__enter__()  # cp seed -> <work_root>/bench-<uuid>/vault
-            kwargs: dict[str, Any] = dict(
-                fixtures_pdfs_dir=Path(work_root) / "_routing_no_fixtures",
-                agent=agent,
-                model=model,
-                base_url=base_url,
-                auth_token=auth_token,
-            )
+            kwargs: dict[str, Any] = {
+                "fixtures_pdfs_dir": Path(work_root) / "_routing_no_fixtures",
+                "agent": agent,
+                "model": model,
+                "base_url": base_url,
+                "auth_token": auth_token,
+            }
             # usage_sink is only on the real observe; never forwarded to a double.
             if default_observe and usage_sink is not None:
                 kwargs["usage_sink"] = usage_sink
@@ -1100,7 +1101,7 @@ def _trail_to_json(trail: Any) -> Any:
 def _dump_transcript(
     transcript_dir: Path,
     card_id: str,
-    round: int,  # noqa: A002 - mirror the loop variable name
+    round: int,  # mirror the loop variable name
     model: str,
     run: Any,
     resolved: int,
@@ -1149,7 +1150,7 @@ def _dump_transcript(
             json.dumps(payload, indent=2, ensure_ascii=False, default=str),
             encoding="utf-8",
         )
-    except Exception as e:  # noqa: BLE001 - a dump miss must not kill a long run
+    except Exception as e:  # a dump miss must not kill a long run
         # Non-fatal (one bad round shouldn't abort a 3-hour run), but NEVER
         # silent: the up-front probe in run_batch already caught an unwritable
         # dir, so reaching here means a mid-run anomaly worth surfacing.

@@ -16,7 +16,9 @@ The sidecar carries human-readable trash metadata so ``lit trash list`` can
 render a useful summary without re-reading the moved paper's metadata.yaml.
 It also records the ``orphan_repos`` map — repos hard-deleted because the
 removed paper was their last binder (1:1 case) — so M23.2 restore knows
-which upstream URLs to re-clone from. A missing sidecar is tolerated:
+which upstream URLs to re-clone from, and ``orphan_repo_files``: each such
+repo's ``repo-meta.yaml`` and ``notes.md``, which a re-clone cannot bring
+back (absent from entries written before it). A missing sidecar is tolerated:
 enumeration falls back to parsing the entry name for the paper id and
 timestamp.
 
@@ -38,17 +40,27 @@ trashed entries — they are absent from INDEX.json and views/.
 from __future__ import annotations
 
 import io
+import itertools
+import os
 import re
 import shutil
+import sys
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from ruamel.yaml import YAMLError
+from ruamel.yaml.error import YAMLError
 
 from litman.core.atomic import staged_write
-from litman.core.code import CODES_DIRNAME, REPO_DIRNAME, REPO_META_FILENAME
+from litman.core.code import (
+    CODES_DIRNAME,
+    NOTES_FILENAME,
+    REPO_DIRNAME,
+    REPO_META_FILENAME,
+    make_repo_meta,
+    repo_meta_text,
+)
 from litman.core.dates import now_iso
 from litman.core.document import load_yaml_or_raise
 from litman.core.locking import rmtree
@@ -86,9 +98,15 @@ TRASH_DIRNAME = ".trash"
 TRASH_MAX_ENTRIES = 100
 
 _yaml = ThreadLocalYAML(typ="safe")
+# The sidecar holds a deleted repo's notes.md as text, which a restore must
+# write back byte for byte. ruamel folds a long double-quoted string at 80
+# columns, and a fold right after an escape (a backslash, a tab) loses its
+# continuation mark, so the note reads back with a space added: `$\Delta` came
+# back as `$\ Delta`. Unfolded, nothing is added.
 _yaml_dump = ThreadLocalYAML(
     indent={"mapping": 2, "sequence": 4, "offset": 2},
     default_flow_style=False,
+    width=sys.maxsize,
 )
 
 # Round-trip writer for restore's symmetric reverse-edge rebuild: it edits
@@ -140,6 +158,11 @@ class TrashEntry:
     entry_name: str          # e.g. "2024_Foo-20260510T184612Z"
     entry_path: Path         # absolute path to the trashed dir
     orphan_repos: dict[str, str]  # {repo_name: upstream_url} hard-deleted on rm
+    # {repo_name: {"repo-meta.yaml" / "notes.md": text, or bytes when not
+    # UTF-8}} — what those repos held that a re-clone cannot bring back.
+    orphan_repo_files: dict[str, dict[str, str | bytes]] = field(
+        default_factory=dict
+    )
 
 
 @dataclass
@@ -170,9 +193,16 @@ class RestoreResult:
     repos_rebound: set[str] = field(default_factory=set)
     # projects whose symlink + REFERENCES were re-created.
     projects_rebuilt: set[str] = field(default_factory=set)
+    # deleted 1:1 repos whose codes/<name>/notes.md was already back and
+    # different: kept, the saved note put beside it under this file name.
+    notes_beside: dict[str, str] = field(default_factory=dict)
     # project-hub folders the re-link had to preserve under .trash/ — the only
     # copy of whatever was in them, so the caller reports the paths.
     hub_moved_aside: list[str] = field(default_factory=list)
+    # OSErrors from a project folder the re-link could not change (a
+    # litman_code/ that cannot be read, ...). The restore stands; the caller
+    # says so in one line and `lit health-check --fix` finishes the folder.
+    link_errors: list[OSError] = field(default_factory=list)
     # The post-restore paper list INDEX.json was rendered from — the caller
     # hands it to reconcile_derived so the derived rebuild does not re-scan
     # the vault (task-write-perf). May mix INDEX projections with the
@@ -185,7 +215,7 @@ class RestoreResult:
 
 def _utc_compact_now() -> str:
     """Compact ISO 8601 basic format used in entry names."""
-    return datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    return datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
 
 
 def _trash_dir(vault: Path) -> Path:
@@ -236,6 +266,7 @@ def move_to_trash(
     paper_id: str,
     *,
     orphan_repos: dict[str, str] | None = None,
+    orphan_repo_files: dict[str, dict[str, str | bytes]] | None = None,
 ) -> Path:
     """Move ``papers/<paper_id>/`` into ``.trash/<paper_id>-<timestamp>/``.
 
@@ -246,7 +277,8 @@ def move_to_trash(
     ``orphan_repos`` maps ``repo_name → upstream_url`` for repos that were
     hard-deleted during the cascade because this paper was their last binder
     (1:1 case). M23.2 restore reads this map to re-clone. Empty / ``None``
-    when no repo was orphaned.
+    when no repo was orphaned. ``orphan_repo_files`` holds those repos'
+    ``repo-meta.yaml`` / ``notes.md`` for restore to put back.
 
     The post-M23.1 sidecar no longer carries ``cascade_was_used`` — the
     ``--cascade`` flag is gone, so the field is meaningless. Readers default
@@ -280,6 +312,10 @@ def move_to_trash(
         "title": title,
         "orphan_repos": dict(orphan_repos or {}),
     }
+    if orphan_repo_files:
+        sidecar_payload["orphan_repo_files"] = {
+            name: dict(files) for name, files in orphan_repo_files.items()
+        }
 
     # Write sidecar first; if the move fails we'll drop it.
     import io
@@ -339,13 +375,14 @@ def list_trash(vault: Path) -> list[TrashEntry]:
         m = _ENTRY_NAME_RE.match(child.name)
         if not m:
             continue
-        parsed_id, parsed_ts = m.group(1), m.group(2)
+        parsed_id = m.group(1)
 
         sidecar = _sidecar_path(child)
         deleted_at = "(unknown)"
         cascade = False
         title: str | None = None
         orphan_repos: dict[str, str] = {}
+        orphan_repo_files: dict[str, dict[str, str | bytes]] = {}
         if sidecar.is_file():
             try:
                 data = _yaml.load(sidecar.read_text(encoding="utf-8")) or {}
@@ -358,6 +395,7 @@ def list_trash(vault: Path) -> list[TrashEntry]:
             raw_orphans = data.get("orphan_repos")
             if isinstance(raw_orphans, dict):
                 orphan_repos = {str(k): str(v) for k, v in raw_orphans.items()}
+            orphan_repo_files = _saved_repo_files(data.get("orphan_repo_files"))
 
         entries.append(
             TrashEntry(
@@ -368,6 +406,7 @@ def list_trash(vault: Path) -> list[TrashEntry]:
                 entry_name=child.name,
                 entry_path=child,
                 orphan_repos=orphan_repos,
+                orphan_repo_files=orphan_repo_files,
             )
         )
 
@@ -375,6 +414,29 @@ def list_trash(vault: Path) -> list[TrashEntry]:
     # of the name and lexicographically sortable).
     entries.sort(key=lambda e: e.entry_name, reverse=True)
     return entries
+
+
+def _saved_repo_files(raw: object) -> dict[str, dict[str, str | bytes]]:
+    """The sidecar's ``orphan_repo_files``, keeping only the two known files.
+
+    A hand-edited sidecar is not trusted to name paths: anything but
+    ``repo-meta.yaml`` / ``notes.md`` holding text or bytes is dropped.
+    """
+    if not isinstance(raw, dict):
+        return {}
+    out: dict[str, dict[str, str | bytes]] = {}
+    for repo_name, files in raw.items():
+        if not isinstance(files, dict):
+            continue
+        kept = {
+            str(name): content
+            for name, content in files.items()
+            if name in (REPO_META_FILENAME, NOTES_FILENAME)
+            and isinstance(content, str | bytes)
+        }
+        if kept:
+            out[str(repo_name)] = kept
+    return out
 
 
 def resolve_trash_entry(vault: Path, paper_id_or_entry: str) -> TrashEntry:
@@ -490,9 +552,9 @@ def _build_restore_ref_updates(
     # Decision #1: prune dead edges out of A's own relation fields, silently.
     if dead:
         for field_name in ALL_REF_FIELDS:
-            cur = restored_meta.get(field_name)
-            if cur:
-                restored_meta[field_name] = [v for v in cur if v not in dead]
+            vals = restored_meta.get(field_name)
+            if vals:
+                restored_meta[field_name] = [v for v in vals if v not in dead]
 
     return staged, rebuilt, dead
 
@@ -503,7 +565,8 @@ def _build_restore_code_updates(
     paper_id: str,
     now: str,
     orphan_repos: dict[str, str],
-) -> tuple[dict[str, str], set[str], dict[str, str]]:
+    orphan_repo_files: dict[str, dict[str, str | bytes]],
+) -> tuple[dict[str, str | bytes], set[str], dict[str, str], dict[str, str]]:
     """Build staged repo-meta.yaml writes that re-bind A into surviving repos.
 
     For each repo in A's sealed ``code-clones``:
@@ -511,15 +574,31 @@ def _build_restore_code_updates(
           (idempotent), staged for the transaction.
         * absent and listed in the sidecar's ``orphan_repos`` → a 1:1
           hard-deleted repo; defer to the caller's POST-transaction re-clone.
-          The binding on A's side is KEPT (decision #2/#3).
+          The binding on A's side is KEPT (decision #2/#3), and when the
+          sidecar has its upstream, ``codes/<repo>/repo-meta.yaml`` comes back
+          in the same transaction — as the sidecar saved it (with
+          ``papers: [A]``), or rebuilt from name + upstream for an entry that
+          saved none — with the saved ``notes.md`` (beside a different one already
+          there, not over it: :func:`_saved_notes_name`), and no ``repo/``
+          checkout. The sidecar is its only other record and goes
+          with this restore, so without it a restore that does not re-clone
+          (the web UI's, or a "no") loses the address for good; with it the
+          repo is in the state a sync without checkouts leaves, which
+          ``lit health-check`` reports and ``lit code restore-all`` re-clones.
+          When ``codes/<repo>/repo/`` is already there (a sync that kept the
+          checkout, a clone by hand), the repo is re-bound to it instead and
+          not handed on: a re-clone would find it in the way, and its rollback
+          used to delete it, with whatever the user had changed in it.
         * absent and NOT in ``orphan_repos`` → already-orphan ref; health-check
           backstops. Binding kept; nothing staged.
 
-    Returns ``(staged_repo_writes, repos_rebound, missing_repos)``.
+    Returns ``(staged_repo_writes, repos_rebound, missing_repos,
+    notes_beside)``.
     """
-    staged: dict[str, str] = {}
+    staged: dict[str, str | bytes] = {}
     rebound: set[str] = set()
     missing: dict[str, str] = {}
+    notes_beside: dict[str, str] = {}
     for repo_name in restored_meta.get("code-clones") or []:
         repo_name = str(repo_name)
         repo_meta_path = (
@@ -527,7 +606,37 @@ def _build_restore_code_updates(
         )
         if not repo_meta_path.is_file():
             if repo_name in orphan_repos:
-                missing[repo_name] = orphan_repos[repo_name]
+                upstream = orphan_repos[repo_name]
+                checkout = vault / CODES_DIRNAME / repo_name / REPO_DIRNAME
+                if upstream and os.path.lexists(checkout):
+                    rebound.add(repo_name)
+                else:
+                    missing[repo_name] = upstream
+                if upstream:
+                    saved = orphan_repo_files.get(repo_name, {})
+                    repo_rel = f"{CODES_DIRNAME}/{repo_name}"
+                    staged[f"{repo_rel}/{REPO_META_FILENAME}"] = (
+                        _restored_repo_meta(
+                            saved.get(REPO_META_FILENAME),
+                            repo_name,
+                            upstream,
+                            paper_id,
+                            now,
+                        )
+                    )
+                    notes = saved.get(NOTES_FILENAME)
+                    if notes is not None:
+                        # As bytes, so the note comes back byte for byte.
+                        data = (
+                            notes.encode("utf-8")
+                            if isinstance(notes, str)
+                            else notes
+                        )
+                        name = _saved_notes_name(vault / repo_rel, data)
+                        if name is not None:
+                            staged[f"{repo_rel}/{name}"] = data
+                            if name != NOTES_FILENAME:
+                                notes_beside[repo_name] = name
             continue
         try:
             rt = _yaml_rt.load(repo_meta_path.read_text(encoding="utf-8"))
@@ -548,7 +657,74 @@ def _build_restore_code_updates(
                 _dump_rt_to_string(rt)
             )
         rebound.add(repo_name)
-    return staged, rebound, missing
+    return staged, rebound, missing, notes_beside
+
+
+def _saved_notes_name(repo_root: Path, data: bytes) -> str | None:
+    """The file a restore writes a deleted repo's saved ``notes.md`` to.
+
+    ``notes.md`` when there is none, nothing when the one there is that same
+    note. A different one there was written after the delete (by hand, or a
+    sync that brought it back) and is the user's: the saved note goes beside
+    it as ``notes.from-trash.md`` (``-2``, ``-3``, ... past a taken name).
+    """
+    for n in itertools.count():
+        if n == 0:
+            name = NOTES_FILENAME
+        else:
+            name = "notes.from-trash.md" if n == 1 else f"notes.from-trash-{n}.md"
+        path = repo_root / name
+        if not os.path.lexists(path):
+            return name
+        try:
+            if path.read_bytes() == data:
+                return None
+        except OSError:
+            pass  # unreadable: still not ours to write over
+    raise AssertionError("unreachable")
+
+
+# Every name _saved_notes_name gives a note it puts beside another.
+_SAVED_NOTES_RE = re.compile(r"notes\.from-trash(?:-[0-9]+)?\.md")
+
+
+def is_saved_notes_name(name: str) -> bool:
+    """True if ``name`` is one a restore gives a saved note it put beside a
+    different ``notes.md`` (:func:`_saved_notes_name`): what ``lit
+    health-check`` lists until the user merges the two."""
+    return _SAVED_NOTES_RE.fullmatch(name) is not None
+
+
+def _restored_repo_meta(
+    saved: str | bytes | None,
+    repo_name: str,
+    upstream: str,
+    paper_id: str,
+    now: str,
+) -> str:
+    """The ``repo-meta.yaml`` text a restore puts back for a deleted 1:1 repo.
+
+    The saved file with ``papers: [A]`` and a fresh ``updated-at``, comments
+    and the user's fields kept; rebuilt from name + upstream when the sidecar
+    saved none (an entry from before it did) or the saved text no longer parses.
+    """
+    rt = None
+    if isinstance(saved, str):
+        try:
+            rt = _yaml_rt.load(saved)
+        except YAMLError:
+            rt = None
+    if not isinstance(rt, dict):
+        return repo_meta_text(
+            make_repo_meta(
+                name=repo_name, upstream=upstream, papers=[paper_id], now=now
+            )
+        )
+    if list(rt.get("papers") or []) != [paper_id]:
+        # Only when it differs: a comment below the list belongs to it.
+        rt["papers"] = [paper_id]
+    rt["updated-at"] = now
+    return _dump_rt_to_string(rt)
 
 
 def _rebuild_project_links(
@@ -556,7 +732,7 @@ def _rebuild_project_links(
     restored_meta: dict[str, Any],
     paper_id: str,
     registry: dict[str, str],
-) -> tuple[set[str], list[str]]:
+) -> tuple[set[str], list[str], list[OSError]]:
     """Re-create A's project symlinks + re-render REFERENCES.md (post-stage).
 
     Inverse of rm's ``_teardown_project_links``. For each project A names:
@@ -566,12 +742,18 @@ def _rebuild_project_links(
     A project not registered or whose dir is missing on disk is skipped
     (decision: P missing → skip) — A's own ``projects`` field is untouched.
 
-    Returns the set of project names actually rebuilt, plus any hub folders
-    that had to be preserved under ``.trash/`` to free a link position.
+    Each link and the REFERENCES.md render is tried on its own: an
+    ``OSError`` from one (a hub folder that cannot be read) is collected and
+    the rest still run, since the restore has already committed.
+
+    Returns the set of project names fully rebuilt, any hub folders that had
+    to be preserved under ``.trash/`` to free a link position, and every
+    ``OSError`` collected.
     """
     code_clones = [str(r) for r in (restored_meta.get("code-clones") or [])]
     rebuilt: set[str] = set()
     moved_aside: list[str] = []
+    link_errors: list[OSError] = []
     for project in restored_meta.get("projects") or []:
         project = str(project)
         project_dir_str = registry.get(project)
@@ -581,19 +763,23 @@ def _rebuild_project_links(
         if not project_dir.is_dir():
             continue
 
+        errors_before = len(link_errors)
         paper_link = project_dir / LITERATURE_SUBDIR / paper_id
         paper_target = (vault / "papers" / paper_id).resolve()
-        settled = settle_hub_entry(
-            paper_link,
-            paper_target,
-            vault=vault,
-            project=project,
-            hub=LITERATURE_SUBDIR,
-        )
-        if settled.moved_to is not None:
-            moved_aside.append(str(settled.moved_to))
-        if not settled.position_occupied:
-            make_portable_link(paper_link, paper_target)
+        try:
+            settled = settle_hub_entry(
+                paper_link,
+                paper_target,
+                vault=vault,
+                project=project,
+                hub=LITERATURE_SUBDIR,
+            )
+            if settled.moved_to is not None:
+                moved_aside.append(str(settled.moved_to))
+            if not settled.position_occupied:
+                make_portable_link(paper_link, paper_target)
+        except OSError as err:
+            link_errors.append(err)
         for repo_name in code_clones:
             repo_target = (
                 vault / CODES_DIRNAME / repo_name / REPO_DIRNAME
@@ -601,23 +787,29 @@ def _rebuild_project_links(
             if not repo_target.exists():
                 continue
             code_link = project_dir / CODE_SUBDIR / repo_name
-            settled = settle_hub_entry(
-                code_link,
-                repo_target,
-                vault=vault,
-                project=project,
-                hub=CODE_SUBDIR,
-            )
-            if settled.moved_to is not None:
-                moved_aside.append(str(settled.moved_to))
-            if not settled.position_occupied:
-                make_portable_link(code_link, repo_target)
+            try:
+                settled = settle_hub_entry(
+                    code_link,
+                    repo_target,
+                    vault=vault,
+                    project=project,
+                    hub=CODE_SUBDIR,
+                )
+                if settled.moved_to is not None:
+                    moved_aside.append(str(settled.moved_to))
+                if not settled.position_occupied:
+                    make_portable_link(code_link, repo_target)
+            except OSError as err:
+                link_errors.append(err)
         try:
             write_references_md(vault, project, project_dir)
         except FileNotFoundError:
             continue
-        rebuilt.add(project)
-    return rebuilt, moved_aside
+        except OSError as err:
+            link_errors.append(err)
+        if len(link_errors) == errors_before:
+            rebuilt.add(project)
+    return rebuilt, moved_aside, link_errors
 
 
 def restore_from_trash(
@@ -645,7 +837,10 @@ def restore_from_trash(
            for restore success (decision #2).
 
     Project symlink + REFERENCES re-render run after the staged commit
-    (filesystem-only, recoverable). TAXONOMY drift is left for health-check
+    (filesystem-only, recoverable): an ``OSError`` there does not undo the
+    restore, and is handed back in ``link_errors``. It must not escape either:
+    the sidecar is gone by then, and the step 3 that echoes a missing repo's
+    upstream would never run. TAXONOMY drift is left for health-check
     (decision #5; invariant #2 — restore never edits TAXONOMY).
 
     Raises:
@@ -674,8 +869,15 @@ def restore_from_trash(
     ref_writes, reverse_rebuilt, dead_edges = _build_restore_ref_updates(
         vault, sealed_meta, paper_id, now
     )
-    code_writes, repos_rebound, missing_repos = _build_restore_code_updates(
-        vault, sealed_meta, paper_id, now, entry.orphan_repos
+    code_writes, repos_rebound, missing_repos, notes_beside = (
+        _build_restore_code_updates(
+            vault,
+            sealed_meta,
+            paper_id,
+            now,
+            entry.orphan_repos,
+            entry.orphan_repo_files,
+        )
     )
 
     # Bump A's own updated-at when restore pruned dead edges (best-effort
@@ -722,8 +924,11 @@ def restore_from_trash(
                 )
             for oid, content in ref_writes.items():
                 stage.write_text(f"papers/{oid}/metadata.yaml", content)
-            for relpath, content in code_writes.items():
-                stage.write_text(relpath, content)
+            for relpath, data in code_writes.items():
+                if isinstance(data, bytes):
+                    stage.write_bytes(relpath, data)
+                else:
+                    stage.write_text(relpath, data)
             # De-annotate `[[A]] (deleted)` → `[[A]]` across all tracked notes
             # now that A is back on disk (M24). A's own restored notes are
             # scanned too (the folder is already at papers/A/). This read loop
@@ -769,7 +974,7 @@ def restore_from_trash(
         pass
 
     # Post-stage filesystem rebuild: project symlinks + REFERENCES.md.
-    projects_rebuilt, hub_moved_aside = _rebuild_project_links(
+    projects_rebuilt, hub_moved_aside, link_errors = _rebuild_project_links(
         vault, sealed_meta, paper_id, registry
     )
 
@@ -781,8 +986,10 @@ def restore_from_trash(
         reverse_edges_rebuilt=reverse_rebuilt,
         dead_edges_dropped=dead_edges,
         repos_rebound=repos_rebound,
+        notes_beside=notes_beside,
         projects_rebuilt=projects_rebuilt,
         hub_moved_aside=hub_moved_aside,
+        link_errors=link_errors,
         surviving_papers=surviving,
         restored_view_fields=view_fields_snapshot(sealed_meta),
     )

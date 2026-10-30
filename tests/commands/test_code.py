@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import shutil
 import subprocess
 from pathlib import Path
 from typing import Any
@@ -13,6 +12,7 @@ from click.testing import CliRunner
 from ruamel.yaml import YAML
 
 from litman.cli import cli
+from litman.core import locking
 from litman.core.code import (
     RestoreItem,
     RestoreReport,
@@ -34,7 +34,6 @@ from litman.core.code import (
 )
 from litman.core.library import create_vault
 from litman.exceptions import CodeError, PaperNotFoundError
-from litman.core import locking
 
 _yaml_safe = YAML(typ="safe")
 _yaml = YAML()

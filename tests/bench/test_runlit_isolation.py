@@ -22,7 +22,6 @@ import sys
 from pathlib import Path
 
 import pytest
-
 from harness import seeds
 from harness.runlit import RunVault, isolated_env
 from harness.seeds import LIT_BIN

@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 
-from litman.core import agent_permissions
+from litman.core import agent_permissions, agents
 
 # What `lit` needs approved on the *running* host. Windows gets the PowerShell
 # twin as well, because that is the shell Claude Code drives there — see
@@ -300,6 +300,22 @@ def test_an_app_agent_gets_no_rule_file_and_no_warning(_home: Path) -> None:
     assert after == before
     assert result == {
         "agent": "zcode",
+        "path": None,
+        "mode": "manual",
+        "rule": "",
+        "warning": None,
+    }
+
+
+def test_dsh_gets_no_rule_file_and_no_warning(_home: Path) -> None:
+    """DeepSeek Harness approves one command at a time and keeps no rule, so
+    its catalog row writes nothing and has nothing to warn about."""
+    before = sorted(p.relative_to(_home) for p in _home.rglob("*"))
+    result = agents.get_agent("dsh").install_lit_permission()
+    after = sorted(p.relative_to(_home) for p in _home.rglob("*"))
+    assert after == before
+    assert result == {
+        "agent": "dsh",
         "path": None,
         "mode": "manual",
         "rule": "",

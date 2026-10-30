@@ -52,6 +52,9 @@ Module API:
   keyword segments already sitting in a vault.
 - ``is_valid_id(id)``: filesystem-safety check used by ``lit add --id``
   override validation and by id-lookup helpers.
+- ``clean_title_rename_target(paper, dirty)``: the id a cleaned title
+  derives, when the stored id came from the dirty one — the ``lit rename``
+  the health check's dirty-title finding suggests.
 
 All keyword helpers raise ``IDError`` on inputs that cannot yield a valid id.
 """
@@ -60,7 +63,9 @@ from __future__ import annotations
 
 import re
 import unicodedata
+from collections.abc import Callable
 from dataclasses import dataclass
+from typing import Any
 
 from litman.exceptions import IDError
 
@@ -298,7 +303,7 @@ def is_weak_keyword(keyword: str) -> bool:
     """True when a keyword segment is too short to identify anything.
 
     ``2018_Zhang_A`` names a paper no better than ``2018_Zhang_`` does. Shared
-    with ``core/checks.py`` so the ingest guard and the health check agree on
+    with ``core/checks/metadata.py`` so the ingest guard and the health check agree on
     what counts as a keyword that carries no information.
     """
     return len(keyword) <= _WEAK_KEYWORD_MAX_LEN
@@ -576,3 +581,53 @@ def _no_keyword_message(year: int, family: str, title: str) -> str:
             "neither has to match the title you store."
         )
     return "\n".join(lines)
+
+
+def clean_title_rename_target(
+    paper: dict[str, Any], dirty: dict[str, Any]
+) -> str | None:
+    """The id the clean title derives, if the current id came from the dirty one.
+
+    Only an id ``derive_id`` produced from the stored title and authors is a
+    machine accident worth undoing; one that does not match was chosen by
+    hand (``--id``, a ``lit rename``) or carries a collision suffix, and is
+    left alone. So is an id the clean title would derive anyway — line breaks
+    alone never reached it, because the keyword is built from whitespace-split
+    words. An id from before accented letters were transliterated
+    (``2021_Mller_…`` for ``Müller``) counts as derived too, and is held to the
+    same test under the rule that made it; the target is always what the
+    current rule derives.
+    """
+    pid = paper.get("id")
+    if not isinstance(pid, str):
+        return None
+    authors = paper.get("authors")
+    if not isinstance(authors, list):
+        authors = []
+    year = paper.get("year")
+    clean_authors = dirty.get("authors", authors)
+    rules = [
+        derive
+        for derive in (derive_id, derive_id_without_transliteration)
+        if _derive_or_none(derive, year, authors, paper["title"]) == pid
+    ]
+    if not rules or any(
+        _derive_or_none(derive, year, clean_authors, dirty["title"]) == pid
+        for derive in rules
+    ):
+        return None
+    target = _derive_or_none(derive_id, year, clean_authors, dirty["title"])
+    return target if target != pid else None
+
+
+def _derive_or_none(
+    derive: Callable[[Any, str, str], str],
+    year: Any,
+    authors: list[Any],
+    title: str,
+) -> str | None:
+    family = first_author_family([a for a in authors if isinstance(a, str)])
+    try:
+        return derive(year, family, title)
+    except IDError:
+        return None

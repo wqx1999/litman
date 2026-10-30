@@ -22,9 +22,9 @@ from litman.core.checks import (
     check_duplicate_doi,
     check_placeholder_id,
     check_placeholder_metadata,
-    check_weak_id_keyword,
     check_schema,
     check_taxonomy_drift,
+    check_weak_id_keyword,
     fixed_enum_allows_none,
     fixed_enum_values,
     run_all_checks,
@@ -436,7 +436,7 @@ def test_push_gate_does_not_run_the_vocabulary_checks(
         replace(spec, fn=_must_not_run) if spec.category in vocab else spec
         for spec in checks._CHECK_REGISTRY
     )
-    monkeypatch.setattr(checks, "_CHECK_REGISTRY", registry)
+    monkeypatch.setattr(checks.registry, "_CHECK_REGISTRY", registry)
     # Control: the stand-ins are wired in, so a full run does reach them.
     with pytest.raises(AssertionError, match="a vocabulary check ran"):
         run_all_checks(vault, [])
@@ -502,7 +502,7 @@ def test_all_fixed_enums_shape_and_order() -> None:
     assert enums["status"] == ["inbox", "skim", "deep-read", "dropped"]
     assert fixed_enum_allows_none("status") is False
 
-    # type: sorted, optional (None legal).
+    # "type": sorted, optional (None legal).
     assert enums["type"] == sorted(enums["type"])
     assert fixed_enum_allows_none("type") is True
 

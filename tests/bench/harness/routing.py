@@ -76,10 +76,7 @@ def _is_in_scope(golden: Any, present_skills: set[str]) -> bool:
     Trailing ``?`` markers (optional-presence hints in the corpus) are stripped
     before the membership test.
     """
-    for raw in _golden_skills(golden):
-        if raw.rstrip("?") not in present_skills:
-            return False
-    return True
+    return all(raw.rstrip("?") in present_skills for raw in _golden_skills(golden))
 
 
 def score_routing(
@@ -122,7 +119,7 @@ def score_routing(
 
     hit = miss = spurious = na = 0
     trail: list[CaseTrail] = []
-    for case, observed in zip(cases, observed_skills):
+    for case, observed in zip(cases, observed_skills, strict=False):
         utt = str(_case_field(case, "utt"))
         golden = _case_field(case, "golden")
         acceptable = [g.rstrip("?") for g in _golden_skills(golden)]

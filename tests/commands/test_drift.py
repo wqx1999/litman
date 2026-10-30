@@ -17,6 +17,7 @@ import pytest
 
 from litman.commands import _drift
 from litman.core.library import create_vault
+from litman.core.portable_link import is_portable_link
 from litman.core.vault_registry import (
     VaultEntry,
     VaultRegistry,
@@ -25,8 +26,6 @@ from litman.core.vault_registry import (
     registry_path,
     save_registry,
 )
-from litman.core.portable_link import is_portable_link
-
 
 # ---------------------------------------------------------------------------
 # Registry isolation
@@ -404,13 +403,13 @@ def test_registry_drift_none_status_no_prompt(
     """AC2: when bounded-stat returns None (timeout) for the only entry, the
     registry-drift segment must NOT treat it as dangling — no prompt, no
     mutation."""
-    real, ghost = _seed_two_entries_one_dangling(tmp_path)
+    _real, _ghost = _seed_two_entries_one_dangling(tmp_path)
 
     # Force both entries to "unknown".
     monkeypatch.setattr(
         _drift,
         "_exists_bounded",
-        lambda paths, budget_s=0.5: {p: None for p in paths},
+        lambda paths, budget_s=0.5: dict.fromkeys(paths),
     )
     monkeypatch.setattr(_drift, "_default_tty_probe", lambda: True)
 
@@ -433,12 +432,12 @@ def test_registry_drift_false_status_prompts(
 ) -> None:
     """AC2: a definite False still reaches the prompt (M28 behavior preserved
     through the bounded-stat retrofit)."""
-    real, ghost = _seed_two_entries_one_dangling(tmp_path)
+    _real, ghost = _seed_two_entries_one_dangling(tmp_path)
     monkeypatch.setattr(
         _drift,
         "_exists_bounded",
         lambda paths, budget_s=0.5: {
-            p: (False if p == str(ghost) else True) for p in paths
+            p: p != str(ghost) for p in paths
         },
     )
     monkeypatch.setattr(_drift, "_default_tty_probe", lambda: True)
@@ -542,7 +541,7 @@ def test_project_drift_clean_silent(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     """AC6: all project dirs present → zero output, no mutation."""
-    vault = _seed_active_vault(tmp_path)
+    _seed_active_vault(tmp_path)
     proj = tmp_path / "proj"
     proj.mkdir()
 
@@ -561,7 +560,7 @@ def test_project_drift_none_status_silent(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     """AC5: project dir probe returns None (timeout) → silent skip."""
-    vault = _seed_active_vault(tmp_path)
+    _seed_active_vault(tmp_path)
     proj = tmp_path / "proj"  # not created
 
     _drift.check_and_prompt_project_drift(
@@ -652,7 +651,7 @@ def test_project_drift_multiple_missing_sequential_prompts(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     """Multiple missing projects → one prompt each (all skipped here)."""
-    vault = _seed_active_vault(tmp_path)
+    _seed_active_vault(tmp_path)
     g1 = tmp_path / "g1"
     g2 = tmp_path / "g2"
 
@@ -1150,8 +1149,9 @@ def test_project_drift_tty_heal_preserves_code_symlink(
 
     # Paper carries the code-clone binding (override the empty default).
     _make_paper(vault, "p1", projects=["pepforge"])
-    from litman.core.document import read_metadata
     from ruamel.yaml import YAML
+
+    from litman.core.document import read_metadata
 
     meta_path = vault / "papers" / "p1" / "metadata.yaml"
     meta = read_metadata(meta_path)

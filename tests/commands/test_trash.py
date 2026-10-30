@@ -20,6 +20,7 @@ from ruamel.yaml import YAML
 from litman.cli import cli
 from litman.core import trash as trash_mod
 from litman.core.library import create_vault
+from litman.core.portable_link import is_portable_link
 from litman.core.trash import (
     TRASH_DIRNAME,
     TRASH_MAX_ENTRIES,
@@ -28,7 +29,6 @@ from litman.core.trash import (
     move_to_trash,
 )
 from litman.exceptions import TrashError
-from litman.core.portable_link import is_portable_link
 
 _yaml = YAML(typ="safe")
 
@@ -413,6 +413,47 @@ def test_list_trash_tolerates_missing_sidecar(vault: Path) -> None:
     assert len(entries) == 1
     assert entries[0].paper_id == "2024_Foo"
     assert entries[0].deleted_at == "(unknown)"
+
+
+# A phrase the sidecar has to escape: a backslash or a tab.
+ESCAPED_PHRASES = {
+    "LaTeX": "We fit $\\Delta G$ against $\\log K_d$ for each peptide. ",
+    "a Windows path": "Data in C:\\data\\raw\\train.csv, out in D:\\runs. ",
+    "tabs": "| step\t| value\t| what it means\t",
+}
+
+
+def escaped_notes(phrase: str) -> dict[str, str]:
+    """Notes repeating ``phrase``, each shifted one character further, so a
+    line folded at a fixed column breaks next to every character of it: five
+    repeats for a fold at 80 columns, a hundred for one past 4096."""
+    notes = {}
+    for shift in range(len(phrase)):
+        notes[f"Short{shift}"] = "# notes\n\n" + "x" * shift + phrase * 5 + "\n"
+        notes[f"Long{shift}"] = "# notes\n\n" + "x" * shift + phrase * 100 + "\n"
+    return notes
+
+
+@pytest.mark.parametrize("kind", list(ESCAPED_PHRASES))
+def test_the_trash_keeps_a_deleted_repos_note_as_written(
+    vault: Path, kind: str
+) -> None:
+    """The notes.md of a repo deleted with the paper waits in the sidecar as
+    text; a long line folded there next to a backslash or a tab read back with
+    a space added."""
+    notes = escaped_notes(ESCAPED_PHRASES[kind])
+    _write_paper(vault, "2024_Foo")
+
+    move_to_trash(
+        vault,
+        "2024_Foo",
+        orphan_repos=dict.fromkeys(notes, "https://example.org/r.git"),
+        orphan_repo_files={name: {"notes.md": note} for name, note in notes.items()},
+    )
+
+    (entry,) = list_trash(vault)
+    saved = entry.orphan_repo_files
+    assert [name for name, note in notes.items() if saved[name]["notes.md"] != note] == []
 
 
 # ===========================================================================

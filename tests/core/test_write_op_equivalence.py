@@ -29,6 +29,7 @@ from litman.cli import cli
 from litman.commands.rm import discover_rm_impact, execute_rm
 from litman.core.correctors import reconcile_derived
 from litman.core.library import create_vault
+from litman.core.portable_link import is_portable_link
 from litman.core.project_link import (
     link_paper_to_project,
     unlink_paper_from_project,
@@ -39,7 +40,6 @@ from litman.core.taxonomy import (
     remove_taxonomy_value,
     rename_taxonomy_value,
 )
-from litman.core.portable_link import is_portable_link
 
 # Modules whose namespace holds a reachable ``list_papers`` reference on the
 # write paths under test. ``litman.core.document`` covers every lazy
@@ -156,8 +156,8 @@ def seeded(tmp_path: Path) -> tuple[Path, dict[str, Path]]:
     # TAXONOMY registers the values the taxonomy tests ripple — through the
     # write API (TAXONOMY.md is lock-protected TRUTH; a bare write_text
     # would trip the read-only lock).
-    add_taxonomy_values(vault, "topics", ["deep-learning", "peptides"])
-    add_taxonomy_values(vault, "methods", ["docking"])
+    add_taxonomy_values(vault, "topics", ["deep-learning", "peptides"])  # type: ignore[arg-type]  # a list works as well as the tuple the CLI passes
+    add_taxonomy_values(vault, "methods", ["docking"])  # type: ignore[arg-type]  # a list works as well as the tuple the CLI passes
     _write_paper(
         vault,
         "2020_Alpha_One",

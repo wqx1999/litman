@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { IndexPaper } from '../types'
 import VocabPopover from '../ui/VocabPopover'
+import { IconTrash } from '../ui/icons'
 
 /** Sort presets: the two server-ordered smart-lists plus INDEX-order `all`. */
 export type ListMode = 'all' | 'reading' | 'recent-read'
@@ -102,7 +103,7 @@ interface Dimension {
   order?: readonly string[]
 }
 
-// Status / type are fixed enums (core/checks.py:_FIXED_ENUM_VALUES); pin their
+// Status / type are fixed enums (core/schema.py:_FIXED_ENUM_VALUES); pin their
 // value order to the enum sequence rather than alphabetizing. Topics / methods /
 // data are free controlled-vocabulary lists → alphabetical.
 //
@@ -137,7 +138,7 @@ const DIMENSIONS: readonly Dimension[] = [
   { key: 'data', label: 'Data', kind: 'array' },
 ]
 
-// Keyed on the authoritative status enum (core/checks.py
+// Keyed on the authoritative status enum (core/schema.py
 // _FIXED_ENUM_VALUES["status"]); each value gets a macOS system-colour dot
 // (green / orange / teal / grey) defined as a `--color-status-*` theme token.
 //
@@ -888,23 +889,5 @@ export default function BrowsePanel({
         </div>
       </div>
     </div>
-  )
-}
-
-/** Trash can — the expanded card's "remove paper from library" action. */
-function IconTrash() {
-  return (
-    <svg
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth={1.8}
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      className="h-3.5 w-3.5"
-      aria-hidden
-    >
-      <path d="M4 7h16M9 7V5a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2M6 7l1 13a2 2 0 0 0 2 2h6a2 2 0 0 0 2-2l1-13" />
-    </svg>
   )
 }

@@ -8,7 +8,7 @@ into ``ExecutorResult.skills`` from a live ``Skill`` tool_use.
 from __future__ import annotations
 
 from harness.routing import RoutingResult, score_routing
-from harness.scenarios import load_card, SCENARIOS_DIR
+from harness.scenarios import SCENARIOS_DIR, load_card
 
 
 def _card(cases, in_scope=None):
