@@ -15,8 +15,9 @@ new command code.
 On POSIX the launch is a true ``exec`` (process replacement), so Ctrl-C /
 exit semantics belong to the agent, not a lingering ``lit`` shell; Windows has
 no exec, so it falls back to a child process whose exit code is passed through.
-A desktop-app agent (``kind="app"``) is instead opened at the vault
-(:mod:`litman.core.app_launch`) and the command returns at once.
+A desktop-app agent (``kind="app"``) is instead opened — at the vault, if
+the app takes a folder (:mod:`litman.core.app_launch`) — and the command
+returns at once.
 """
 
 from __future__ import annotations
@@ -58,10 +59,11 @@ def agent_cmd(
     """Start your AI agent in the vault directory.
 
     Runs the agent's command (from the built-in catalog) with the active vault
-    as working directory; a desktop-app agent is opened at the vault instead
-    and the command returns at once. With no NAME it launches the
-    machine-level default agent (set via `lit setup`, the GUI, or
-    `--set-default`); otherwise the named catalog agent.
+    as working directory; a desktop-app agent is opened instead (at the
+    vault, if the app takes a folder) and the command returns at once. With
+    no NAME it launches the machine-level default agent (set via
+    `lit setup`, the GUI, or `--set-default`); otherwise the named catalog
+    agent.
     """
     if set_default is not None:
         try:
@@ -97,7 +99,10 @@ def agent_cmd(
             raise LitmanError(
                 f"{exc} Get {spec.display}: {spec.install_url}"
             ) from exc
-        click.echo(f"Opened {spec.display} at {vault}.")
+        if app_launch.opens_at_vault(spec):
+            click.echo(f"Opened {spec.display} at {vault}.")
+        else:
+            click.echo(f"Opened {spec.display}.")
         return
 
     # Windows installers update the registry PATH, not already-running

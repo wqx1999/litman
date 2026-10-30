@@ -289,11 +289,12 @@ def test_agent_app_not_installed_names_the_download(
     assert "PATH" not in message
 
 
-def test_agent_dsh_on_windows_opens_its_link_and_returns(
+def test_agent_dsh_on_windows_starts_its_exe_and_does_not_claim_the_vault(
     vault: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Through the real app_launch, faked down to the registry and the
-    opener: `lit agent dsh` hands `dsh://open` to Windows and returns."""
+    process start: `lit agent dsh` starts DSH's exe with its bare link and
+    returns. DSH reopens its last session, so the line names no vault."""
     from litman.core import app_launch
 
     exe = tmp_path / "dsh" / "DeepSeek Harness.exe"
@@ -303,19 +304,21 @@ def test_agent_dsh_on_windows_opens_its_link_and_returns(
     monkeypatch.setattr(
         app_launch, "_read_scheme_command", lambda _scheme: f'"{exe}" "%1"'
     )
-    opened: list[str] = []
-    monkeypatch.setattr(app_launch, "_startfile", opened.append)
+    started: list[list[str]] = []
+    monkeypatch.setattr(
+        app_launch, "_popen_detached_windows", lambda argv, _env: started.append(argv)
+    )
     monkeypatch.setattr(
         app_launch,
-        "_popen_detached_windows",
-        lambda *_a: pytest.fail("DSH takes no exe arguments"),
+        "_startfile",
+        lambda _url: pytest.fail("the system opener lets DSH log into our console"),
     )
 
     result = CliRunner().invoke(agent_cmd, ["dsh", "--library", str(vault)])
 
     assert result.exit_code == 0, result.output
-    assert opened == ["dsh://open"]
-    assert result.output.replace("\n", "") == f"Opened DeepSeek Harness at {vault}."
+    assert started == [[str(exe), "dsh://open"]]
+    assert result.output == "Opened DeepSeek Harness.\n"
 
 
 def test_agent_dsh_never_opened_names_the_download(

@@ -412,7 +412,7 @@ def test_a_start_that_fails_reads_as_not_found(
 DSH = agents.get_agent("dsh")
 
 
-def _registered_dsh(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+def _registered_dsh(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Path:
     """The open command DSH writes for its link on its first start."""
     exe = tmp_path / "dsh" / "DeepSeek Harness.exe"
     exe.parent.mkdir(parents=True)
@@ -422,20 +422,27 @@ def _registered_dsh(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
         "_read_scheme_command",
         lambda scheme: f'"{exe}" "%1"' if scheme == "dsh" else None,
     )
+    return exe
 
 
-def test_dsh_on_windows_hands_its_bare_link_to_the_system(
+def test_dsh_on_windows_starts_its_exe_with_the_bare_link_without_a_console(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, started: list
 ) -> None:
-    """Registered, so installed; opened through the link, not the exe, and the
-    vault goes nowhere: DSH reopens its last session."""
+    """Registered, so installed; its exe gets the link as the registry's "%1"
+    would, through the start that keeps the app out of our console (handed to
+    the system opener, it logs there). The vault goes nowhere: DSH reopens its
+    last session."""
     _on(monkeypatch, "win32")
-    _registered_dsh(monkeypatch, tmp_path)
+    exe = _registered_dsh(monkeypatch, tmp_path)
     assert app_launch.app_installed(DSH) is True
 
     app_launch.open_app(DSH, tmp_path / "lit 测试 库")
 
-    assert started == [("startfile", "dsh://open")]
+    assert len(started) == 1
+    kind, (argv, env) = started[0]
+    assert kind == "popen"
+    assert argv == [str(exe), "dsh://open"]
+    assert env["ELECTRON_NO_ATTACH_CONSOLE"] == "1"
 
 
 def test_dsh_on_windows_never_opened_is_not_found(
@@ -485,3 +492,13 @@ def test_dsh_on_linux_is_not_installed(
     with pytest.raises(app_launch.AppNotFound, match="hasn't been opened yet"):
         app_launch.open_app(DSH, tmp_path / "vault")
     assert started == []
+
+
+def test_only_an_app_whose_link_or_arguments_name_the_vault_opens_at_it() -> None:
+    """What `lit agent` may claim: "at <vault>" only when the vault is passed on."""
+    assert app_launch.opens_at_vault(ZCODE) is True
+    assert app_launch.opens_at_vault(DSH) is False
+    assert app_launch.opens_at_vault(dataclasses.replace(DSH, app_args=("{vault}",)))
+    assert app_launch.opens_at_vault(
+        dataclasses.replace(DSH, open_url="dsh://open?path={vault}")
+    )

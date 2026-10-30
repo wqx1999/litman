@@ -826,11 +826,12 @@ def test_status_never_leaks_the_app_exe_path(
     assert "ZCode.exe" not in resp.text
 
 
-def test_launch_dsh_on_windows_opens_its_link(
+def test_launch_dsh_on_windows_starts_its_exe_with_its_link(
     vault: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Clicking DeepSeek Harness in the picker: the real app_launch, faked down
-    to the registry and the opener, hands `dsh://open` to Windows."""
+    to the registry and the process start, starts DSH's exe with `dsh://open`
+    and keeps it out of the server's console."""
     from litman.core import app_launch
 
     exe = tmp_path / "dsh" / "DeepSeek Harness.exe"
@@ -840,8 +841,17 @@ def test_launch_dsh_on_windows_opens_its_link(
     monkeypatch.setattr(
         app_launch, "_read_scheme_command", lambda _scheme: f'"{exe}" "%1"'
     )
-    opened: list[str] = []
-    monkeypatch.setattr(app_launch, "_startfile", opened.append)
+    started: list[tuple[list[str], dict[str, str]]] = []
+    monkeypatch.setattr(
+        app_launch,
+        "_popen_detached_windows",
+        lambda argv, env: started.append((argv, env)),
+    )
+    monkeypatch.setattr(
+        app_launch,
+        "_startfile",
+        lambda _url: pytest.fail("the system opener lets DSH log into our console"),
+    )
 
     resp = _client(vault).post("/api/agent/launch", json={"agent": "dsh"})
 
@@ -853,7 +863,9 @@ def test_launch_dsh_on_windows_opens_its_link(
         "command": "",
         "permission_warning": None,
     }
-    assert opened == ["dsh://open"]
+    [(argv, env)] = started
+    assert argv == [str(exe), "dsh://open"]
+    assert env["ELECTRON_NO_ATTACH_CONSOLE"] == "1"
 
 
 def test_put_default_dsh_on_linux_is_409(

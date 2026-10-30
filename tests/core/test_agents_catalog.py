@@ -106,15 +106,16 @@ def test_zcode_is_a_desktop_app_row() -> None:
 
 
 def test_dsh_is_a_desktop_app_row_opened_by_its_bare_link() -> None:
-    """DeepSeek Harness takes no folder: no exe arguments, and a link with no
-    vault in it — it reopens its last session. It runs lit under its default
-    approvals, so there is no hint to show either."""
+    """DeepSeek Harness takes no folder: its exe gets the bare link, as its
+    registered open command would, and the link has no vault in it — it
+    reopens its last session. It runs lit under its default approvals, so
+    there is no hint to show either."""
     dsh = get_agent("dsh")
     assert dsh.display == "DeepSeek Harness"
     assert dsh.kind == "app"
     assert dsh.install_url == "https://www.deepseek.com/harness/"
     assert dsh.url_scheme == "dsh"
-    assert dsh.app_args == ()
+    assert dsh.app_args == ("dsh://open",)
     assert dsh.open_url == "dsh://open"
     assert dsh.mac_bundle == "DeepSeek Harness.app"
     assert dsh.permission_hint is None

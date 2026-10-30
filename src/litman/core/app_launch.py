@@ -19,9 +19,9 @@ platform finds the app:
   run because, finding nothing (most users have no such app), it greps every
   ``.desktop`` file — 8 s on a network filesystem, on each status check.
 
-On Windows, an exe plus an ``app_args`` template starts the exe straight at
-the vault. Everywhere else the vault link goes to the system opener; the app
-may ask the user to confirm it.
+On Windows, an exe plus an ``app_args`` template starts the exe directly,
+at the vault when the template names it. Everywhere else the app's link goes
+to the system opener; the app may ask the user to confirm it.
 """
 
 from __future__ import annotations
@@ -236,6 +236,15 @@ def workspace_url(spec: AgentSpec, vault: Path) -> str:
 def app_argv(spec: AgentSpec, exe: Path, vault: Path) -> list[str]:
     """The exe plus its argument template, the vault as one argument."""
     return [str(exe), *(arg.replace("{vault}", str(vault)) for arg in spec.app_args)]
+
+
+def opens_at_vault(spec: AgentSpec) -> bool:
+    """Does opening the app pass it the vault? Only when its link or an exe
+    argument has ``{vault}`` in it; an app taking no folder opens where it
+    was last used."""
+    return "{vault}" in (spec.open_url or "") or any(
+        "{vault}" in arg for arg in spec.app_args
+    )
 
 
 def app_installed(spec: AgentSpec) -> bool:

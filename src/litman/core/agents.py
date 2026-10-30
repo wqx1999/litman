@@ -252,8 +252,11 @@ AGENTS: tuple[AgentSpec, ...] = (
         skills_dir=lambda: skill.standard_skills_parent_dir(),
         kind="app",
         url_scheme="dsh",
-        # DSH takes no folder: neither an exe argument nor a link names one,
-        # so it opens where it was last used.
+        # Its link, passed to the exe as its registered open command does:
+        # started through the exe, the app stays out of our console (handed
+        # to the system opener, it logs there). No vault in either, as DSH
+        # takes no folder and reopens its last session.
+        app_args=("dsh://open",),
         open_url="dsh://open",
         mac_bundle="DeepSeek Harness.app",
     ),
