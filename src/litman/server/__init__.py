@@ -27,6 +27,7 @@ from litman.core.presence import PresenceTracker
 from litman.exceptions import (
     ConfigError,
     CorruptMetadataError,
+    LitmanError,
     UnreadableTaxonomyError,
 )
 from litman.server import peer_owner
@@ -332,7 +333,13 @@ def create_app(vault: Path | None) -> FastAPI:
     app.add_middleware(LocalPageGuard)
     # Open the guard's kernel lookup now, before the server opens its port: a
     # client cannot be using up the server's file descriptors yet.
-    peer_owner.sock_diag()
+    try:
+        peer_owner.sock_diag()
+    except OSError as error:
+        raise LitmanError(
+            "lit gui could not set up its check on which user is connecting. "
+            "Try again in a moment."
+        ) from error
 
     @app.exception_handler(CorruptMetadataError)
     async def _corrupt_metadata(request: Request, exc: CorruptMetadataError) -> JSONResponse:

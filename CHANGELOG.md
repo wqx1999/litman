@@ -159,11 +159,13 @@ own entry. Read those before you upgrade, whatever the number says.
 
 ### Security
 
-- **Other users of the same machine can no longer use your `lit gui`.** On a
-  shared Linux machine, such as an HPC login node, anyone logged in could send
-  requests to the web UI's port and read or change your library. litman now
-  refuses requests from other users' programs. The web UI, the command line
-  and `ssh -L` tunnels work as before. Windows and macOS are unchanged.
+- **On Linux, `lit gui` refuses requests from other users of the same
+  machine, wherever the kernel can say who sent them.** On a shared machine,
+  such as an HPC login node, anyone logged in could send requests to the web
+  UI's port and read or change your library. Your own web UI, command line and
+  `ssh -L` tunnels work as before. The check does not run on Windows or macOS,
+  nor on a Linux kernel that cannot tell users apart (no `tcp_diag`, or a user
+  namespace that maps no uids); there `lit gui` behaves as before.
 
 ## 1.3.9 — 2026-10-28
 

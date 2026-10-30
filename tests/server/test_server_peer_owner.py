@@ -5,7 +5,9 @@ connection (``peer_owner``) and lets in only the server's own user and root.
 A client that hung up before it could be identified is refused too: its
 request would still run, so that is how another user would write blind. So is
 one whose lookup failed where the kernel can be asked. Wherever nobody can
-tell — Windows, macOS, the test client — everything passes as before.
+tell — Windows, macOS, the test client — everything passes as before. A server
+that could not find out which, because another user held every free port, does
+not start.
 
 The rule is pinned on a fake kernel table, the kernel's answer on hand-built
 bytes, the netlink conversation on a fake netlink socket, and the refusal on a
@@ -46,6 +48,7 @@ from starlette.routing import Route
 from starlette.websockets import WebSocketDisconnect
 
 from litman.core.library import create_vault
+from litman.exceptions import LitmanError
 from litman.server import create_app, peer_owner
 from litman.server.local_guard import LocalPageGuard
 from litman.server.peer_owner import (
@@ -58,6 +61,7 @@ from litman.server.peer_owner import (
     Socket,
     allowed,
     answers_for_tcp,
+    open_sock_diag,
     owner,
     parse_reply,
     uid_mapped,
@@ -374,6 +378,86 @@ def test_a_kernel_without_tcp_diag_cannot_tell() -> None:
     assert answers_for_tcp(SockDiag(FakeNetlink({}))) is False  # type: ignore[arg-type]
 
 
+def test_a_kernel_that_answers_with_an_error_cannot_tell() -> None:
+    """Refused by a sandbox, or not understood: the kernel's own answer, which
+    no other user can bring about."""
+    netlink = FakeNetlink({0: _error(errno.EPERM)})
+    assert answers_for_tcp(SockDiag(netlink)) is False  # type: ignore[arg-type]
+
+
+class SilentNetlink(FakeNetlink):
+    def recvfrom(self, size: int) -> tuple[bytes, tuple[int, int]]:
+        raise TimeoutError("timed out")
+
+
+def _no_free_port(*args: Any, **kwargs: Any) -> socket.socket:
+    raise OSError(errno.EADDRINUSE, "Address already in use")
+
+
+@pytest.mark.parametrize("why", ["no free port", "no answer in time"])
+def test_a_test_that_could_not_be_made_is_an_error(
+    monkeypatch: pytest.MonkeyPatch, why: str
+) -> None:
+    """Not "this kernel cannot tell": another user can hold every free port
+    while the server starts, and that would let everyone in."""
+    if why == "no free port":
+        monkeypatch.setattr(socket, "create_server", _no_free_port)
+    with pytest.raises(OSError):
+        answers_for_tcp(SockDiag(SilentNetlink({})))  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize(
+    ("error", "cannot_tell"),
+    [
+        pytest.param(errno.EPROTONOSUPPORT, True, id="no sock_diag"),
+        pytest.param(errno.EACCES, True, id="sandbox says no"),
+        pytest.param(errno.EMFILE, False, id="out of descriptors"),
+        pytest.param(errno.ENOBUFS, False, id="out of memory"),
+    ],
+)
+def test_a_netlink_socket_that_will_not_open(
+    monkeypatch: pytest.MonkeyPatch, error: int, cannot_tell: bool
+) -> None:
+    """Refused by the kernel or a sandbox, it never will: nobody can tell.
+    Out of descriptors or memory, it may next time."""
+
+    def will_not_open(*args: Any, **kwargs: Any) -> socket.socket:
+        raise OSError(error, os.strerror(error))
+
+    monkeypatch.setattr(socket, "AF_NETLINK", 16, raising=False)
+    monkeypatch.setattr(peer_owner, "uid_mapped", lambda uid_map, uid: True)
+    monkeypatch.setattr(socket, "socket", will_not_open)
+    if cannot_tell:
+        assert open_sock_diag() is None
+    else:
+        with pytest.raises(OSError):
+            open_sock_diag()
+
+
+def test_a_server_that_could_not_find_out_does_not_start(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Read as "nobody can tell", the failed test let every request through
+    for the server's life, with no word to anyone."""
+
+    def no_free_port() -> SockDiag | None:
+        raise OSError(errno.EADDRINUSE, "Address already in use")
+
+    monkeypatch.setattr(peer_owner, "_opened", False)
+    monkeypatch.setattr(peer_owner, "_diag", None)
+    monkeypatch.setattr(peer_owner, "open_sock_diag", no_free_port)
+    with pytest.raises(LitmanError) as refused:
+        create_app(None)
+    message = str(refused.value)
+    assert message == (
+        "lit gui could not set up its check on which user is connecting. Try again in a moment."
+    )
+    assert len(message) <= 120
+    # Asked again next time; a guard that asks in the meantime refuses.
+    assert peer_owner._opened is False
+    assert owner(CLIENT, SERVER) == FAILED
+
+
 # --- The refusal, from a guard handed a fake owner --------------------------
 
 
@@ -586,6 +670,70 @@ def test_the_app_opens_the_lookup_before_the_port_is_open() -> None:
         [sys.executable, "-c", script], capture_output=True, text=True, timeout=60
     )
     assert run.stdout.split() == ["True"], run.stderr
+
+
+@pytest.mark.skipif(KERNEL is None, reason=CANNOT_TELL)
+def test_another_connection_to_the_tests_port_does_not_fool_it(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Another user who connects to the test's port first is the one
+    ``accept`` hands back; looked up, that is not this process's socket, and
+    the machine read as one that cannot tell."""
+    real = socket.create_connection
+    decoys: list[socket.socket] = []
+
+    def a_decoy_first(address: Any, *args: Any, **kwargs: Any) -> socket.socket:
+        decoys.append(real(address))
+        return real(address, *args, **kwargs)
+
+    monkeypatch.setattr(socket, "create_connection", a_decoy_first)
+    try:
+        assert answers_for_tcp(KERNEL) is True
+    finally:
+        for decoy in decoys:
+            decoy.close()
+    assert decoys
+
+
+@pytest.mark.skipif(KERNEL is None, reason=CANNOT_TELL)
+def test_a_server_started_while_every_free_port_is_held_asks_again() -> None:
+    """On the real kernel, in a network namespace of its own with two free
+    ports, both held: the test cannot be made. Once they are let go, it can."""
+    script = textwrap.dedent(
+        """
+        import fcntl, socket, struct
+        from pathlib import Path
+        from litman.server import peer_owner
+
+        with socket.socket() as sock:  # a new namespace's lo is down
+            name = struct.pack("16sH22x", b"lo", 0)
+            flags = struct.unpack_from("16sH", fcntl.ioctl(sock, 0x8913, name))[1]
+            fcntl.ioctl(sock, 0x8914, struct.pack("16sH22x", b"lo", flags | 1))
+        Path("/proc/sys/net/ipv4/ip_local_port_range").write_text("40000 40001")
+        held = [socket.socket(), socket.socket()]
+        for sock, port in zip(held, (40000, 40001)):
+            sock.bind(("0.0.0.0", port))
+        try:
+            peer_owner.sock_diag()
+        except OSError:
+            print("refused", peer_owner._opened)
+        for sock in held:
+            sock.close()
+        print("then", peer_owner.sock_diag() is not None)
+        """
+    )
+    try:
+        run = subprocess.run(
+            ["unshare", "-rn", sys.executable, "-c", script],
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+    except OSError:
+        pytest.skip("no unshare here")
+    if run.returncode != 0 and "unshare:" in run.stderr:
+        pytest.skip(f"no user and network namespaces here: {run.stderr.strip()}")
+    assert run.stdout.split() == ["refused", "False", "then", "True"], run.stderr
 
 
 def _post(port: int, path: str) -> bytes:

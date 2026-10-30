@@ -1570,6 +1570,11 @@ def gui_cmd(
             raise
         vault = None
 
+    # Keep the app reference: the window watcher reads the presence tracker
+    # off app.state (created unconditionally by create_app). Made before the
+    # URL is printed: it can still refuse to start.
+    app = create_app(vault)
+
     actual_port = _find_free_port(port if port is not None else _DEFAULT_PORT)
     user = getpass.getuser()
     host = socket.gethostname()
@@ -1591,9 +1596,6 @@ def gui_cmd(
             f"  ssh -L {actual_port}:localhost:{actual_port} {user}@{host}"
         )
 
-    # Keep the app reference: the window watcher reads the presence tracker
-    # off app.state (created unconditionally by create_app).
-    app = create_app(vault)
     server = uvicorn.Server(
         # No proxy headers: the guard identifies the connection's real other
         # end, which an X-Forwarded-For line would otherwise replace.

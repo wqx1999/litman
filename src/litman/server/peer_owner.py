@@ -11,8 +11,11 @@ take a port over the moment it is freed.
 
 Whether this machine can be asked is settled once, before the server opens
 its port (``sock_diag``): the kernel must find a connection this process makes
-to itself, as this process's. The netlink socket that found it is then kept for
-the server's life, so a lookup needs no new file descriptor.
+to itself, as this process's. Only the kernel's own answer settles it. A test
+that could not be made — another user can hold every free port for a moment —
+raises instead, and the server does not start: read as "nobody can tell", it
+would let everyone in for the server's life. The netlink socket that found it
+is then kept for the server's life, so a lookup needs no new file descriptor.
 
 ``owner()`` answers with the client's uid, or with one of three words:
 
@@ -91,6 +94,10 @@ _TIMEOUT_S = 0.5
 
 # The server's own user; ``None`` where the platform has no uids (Windows).
 _SERVER_UID: int | None = os.geteuid() if hasattr(os, "geteuid") else None
+
+# A netlink socket that failed to open for one of these may open next time:
+# not "nobody can tell".
+_OUT_OF_RESOURCES = frozenset({errno.EMFILE, errno.ENFILE, errno.ENOBUFS, errno.ENOMEM})
 
 
 def _is_ipv4(host: str) -> bool:
@@ -183,19 +190,24 @@ class SockDiag:
 def answers_for_tcp(diag: SockDiag) -> bool:
     """Whether ``diag`` finds a connection this process makes to itself, as
     this process's. Without ``tcp_diag`` the kernel finds no TCP socket at all,
-    and every client would read as gone — the server's own user included."""
-    try:
-        with socket.create_server(("127.0.0.1", 0)) as listener:
-            listener.settimeout(_TIMEOUT_S)
-            server = listener.getsockname()
-            with socket.create_connection(server, timeout=_TIMEOUT_S) as client_end:
-                accepted, client = listener.accept()
-                with accepted:
-                    inode = os.fstat(client_end.fileno()).st_ino
-                    mine = Socket(TCP_ESTABLISHED, os.geteuid(), inode)
-                    return diag.lookup(client, server) == mine
-    except OSError:
-        return False
+    and every client would read as gone — the server's own user included.
+
+    ``OSError`` when the test could not be made: no free port, or no answer in
+    time. An error the kernel answers with is its answer. The connection is
+    looked up by its own end's address, not by the one ``accept`` hands back:
+    another user may connect to the test's port first."""
+    with socket.create_server(("127.0.0.1", 0)) as listener:
+        server = listener.getsockname()
+        with socket.create_connection(server, timeout=_TIMEOUT_S) as client_end:
+            inode = os.fstat(client_end.fileno()).st_ino
+            mine = Socket(TCP_ESTABLISHED, os.geteuid(), inode)
+            try:
+                found = diag.lookup(client_end.getsockname(), server)
+            except TimeoutError:
+                raise
+            except OSError:
+                return False
+            return found == mine
 
 
 def uid_mapped(uid_map: str, uid: int) -> bool:
@@ -210,7 +222,8 @@ def uid_mapped(uid_map: str, uid: int) -> bool:
 
 
 def open_sock_diag() -> SockDiag | None:
-    """The kernel's lookup, or ``None`` where it cannot tell users apart."""
+    """The kernel's lookup, or ``None`` where it cannot tell users apart;
+    ``OSError`` when that could not be found out this time."""
     family = getattr(socket, "AF_NETLINK", None)
     if family is None:
         return None
@@ -222,14 +235,20 @@ def open_sock_diag() -> SockDiag | None:
         return None
     try:
         netlink = socket.socket(family, socket.SOCK_RAW, _NETLINK_SOCK_DIAG)
-    except OSError:
+    except OSError as error:
+        if error.errno in _OUT_OF_RESOURCES:
+            raise
         return None
     netlink.settimeout(_TIMEOUT_S)
     diag = SockDiag(netlink)
-    if not answers_for_tcp(diag):
+    try:
+        if answers_for_tcp(diag):
+            return diag
+    except OSError:
         netlink.close()
-        return None
-    return diag
+        raise
+    netlink.close()
+    return None
 
 
 _opened = False
@@ -238,9 +257,9 @@ _open_lock = threading.Lock()
 
 
 def sock_diag() -> SockDiag | None:
-    """This process's ``open_sock_diag()``, opened on first use. The server asks
-    before it opens its port: no client can be using up its file descriptors
-    yet."""
+    """This process's ``open_sock_diag()``, opened on first use and asked again
+    after an ``OSError``. The server asks before it opens its port: no client
+    can be using up its file descriptors yet."""
     global _opened, _diag
     with _open_lock:
         if not _opened:

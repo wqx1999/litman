@@ -989,8 +989,8 @@ See [3-concepts.md](3-concepts.md) §1.4 for what each config field controls.
 Launch the litman Web UI — a localhost browser app for browsing, reading PDFs,
 annotating, and everyday curation. It serves the active vault and binds
 `127.0.0.1` only and answers only its own page: requests sent by other
-websites are refused, and on Linux so are requests from other users of the
-same machine. When your session has a display, the UI also opens in
+websites are refused, and on Linux, wherever the kernel can tell users apart,
+so are requests from other users of the same machine. When your session has a display, the UI also opens in
 your browser automatically; on a headless box (HPC) it never tries — it prints a
 ready-to-paste `ssh -L` tunnel line so you can open the printed URL in your
 local browser. If the default port is busy it walks upward to the next free
