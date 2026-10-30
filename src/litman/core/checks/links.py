@@ -4,6 +4,7 @@ edges), wikilinks in notes, and the views/ link farm against metadata.
 
 from __future__ import annotations
 
+import os
 import re
 from pathlib import Path
 from typing import Any, cast
@@ -12,7 +13,11 @@ from litman.core.checks._base import Issue
 from litman.core.document import library_paper_ids
 from litman.core.id import is_valid_id
 from litman.core.notes import enumerate_markdown_files, parse_wikilink_target
-from litman.core.portable_link import is_portable_link, links_supported
+from litman.core.portable_link import (
+    _os_error_reason,
+    is_portable_link,
+    links_supported,
+)
 from litman.core.relations import (
     RELATION_PAIRS,
     REVERSE_REF_FIELDS,
@@ -461,6 +466,10 @@ def check_views_vs_metadata(
 
     Uses the same ``LIST_VIEW_FIELDS`` / ``SCALAR_VIEW_FIELDS`` /
     ``_safe_name`` mapping as the builder so detection and repair cannot drift.
+
+    A folder in ``views/`` that cannot be read (``chmod 000``, a copy owned by
+    another account) is one ``error`` naming it, and its view goes unchecked;
+    the other views are still checked.
     """
     from litman.core.views import (
         LIST_VIEW_FIELDS,
@@ -473,6 +482,11 @@ def check_views_vs_metadata(
         # No views hub yet — nothing derived to disagree. A first write
         # command / regen creates it.
         return []
+    try:
+        # views/ itself first: every view under it would be named in its place.
+        os.listdir(views_dir)
+    except OSError as err:
+        return [_unreadable_views_folder(vault, err, "views/")]
 
     can_link = links_supported(vault)
 
@@ -495,15 +509,11 @@ def check_views_vs_metadata(
 
     out: list[Issue] = []
     for view_name in (*LIST_VIEW_FIELDS, *SCALAR_VIEW_FIELDS):
-        view_dir = views_dir / view_name
-        on_disk: set[tuple[str, str]] = set()
-        if view_dir.is_dir():
-            for bucket in view_dir.iterdir():
-                if not bucket.is_dir():
-                    continue
-                for entry in bucket.iterdir():
-                    if is_portable_link(entry):
-                        on_disk.add((bucket.name, entry.name))
+        try:
+            on_disk = _view_links_on_disk(views_dir / view_name)
+        except OSError as err:
+            out.append(_unreadable_views_folder(vault, err, f"views/{view_name}/"))
+            continue
 
         for bucket_name, pid in sorted(on_disk - expected[view_name]):
             out.append(
@@ -547,3 +557,36 @@ def check_views_vs_metadata(
                 )
             )
     return out
+
+
+def _view_links_on_disk(view_dir: Path) -> set[tuple[str, str]]:
+    """``(bucket, paper_id)`` for each link in ``view_dir``. Raises
+    ``OSError`` when a folder in it cannot be read."""
+    on_disk: set[tuple[str, str]] = set()
+    if view_dir.is_dir():
+        for bucket in view_dir.iterdir():
+            if not bucket.is_dir():
+                continue
+            for entry in bucket.iterdir():
+                if is_portable_link(entry):
+                    on_disk.add((bucket.name, entry.name))
+    return on_disk
+
+
+def _unreadable_views_folder(vault: Path, err: OSError, folder: str) -> Issue:
+    """The finding for a folder in ``views/`` that cannot be read: the one
+    the error names, else ``folder``."""
+    try:
+        folder = Path(err.filename).relative_to(vault).as_posix() + "/"
+    except (TypeError, ValueError):
+        pass
+    return Issue(
+        category="views_vs_metadata",
+        severity="error",
+        paper_id=None,
+        message=(
+            f"{folder} cannot be read ({_os_error_reason(err)}), "
+            "so it was not checked"
+        ),
+        hint="make it readable, then run `lit health-check --fix`",
+    )

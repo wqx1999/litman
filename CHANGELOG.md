@@ -103,6 +103,11 @@ own entry. Read those before you upgrade, whatever the number says.
   update in one line, and `lit health-check` reports that view until the
   folder takes changes again. A rebuild leaves the links in `views/` that are
   already right as they are.
+- **`lit health-check` names a folder in `views/` it cannot read.** When
+  `views/`, one of its views or a bucket could not be read (`chmod 000`, or a
+  copy owned by another account), `lit health-check` stopped with a Python
+  error and the web UI's health panel answered with a server error. It now
+  names that folder and checks the other views.
 - **"could not clear" also says to make the folder writable.** When a real
   folder sat where a project link belongs and could not be removed, the hint
   said only to close whatever was using it, also when the folder itself did
