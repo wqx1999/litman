@@ -91,7 +91,9 @@ own entry. Read those before you upgrade, whatever the number says.
   `lit project rm` names the folder to clear by hand. Rebuilding a project
   folder also leaves the links and `REFERENCES.md` that are already right as
   they are, so a read-only folder in order raises nothing;
-  `REFERENCES.md`'s "Last updated" is now when its list last changed.
+  `REFERENCES.md`'s "Last updated" is now when its list last changed. Nor
+  does one such folder keep the project's other folder, or the paper's other
+  projects, from being brought up to date.
 - **A read-only folder in `views/` no longer stops a command.** When a folder
   under the library's `views/` took no changes (`chmod 555` on
   `views/by-status/` or one of its buckets), `lit drop`, `lit modify`,

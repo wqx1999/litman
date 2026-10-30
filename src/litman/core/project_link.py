@@ -637,6 +637,11 @@ def refresh_project_code_links(
 
     Returns ``{project: {"created": [...], "removed": [...]}}`` for the
     projects actually reconciled.
+
+    Raises:
+        OSError: a project's ``litman_code/`` could not be changed (another
+            account's, a read-only mount); the first such error, once every
+            other project has been reconciled.
     """
     papers = list_papers(vault)
     projects = _paper_projects(papers, paper_id)
@@ -646,6 +651,7 @@ def refresh_project_code_links(
     if registry is None:
         return {}
     out: dict[str, dict[str, list[str]]] = {}
+    first_error: OSError | None = None
     for project in projects:
         project_dir_str = registry.get(project)
         if not project_dir_str:
@@ -653,9 +659,15 @@ def refresh_project_code_links(
         project_dir = Path(project_dir_str).expanduser()
         if not project_dir.is_dir():
             continue
-        out[project] = reconcile_project_code_links(
-            vault, project, project_dir, papers
-        )
+        try:
+            out[project] = reconcile_project_code_links(
+                vault, project, project_dir, papers
+            )
+        except OSError as err:
+            if first_error is None:
+                first_error = err
+    if first_error is not None:
+        raise first_error
     return out
 
 
@@ -1551,9 +1563,12 @@ def _rebuild_project_hubs(
     there: wipe both hubs (a link already pointing where it should stays),
     re-create the links, re-render REFERENCES.md.
 
-    Returns ``(n_paper_links, n_code_links, n_replaced_copies)``. A folder it
-    moves out of the user's directory goes into ``aside_paths`` as it happens,
-    so the caller still reports it when an ``OSError`` cuts the rest short.
+    Returns ``(n_paper_links, n_code_links, n_replaced_copies)``. A hub that
+    takes no change (another account's, a read-only mount) is left at its
+    first ``OSError``; the other hub and REFERENCES.md are still brought up to
+    date, and then that error is raised. A folder it moves out of the user's
+    directory goes into ``aside_paths`` as it happens, so the caller still
+    reports it then.
     """
     # Wipe the symlink hubs so stale entries from prior runs disappear.
     # Whatever is NOT a link gets settled here (an expanded copy is
@@ -1566,35 +1581,40 @@ def _rebuild_project_hubs(
     wanted = dict(planned)
     blocked: set[Path] = set()
     n_replaced_copies = 0
+    # The first OSError of each hub, in the order they came.
+    hub_errors: dict[str, OSError] = {}
     for sub in (LITERATURE_SUBDIR, CODE_SUBDIR):
         sub_dir = project_dir / sub
-        if not sub_dir.exists():
-            sub_dir.mkdir(exist_ok=True)
-            continue
-        # sorted() drains the scandir generator before the settling
-        # starts removing entries out from under it.
-        for child in sorted(sub_dir.iterdir()):
-            target = wanted.get(child)
-            if target is not None and link_points_at(child, target):
+        try:
+            if not sub_dir.exists():
+                sub_dir.mkdir(exist_ok=True)
                 continue
-            if remove_link_if_present(child):
-                continue
-            settled = settle_hub_entry(
-                child,
-                _hub_target(vault, sub, child.name),
-                vault=vault,
-                project=project,
-                hub=sub,
-            )
-            if settled.verdict == "replaced-copy":
-                n_replaced_copies += 1
-            elif settled.verdict == "moved-aside":
-                aside_paths.append(str(settled.moved_to))
-            elif settled.position_occupied:
-                # Still a real folder here. Skipping the upsert keeps the
-                # create loop from adding a second warning about a
-                # position the user has already been told about.
-                blocked.add(child)
+            # sorted() drains the scandir generator before the settling
+            # starts removing entries out from under it.
+            for child in sorted(sub_dir.iterdir()):
+                target = wanted.get(child)
+                if target is not None and link_points_at(child, target):
+                    continue
+                if remove_link_if_present(child):
+                    continue
+                settled = settle_hub_entry(
+                    child,
+                    _hub_target(vault, sub, child.name),
+                    vault=vault,
+                    project=project,
+                    hub=sub,
+                )
+                if settled.verdict == "replaced-copy":
+                    n_replaced_copies += 1
+                elif settled.verdict == "moved-aside":
+                    aside_paths.append(str(settled.moved_to))
+                elif settled.position_occupied:
+                    # Still a real folder here. Skipping the upsert keeps the
+                    # create loop from adding a second warning about a
+                    # position the user has already been told about.
+                    blocked.add(child)
+        except OSError as err:
+            hub_errors[sub] = err
     # Preserve REFERENCES.md across the wipe — it lives in
     # litman_reflib/ alongside the symlinks but is content, not a link
     # (settle_hub_entry leaves every real file where it is).
@@ -1602,14 +1622,29 @@ def _rebuild_project_hubs(
     n_paper_links = 0
     n_code_links = 0
     for link, target in planned:
-        if link not in blocked and make_portable_link(link, target):
-            if link.parent.name == LITERATURE_SUBDIR:
+        sub = link.parent.name
+        if link in blocked or sub in hub_errors:
+            continue
+        try:
+            created = make_portable_link(link, target)
+        except OSError as err:
+            hub_errors[sub] = err
+            continue
+        if created:
+            if sub == LITERATURE_SUBDIR:
                 n_paper_links += 1
             else:
                 n_code_links += 1
 
-    write_references_md(vault, project, project_dir)
+    # Written even when litman_reflib/ took no new link: a file already there
+    # can still be rewritten in a folder chmod made read-only.
+    try:
+        write_references_md(vault, project, project_dir)
+    except OSError as err:
+        hub_errors.setdefault(LITERATURE_SUBDIR, err)
 
+    if hub_errors:
+        raise next(iter(hub_errors.values()))
     return n_paper_links, n_code_links, n_replaced_copies
 
 

@@ -16,12 +16,15 @@ from typing import Any
 
 import pytest
 
+from litman.core.config import load_config
 from litman.core.portable_link import (
     is_portable_link,
+    make_portable_link,
     remove_link_if_present,
     reset_link_probe_cache,
     reset_warning_state,
 )
+from litman.core.project_link import add_project, link_paper_to_project
 from tests._project_folder import (
     ACCESS_DENIED,
     HUBS,
@@ -475,3 +478,86 @@ def test_health_check_on_a_project_folder_chmod_made_read_only(
     assert code == 1, f"{output} {exc!r}"
     assert "litman_reflib link for 'p2' but it is missing" in output
     assert "FAT32" not in output
+
+
+# ---------------------------------------------------------------------------
+# One folder that takes no change does not hold up the others
+# ---------------------------------------------------------------------------
+
+# Per hub that takes no change: the link gone from it, which the rebuild trips
+# on first, and the link gone from the other hub, which it must still put back.
+# A rebuild makes p1, then repoS, then p2.
+TRIPPED_FIRST: dict[str, tuple[str, str, str]] = {
+    "litman_reflib": ("p1", "litman_code", "repoS"),
+    "litman_code": ("repoS", "litman_reflib", "p2"),
+}
+
+
+@pytest.mark.parametrize(
+    "argv",
+    [["link", "--rebuild-all"], ["refresh-views"], ["health-check", "--fix"]],
+    ids=" ".join,
+)
+@pytest.mark.parametrize("change", ["a link to add", "a link to take out"])
+@pytest.mark.parametrize("hub", HUBS)
+def test_a_folder_that_takes_no_change_does_not_hold_up_the_other(
+    lib: Library,
+    monkeypatch: pytest.MonkeyPatch,
+    hub: str,
+    change: str,
+    argv: list[str],
+) -> None:
+    tripped, other, missing = TRIPPED_FIRST[hub]
+    stale = lib.hub(hub) / "stale"
+    if change == "a link to add":
+        assert remove_link_if_present(lib.hub(hub) / tripped)
+    else:
+        # A link to nothing the project has, which a rebuild takes out first.
+        assert make_portable_link(stale, lib.vault / "papers" / "p3")
+    assert remove_link_if_present(lib.hub(other) / missing)
+    references = lib.reflib / "REFERENCES.md"
+    references.write_text("edited by hand\n", encoding="utf-8")
+    with monkeypatch.context() as patch:
+        deny_writes(patch, lib.hub(hub))
+        code, output, exc = run_lit(lib, argv)
+
+    assert code == (1 if argv[0] == "health-check" else 0), f"{output} {exc!r}"
+    assert output.count(LINE) == 1, output
+    assert is_portable_link(lib.hub(other) / missing)
+    if change == "a link to add":
+        assert not is_portable_link(lib.hub(hub) / tripped)
+    else:
+        assert is_portable_link(stale)
+    # Rewritten even in litman_reflib/: a file already there takes changes.
+    assert "edited by hand" not in references.read_text(encoding="utf-8")
+
+    run_lit(lib, ["health-check", "--fix"])
+    assert project_issues(lib) == []
+
+
+@pytest.mark.parametrize("name", ["code unlink", "code link"])
+def test_lit_code_updates_the_next_project_after_one_that_takes_no_change(
+    lib: Library, monkeypatch: pytest.MonkeyPatch, name: str
+) -> None:
+    """p1 (bound to repoS) and p2 are in pp, then in qq: pp's litman_code/
+    refusing the change left qq's as it was."""
+    qq = lib.project_dir.parent / "proj_qq"
+    qq.mkdir()
+    add_project(lib.vault, "qq", qq)
+    for paper_id in ("p1", "p2"):
+        link_paper_to_project(lib.vault, paper_id, "qq", load_config(lib.vault).projects)
+    argv = CODE_COMMANDS[name](lib)
+    with monkeypatch.context() as patch:
+        deny_writes(patch, lib.code_dir)
+        code, output, exc = run_lit(lib, argv)
+
+    assert code == 0, f"{output} {exc!r}"
+    assert output.count(
+        f"warning: could not update a project's litman_code/ folder "
+        f"({ACCESS_DENIED}). Fix that, then run `lit health-check --fix`."
+    ) == 1
+    wanted = {"code unlink": [], "code link": ["repoS", "repoT"]}[name]
+    assert sorted(child.name for child in (qq / "litman_code").iterdir()) == wanted
+
+    run_lit(lib, ["health-check", "--fix"])
+    assert project_issues(lib) == []
