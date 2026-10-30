@@ -134,6 +134,9 @@ own entry. Read those before you upgrade, whatever the number says.
   whole Python traceback, and `lit setup` stopped there. It now names the
   folder and the reason, and `lit setup` lists the shortcut as skipped and
   finishes.
+- **On Windows, `lit gui --make-shortcut` works when `lit` is not on PATH.**
+  It stopped with "Could not locate the `lit` executable", though that was the
+  program running. It now uses the `lit.exe` it was started from.
 - **`lit rm` no longer deletes the only copy of a repo.** A folder added with
   `lit code add --move` exists only in the library. When the paper you deleted
   was the only one using it, `lit rm` deleted the repo too, and restoring the

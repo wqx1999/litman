@@ -834,8 +834,11 @@ def _resolve_lit_executable() -> str:
     if exe:
         return str(Path(exe).resolve())
     argv0 = Path(sys.argv[0]).resolve()
-    if argv0.stem == "lit" and argv0.is_file():
-        return str(argv0)
+    # The entry-point script strips ".exe" from its own argv[0] (pip's and
+    # uv's both do), so on Windows argv[0] names `lit` beside the real lit.exe.
+    for candidate in (argv0, argv0.with_name(argv0.name + ".exe")):
+        if candidate.stem == "lit" and candidate.is_file():
+            return str(candidate)
     raise LitmanError(
         "Could not locate the `lit` executable to embed in the shortcut. "
         "Make sure `lit` is on PATH, then re-run: lit gui --make-shortcut"
@@ -859,7 +862,7 @@ def _shortcut_executable() -> str:
     ugly, not fatal, and a shortcut that fails to exist is worse.
     """
     lit = _resolve_lit_executable()
-    if sys.platform != "win32":
+    if _platform() != "win32":
         return lit
     on_path = shutil.which("litw")
     if on_path:

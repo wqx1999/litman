@@ -1972,6 +1972,55 @@ def test_make_shortcut_win32_falls_back_to_lit_without_the_twin(
     assert f"$s.TargetPath = '{fake_lit_on_path}'" in runs[0][-1]
 
 
+# Off PATH, the shortcut falls back to the lit that is running. Its argv[0]
+# has lost ".exe": the entry-point script strips it (pip's and uv's alike),
+# so on Windows argv[0] names `lit`, next to the real lit.exe.
+
+
+@pytest.fixture
+def lit_off_path(monkeypatch, tmp_path) -> Path:
+    """No lit on PATH; the running lit's argv[0] is ``<tmp>/bin/lit``."""
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    monkeypatch.setattr(shutil, "which", lambda _name: None)
+    monkeypatch.setattr(sys, "argv", [str(bin_dir / "lit"), "gui"])
+    return bin_dir
+
+
+def test_off_path_lit_is_found_by_the_exe_its_argv0_lost(lit_off_path) -> None:
+    (lit_off_path / "lit.exe").write_bytes(b"")
+    assert gui._resolve_lit_executable() == str((lit_off_path / "lit.exe").resolve())
+
+
+def test_off_path_lit_is_its_argv0_when_that_is_the_file(lit_off_path) -> None:
+    (lit_off_path / "lit").write_bytes(b"")
+    assert gui._resolve_lit_executable() == str((lit_off_path / "lit").resolve())
+
+
+def test_off_path_lit_found_nowhere_says_so(lit_off_path) -> None:
+    with pytest.raises(gui.LitmanError, match="Could not locate the `lit` executable"):
+        gui._resolve_lit_executable()
+
+
+def test_off_path_an_exe_beside_another_program_is_not_lit(
+    monkeypatch, lit_off_path
+) -> None:
+    """Run as another program (python -m litman), its own .exe is no lit."""
+    (lit_off_path / "python.exe").write_bytes(b"")
+    monkeypatch.setattr(sys, "argv", [str(lit_off_path / "python"), "gui"])
+    with pytest.raises(gui.LitmanError, match="Could not locate the `lit` executable"):
+        gui._resolve_lit_executable()
+
+
+def test_off_path_windows_shortcut_targets_the_twin_beside_lit_exe(
+    monkeypatch, lit_off_path
+) -> None:
+    monkeypatch.setattr(gui, "_platform", lambda: "win32")
+    (lit_off_path / "lit.exe").write_bytes(b"")
+    (lit_off_path / "litw.exe").write_bytes(b"")
+    assert gui._shortcut_executable() == str((lit_off_path / "litw.exe").resolve())
+
+
 def test_make_shortcut_darwin_builds_app_bundle(
     monkeypatch, tmp_path, fake_lit_on_path
 ) -> None:
