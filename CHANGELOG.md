@@ -167,6 +167,12 @@ own entry. Read those before you upgrade, whatever the number says.
   saved at the delete. It now keeps that one, puts the saved copy beside it as
   `notes.from-trash.md`, and says so; `lit health-check` lists that copy until
   you merge it in and delete it.
+- **A long value with a backslash is kept as you wrote it.** When litman
+  wrote a long value with a backslash or a tab, such as a LaTeX formula
+  (`$\alpha$`) or a Windows path in a paper's `metadata.yaml`, it could read
+  back with a space added: `$\ alpha`. Long values are now written on one
+  line, so each file's layout changes once, the next time litman writes it;
+  the values stay the same.
 
 ### Security
 

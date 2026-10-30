@@ -24,6 +24,7 @@ It is also the one place every YAML file litman writes passes through, so its
 
 from __future__ import annotations
 
+import sys
 import threading
 from typing import Any
 
@@ -39,8 +40,12 @@ class ThreadLocalYAML:
 
     * ``typ="safe"`` for read-only safe loaders, or
     * ``indent`` / ``preserve_quotes`` / ``default_flow_style`` for the
-      comment-preserving round-trip dumpers, and ``width`` for one whose
-      strings must not be folded.
+      comment-preserving round-trip dumpers.
+
+    A dumper writes each string on one line unless given a ``width``. ruamel
+    folds a long double-quoted string at 80 columns, and a fold right after an
+    escape (a backslash, a tab) loses its continuation mark, so the value
+    reads back with a space added: `$\\Delta` comes back as `$\\ Delta`.
 
     Each thread lazily builds and caches its own underlying instance.
     """
@@ -58,6 +63,8 @@ class ThreadLocalYAML:
         self._indent = indent
         self._preserve_quotes = preserve_quotes
         self._default_flow_style = default_flow_style
+        if width is None and typ != "safe":
+            width = sys.maxsize
         self._width = width
         self._local = threading.local()
 

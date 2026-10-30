@@ -103,6 +103,28 @@ def test_put_metadata_set_status_writes_backend_and_reprojects_index(
     assert _index_paper(vault, paper_id)["status"] == "deep-read"
 
 
+def test_put_metadata_title_keeps_its_backslashes(
+    vault_with_paper: tuple[Path, str],
+) -> None:
+    """The metadata editor's title is written as `lit modify` writes it: with
+    an apostrophe, a colon and LaTeX, in double quotes, and folded right after
+    a backslash, it read back as `$\\ alpha`."""
+    vault, paper_id = vault_with_paper
+    client = _client(vault)
+    phrase = "Peptides' helix: $\\alpha$ "
+    changed = []
+    for shift in range(len(phrase)):
+        title = "x" * shift + phrase * 5
+        resp = client.put(
+            f"/api/paper/{paper_id}/metadata", json={"set": {"title": title}}
+        )
+        assert resp.status_code == 200, resp.text
+        if _meta(vault, paper_id)["title"] != title.rstrip():
+            changed.append(shift)
+
+    assert changed == []
+
+
 def test_put_metadata_unset_type(vault_with_paper: tuple[Path, str]) -> None:
     """An empty value unsets an optional fixed enum to null (type)."""
     vault, paper_id = vault_with_paper
