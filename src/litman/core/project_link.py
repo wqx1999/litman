@@ -1106,7 +1106,7 @@ def add_project(vault: Path, name: str, path: Path) -> dict[str, Any]:
     if not path.is_absolute():
         raise TaxonomyError(
             f"Path {str(path)!r} is not absolute. "
-            "Give the full path to the folder, starting from '/'."
+            "Give the full path to the folder."
         )
     path = path.resolve()
     message = refusal(path)
@@ -1409,7 +1409,7 @@ def checked_project_path(new_path: Path) -> Path:
     if not new_path.is_absolute():
         raise TaxonomyError(
             f"Path {str(new_path)!r} is not absolute. "
-            "Give the full path to the folder, starting from '/'."
+            "Give the full path to the folder."
         )
     new_path = new_path.resolve()
     # First: the messages below show the path, and the config cannot hold it.
@@ -1418,8 +1418,7 @@ def checked_project_path(new_path: Path) -> Path:
         raise TaxonomyError(message)
     if not new_path.exists():
         raise TaxonomyError(
-            f"Path {str(new_path)!r} does not exist. "
-            f"Create it first (e.g. `mkdir -p {new_path}`)."
+            f"Path {str(new_path)!r} does not exist. Create it first."
         )
     if not new_path.is_dir():
         raise TaxonomyError(f"Path {str(new_path)!r} is not a directory.")
