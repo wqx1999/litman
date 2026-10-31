@@ -518,22 +518,40 @@ def test_only_an_app_whose_link_or_arguments_name_the_vault_opens_at_it() -> Non
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize("handled", [True, False])
-def test_windows_row_without_args_is_installed_when_its_link_has_a_handler(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, handled: bool
+@pytest.mark.parametrize(
+    ("command", "handled", "installed"),
+    [
+        (r'"C:\Program Files\Claude\Claude.exe" "%1"', False, True),
+        (None, True, True),
+        (None, False, False),
+    ],
+    ids=["only-open-command", "only-handler", "neither"],
+)
+def test_windows_row_without_args_is_installed_on_either_probe(
+    monkeypatch: pytest.MonkeyPatch,
+    command: str | None,
+    handled: bool,
+    installed: bool,
 ) -> None:
-    """The handler decides, whatever the registry's open command says."""
+    """A traditional install has the open command, a packaged one the handler.
+    The command's exe need not exist: this row never starts it."""
+    _on(monkeypatch, "win32")
+    monkeypatch.setattr(app_launch, "_read_scheme_command", lambda _scheme: command)
+    monkeypatch.setattr(app_launch, "_scheme_has_handler", lambda _scheme: handled)
+    assert app_launch.app_installed(CLAUDE) is installed
+
+
+def test_windows_traditional_install_still_opens_through_the_short_lived_child(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, started: list
+) -> None:
+    """An exe on record changes how it is found, not how it is opened."""
     _on(monkeypatch, "win32")
     _registered_exe(monkeypatch, tmp_path)
-    asked: list[str] = []
+    vault = tmp_path / "vault"
 
-    def has_handler(scheme: str) -> bool:
-        asked.append(scheme)
-        return handled
+    app_launch.open_app(CLAUDE, vault)
 
-    monkeypatch.setattr(app_launch, "_scheme_has_handler", has_handler)
-    assert app_launch.app_installed(CLAUDE) is handled
-    assert asked == ["claude"]
+    assert started == [("link", app_launch.workspace_url(CLAUDE, vault))]
 
 
 @pytest.mark.parametrize("name", ["zcode", "dsh"])
