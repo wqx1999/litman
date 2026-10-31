@@ -110,9 +110,8 @@ class AgentSpec:
     skills_dir: Callable[[], Path] | None = None
     # The app's link scheme. On Windows a row with app_args finds the exe from
     # the scheme's registry open command, and a row without counts as installed
-    # on that command or on the system knowing a handler for the scheme; Linux
-    # looks the scheme's handler up in the XDG mimeapps.list / mimeinfo.cache
-    # files.
+    # on that exe or on the system knowing a handler for the scheme; Linux looks
+    # the scheme's handler up in the XDG mimeapps.list / mimeinfo.cache files.
     url_scheme: str | None = None
     # Windows: the exe's arguments; "{vault}" becomes the vault path.
     app_args: tuple[str, ...] = ()

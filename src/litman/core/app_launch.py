@@ -14,9 +14,10 @@ platform finds the app:
   it starts, and that command's first argument is the exe. An app installed but
   never opened has no key yet, which is why "not found" also says "not opened
   yet".
-* Windows, a row without ``app_args``: that key, or failing that the system's
-  answer on whether anything handles the scheme. A packaged app has no such key
-  and no exe to reach; a traditional install has the key.
+* Windows, a row without ``app_args``: that key's exe, or failing that the
+  system's answer on whether anything handles the scheme. A packaged app has no
+  such key and no exe to reach; a traditional install has the key, and can leave
+  it behind when uninstalled, which is why the exe has to exist.
 * macOS: ``<mac_bundle>`` under ``/Applications`` or ``~/Applications``.
 * Linux: a ``mimeapps.list`` or ``mimeinfo.cache`` names a handler for the
   scheme. Those are the files ``xdg-mime query default`` reads first; it is not
@@ -332,14 +333,11 @@ def app_installed(spec: AgentSpec) -> bool:
     if platform == "win32":
         if spec.app_args:
             return windows_exe(spec) is not None
-        # Either probe alone misses an install: a packaged app has no open
-        # command, and a scheme with one can still have no display name
+        # Either probe alone misses an install: a packaged app has no exe on
+        # record, and a scheme with one can still have no display name
         # (measured: ERROR_NOT_FOUND). That error is no yes in itself, as
         # `.txt` returns it too.
-        return (
-            _read_scheme_command(spec.url_scheme) is not None
-            or _scheme_has_handler(spec.url_scheme)
-        )
+        return windows_exe(spec) is not None or _scheme_has_handler(spec.url_scheme)
     if platform == "darwin":
         bundle = spec.mac_bundle
         return bool(bundle) and any((d / cast(str, bundle)).is_dir() for d in _app_dirs())

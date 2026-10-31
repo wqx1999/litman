@@ -519,24 +519,35 @@ def test_only_an_app_whose_link_or_arguments_name_the_vault_opens_at_it() -> Non
 
 
 @pytest.mark.parametrize(
-    ("command", "handled", "installed"),
+    ("exe_exists", "handled", "installed"),
     [
-        (r'"C:\Program Files\Claude\Claude.exe" "%1"', False, True),
+        (True, False, True),
+        (False, False, False),
+        (False, True, True),
         (None, True, True),
         (None, False, False),
     ],
-    ids=["only-open-command", "only-handler", "neither"],
+    ids=[
+        "only-exe",
+        "key-left-behind",
+        "key-left-behind-with-handler",
+        "only-handler",
+        "neither",
+    ],
 )
 def test_windows_row_without_args_is_installed_on_either_probe(
+    tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
-    command: str | None,
+    exe_exists: bool | None,
     handled: bool,
     installed: bool,
 ) -> None:
-    """A traditional install has the open command, a packaged one the handler.
-    The command's exe need not exist: this row never starts it."""
+    """A traditional install has the exe, a packaged one the handler. An open
+    command whose exe is gone is what uninstalling can leave: no install."""
     _on(monkeypatch, "win32")
-    monkeypatch.setattr(app_launch, "_read_scheme_command", lambda _scheme: command)
+    monkeypatch.setattr(app_launch, "_read_scheme_command", lambda _scheme: None)
+    if exe_exists is not None:
+        _registered_exe(monkeypatch, tmp_path, exists=exe_exists)
     monkeypatch.setattr(app_launch, "_scheme_has_handler", lambda _scheme: handled)
     assert app_launch.app_installed(CLAUDE) is installed
 
