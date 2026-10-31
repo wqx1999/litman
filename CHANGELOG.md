@@ -38,6 +38,10 @@ own entry. Read those before you upgrade, whatever the number says.
   `lit agent` or the web UI's button from inside a Claude Code session, the new
   session said `Transcript saving is off` and kept no transcript. It now saves as
   usual.
+- **A mistyped project path is no longer saved.** When `lit` asks where a missing
+  project folder has moved, the answer must now be the full path of an existing
+  folder. Anything else is refused, the project stays as it was, and you are asked
+  again next time.
 
 ## 1.3.10 — 2026-10-30
 

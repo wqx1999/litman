@@ -26,9 +26,9 @@ everywhere, so pressing Enter is always the conservative answer.
 * Registry drift — a new path re-points the registration (``lit vault
   set-path``'s backend, which validates the target is a real vault); ``rm``
   routes to ``lit vault remove``; blank skips.
-* Project drift — a new path heals the binding and rebuilds the derived
-  ``litman_reflib/`` + ``REFERENCES.md``; ``rm`` routes to ``lit project rm``;
-  blank skips.
+* Project drift — a new path (held to the same rules as ``lit project
+  set-path``) heals the binding and rebuilds the derived ``litman_reflib/`` +
+  ``REFERENCES.md``; ``rm`` routes to ``lit project rm``; blank skips.
 
 Non-TTY for either: one stderr warning naming both remedies, zero mutation,
 never blocks automation on a prompt.
@@ -59,6 +59,7 @@ from typing import TYPE_CHECKING, cast
 
 import click
 from rich.console import Console
+from rich.markup import escape
 
 from litman.commands._hub_report import (
     hub_settlement_lines,
@@ -70,6 +71,7 @@ from litman.core.vault_registry import (
     find_active,
     load_registry,
 )
+from litman.exceptions import TaxonomyError
 
 if TYPE_CHECKING:
     from litman.core.config import LitConfig
@@ -123,13 +125,56 @@ def _exists_bounded(
     return result
 
 
+def _checked_new_project_path(reply: str, budget_s: float = 0.5) -> str:
+    """The path a project moves to, from an answer typed at the drift prompt.
+
+    The rules are ``lit project set-path``'s, not a copy of them. They stat the
+    path at several points (``resolve`` / ``exists`` / ``is_dir``), and on a dead
+    mount any of those never returns, so all of them run on one daemon thread
+    under the wall-clock budget of :func:`_exists_bounded`.
+
+    Raises:
+        TaxonomyError: the path breaks those rules, or did not answer in time.
+    """
+    from litman.core.project_link import checked_project_path
+
+    verdict: list[str | TaxonomyError] = []
+
+    def _check() -> None:
+        try:
+            verdict.append(str(checked_project_path(Path(reply).expanduser())))
+        except TaxonomyError as exc:
+            verdict.append(exc)
+        except (OSError, RuntimeError, ValueError) as exc:
+            # No read access, a symlink loop, an unknown ``~user``: this runs
+            # ahead of the user's own command and must not take it down.
+            verdict.append(
+                TaxonomyError(
+                    f"Could not check {reply!r} ({exc}). "
+                    "Give the full path to the folder."
+                )
+            )
+
+    worker = threading.Thread(target=_check, daemon=True)
+    worker.start()
+    worker.join(timeout=budget_s)
+    if not verdict:
+        raise TaxonomyError(
+            f"Could not reach {reply!r} in time. "
+            "If its drive is not mounted yet, mount it first."
+        )
+    if isinstance(verdict[0], TaxonomyError):
+        raise verdict[0]
+    return verdict[0]
+
+
 # The keyword that means "remove this" in BOTH drift prompts. Matched
 # case-insensitively after strip.
 #
-# Known + accepted collision: a directory whose relative name is literally "rm"
-# cannot be given as the new path here. The prompt wants a path that resolves,
-# and a bare relative "rm" was never a usable answer to it — spelling it
-# "./rm" still works.
+# Known + accepted collision, at the vault prompt: a directory whose relative name
+# is literally "rm" cannot be given as the new path there. The prompt wants a path
+# that resolves, and a bare relative "rm" was never a usable answer to it —
+# spelling it "./rm" still works. The project prompt takes only full paths.
 _REMOVE_KEYWORD = "rm"
 
 
@@ -336,9 +381,11 @@ def check_and_prompt_project_drift(
       ``lit project rm`` is an irreversible cascade — so blank = skip, and
       removal has to be asked for by name.
     * TTY → prompt per missing project sequentially, with the same three answers
-      as registry drift. A new path runs the set-path mutation (config-only, via
-      staged_write) then rebuilds ALL projects' links + refs so the
-      litman_reflib at the new location is recreated. ``rm`` routes to
+      as registry drift. A new path has to pass ``lit project set-path``'s rules
+      (a refused one leaves that project as-is and moves on to the next); it
+      then runs the set-path mutation (config-only, via staged_write) and
+      rebuilds ALL projects' links + refs so the litman_reflib at the new
+      location is recreated. ``rm`` routes to
       ``lit project rm`` (its own warning block + y/N). Blank = skip — no
       persistent ignore flag, per the M28 surface-eagerly principle.
     * Non-TTY → one stderr warning listing the missing projects + both
@@ -448,7 +495,13 @@ def check_and_prompt_project_drift(
                 console,
             )
             continue
-        healed[name] = str(Path(reply).expanduser())
+        try:
+            healed[name] = _checked_new_project_path(reply)
+        except TaxonomyError as exc:
+            console.print(f"[red]error:[/] {escape(str(exc))}", soft_wrap=True)
+            console.print(
+                "[dim]Left as-is. You'll be reminded again next time.[/]"
+            )
 
     if not healed:
         return
@@ -496,11 +549,9 @@ def check_and_prompt_project_drift(
     rebuild_all_project_refs(vault, new_projects)
 
     for name in healed:
-        # Only claim a rebuild if it actually happened. A new path that is not
-        # a directory here (typo, or a legitimately not-yet-mounted / other-
-        # machine location per ADR-014) is "skipped" by rebuild_all_*; the
-        # config is updated but litman_reflib is NOT recreated, so the message
-        # must not lie about it.
+        # Only claim a rebuild if it actually happened: a hub can refuse the
+        # change, and the folder can go between the check above and the rebuild
+        # (then the next command asks about it again).
         info = link_status.get(name, {})
         if info.get("status") == "rebuilt":
             console.print(
@@ -508,20 +559,15 @@ def check_and_prompt_project_drift(
                 f"and rebuilt its litman_reflib.",
                 soft_wrap=True,
             )
-        elif info.get("status") == "error":
+        else:
             console.print(
                 f"[green]✓ Updated[/] {name} → {healed[name]}", soft_wrap=True
             )
-            console.print(
-                f"  {project_folder_not_updated(info['error'])}", soft_wrap=True
-            )
-        else:
-            console.print(
-                f"[green]✓ Updated[/] {name} → {healed[name]}[dim] (config only "
-                f"— directory not reachable here yet; run [bold]lit refresh-views"
-                f"[/bold] there to rebuild litman_reflib).[/dim]",
-                soft_wrap=True,
-            )
+            if info.get("status") == "error":
+                console.print(
+                    f"  {project_folder_not_updated(info['error'])}",
+                    soft_wrap=True,
+                )
         # That rebuild can delete a folder copy or move one out of the user's
         # own directory, and it is never silent whichever command triggered it
         # (see commands/_hub_report). This is the likeliest way to meet the

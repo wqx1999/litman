@@ -1396,6 +1396,36 @@ def rename_project(
     return n_changed, referencing, moved_aside_from(derived)
 
 
+def checked_project_path(new_path: Path) -> Path:
+    """The ``resolve()``-normalized form of a path a project may be re-pointed at.
+
+    The rules every re-point goes through (invariant #16): ``new_path`` must be
+    absolute (the server cwd is opaque, so a relative path is rejected rather than
+    resolved — mirrors ``add_project``), already exist, and be a directory.
+
+    Raises:
+        TaxonomyError: ``new_path`` is not absolute / missing / not a directory.
+    """
+    if not new_path.is_absolute():
+        raise TaxonomyError(
+            f"Path {str(new_path)!r} is not absolute. "
+            "Give the full path to the folder, starting from '/'."
+        )
+    new_path = new_path.resolve()
+    # First: the messages below show the path, and the config cannot hold it.
+    message = refusal(new_path)
+    if message is not None:
+        raise TaxonomyError(message)
+    if not new_path.exists():
+        raise TaxonomyError(
+            f"Path {str(new_path)!r} does not exist. "
+            f"Create it first (e.g. `mkdir -p {new_path}`)."
+        )
+    if not new_path.is_dir():
+        raise TaxonomyError(f"Path {str(new_path)!r} is not a directory.")
+    return new_path
+
+
 def set_project_path(vault: Path, name: str, new_path: Path) -> dict[str, Any]:
     """Change a project's on-disk path (config-only — papers store names).
 
@@ -1408,9 +1438,7 @@ def set_project_path(vault: Path, name: str, new_path: Path) -> dict[str, Any]:
     ``lit link --rebuild-all`` / the GUI's rebuild-views action), matching the CLI
     exactly so both paths behave identically.
 
-    ``new_path`` must be absolute (the server cwd is opaque, so a relative path is
-    rejected rather than resolved — mirrors ``add_project``), already exist, and
-    be a directory; it is then ``resolve()``-normalized.
+    ``new_path`` has to pass :func:`checked_project_path`.
 
     Returns:
         ``{"name": ..., "path": str(new_path), "changed": bool}`` — ``changed``
@@ -1429,25 +1457,7 @@ def set_project_path(vault: Path, name: str, new_path: Path) -> dict[str, Any]:
             "Run `lit project list` to inspect, or "
             f"`lit project add {name} --path <abs-path>` to register it."
         )
-    if not new_path.is_absolute():
-        raise TaxonomyError(
-            f"Path {str(new_path)!r} is not absolute. "
-            "Give the full path to the folder, starting from '/'."
-        )
-    new_path = new_path.resolve()
-    # First: the messages below show the path, and the config cannot hold it.
-    message = refusal(new_path)
-    if message is not None:
-        raise TaxonomyError(message)
-    if not new_path.exists():
-        raise TaxonomyError(
-            f"Path {str(new_path)!r} does not exist. "
-            f"Create it first (e.g. `mkdir -p {new_path}`)."
-        )
-    if not new_path.is_dir():
-        raise TaxonomyError(f"Path {str(new_path)!r} is not a directory.")
-
-    new_path_str = str(new_path)
+    new_path_str = str(checked_project_path(new_path))
     if config.projects[name] == new_path_str:
         return {"name": name, "path": new_path_str, "changed": False}
 

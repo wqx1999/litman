@@ -56,7 +56,7 @@ with its own answer:
 
 | Answer | What happens |
 |---|---|
-| the new path | The registration is re-pointed there, the same as `lit vault set-path` / `lit project set-path`. A vault path must hold a `lit-config.yaml`; a wrong path is refused and nothing changes. |
+| the new path | The registration is re-pointed there, the same as `lit vault set-path` / `lit project set-path`. A vault path must hold a `lit-config.yaml`; a project path must be the full path of an existing folder. A wrong path is refused and nothing changes. |
 | `rm` | Hands you to `lit vault remove` / `lit project rm`, which show their own warning and ask `y/N` before anything goes. |
 | Enter | Skip. Nothing changes and you are asked again next time. |
 
