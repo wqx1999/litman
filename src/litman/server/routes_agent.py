@@ -4,8 +4,9 @@ building on task-agent-launch; ADR-020 / ADR-021).
 Endpoints:
 
 * ``GET  /api/agents``            — supported launchable agents + resolved default
-* ``POST /api/agent/launch``      — open the named agent in a terminal at the vault;
-  a desktop-app agent opens at the vault directly
+* ``POST /api/agent/launch``      — start the named agent the way
+  :func:`litman.core.agents.choose_mode` picks: in a new terminal at the vault, or
+  as its desktop app; with no window to open, return the ``lit agent`` line to copy
 * ``GET  /api/agent/status``      — the red-dot / setup-panel data source; the
   server computes ``needs_setup`` (single source of truth for the state machine)
 * ``POST /api/agent/skill/install`` — install / refresh the named agent's skill

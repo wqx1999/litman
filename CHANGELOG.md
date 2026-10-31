@@ -9,6 +9,30 @@ before, and everything else is a patch — however large it was to build.
 Anything that takes something out of your library is marked **Breaking** in its
 own entry. Read those before you upgrade, whatever the number says.
 
+## Unreleased
+
+### Added
+
+- **Claude Code can start as the CLI or the desktop app.** Install either one, or
+  both. With both, pick one under **Launch with** in the agent panel and the button
+  remembers it; until you pick, it uses the CLI. `lit agent` still runs the CLI in
+  your terminal, and opens the app only when the CLI is not there. The app asks you
+  to confirm the folder each time litman opens it.
+
+### Changed
+
+- **The agent panel is redesigned.** Agents are listed on the left with a status
+  dot, and the one you select shows its details on the right. The panel stays the
+  same size however many agents there are, so its title and **Done** no longer run
+  off the window.
+
+### Fixed
+
+- **Claude Code started from litman saves its conversations.** Started by
+  `lit agent` or the web UI's button from inside a Claude Code session, the new
+  session said `Transcript saving is off` and kept no transcript. It now saves as
+  usual.
+
 ## 1.3.10 — 2026-10-30
 
 ### Added

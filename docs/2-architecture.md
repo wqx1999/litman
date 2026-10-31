@@ -153,7 +153,9 @@ You reach this layer from either interface. `lit agent` starts the agent with
 the vault as its working directory, and the Web UI can install the skills and
 launch the agent for you. Which agent that is comes from a catalog held in the
 package: Claude Code, ZCode, Antigravity CLI, Codex, DeepSeek Harness, Cursor,
-and OpenCode are the supported entries. Skill onboarding also installs a
+and OpenCode are the supported entries. Claude Code starts as its CLI or its
+desktop app, ZCode and DeepSeek Harness are desktop apps, and the others are CLIs.
+Skill onboarding also installs a
 native, narrowly scoped allow rule for the `lit` executable; it never switches
 the agent into a global permission-bypass mode. ZCode and DeepSeek Harness keep
 their approvals to themselves, so litman writes no rule for either; for ZCode,

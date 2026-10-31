@@ -17,8 +17,9 @@ exit semantics belong to the agent, not a lingering ``lit`` shell; Windows has
 no exec, so it falls back to a child process whose exit code is passed through.
 A desktop-app agent is instead opened — at the vault, if the app takes a
 folder (:mod:`litman.core.app_launch`) — and the command returns at once. An
-agent with both runs in this terminal when its CLI is here; the GUI button's
-saved choice does not apply.
+agent with both runs in this terminal when its CLI is here and opens when only
+its app is; the GUI button's saved choice does not apply. A terminal launch
+leaves the row's ``launch_env_unset`` variables out of the agent's environment.
 """
 
 from __future__ import annotations

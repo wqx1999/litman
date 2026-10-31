@@ -24,7 +24,8 @@ a command run in a terminal at the vault, and ``open_url`` is a desktop app
 that litman opens itself through :mod:`litman.core.app_launch`, with no
 terminal in between. Claude Code has both, ZCode and DeepSeek Harness only the
 app, and the other four only the CLI. Consumers branch on the mode, the same
-data-driven way they branch on ``supported``.
+data-driven way they branch on ``supported``. A terminal launch runs in
+:func:`launch_env`, which leaves out the row's ``launch_env_unset``.
 
 All seven are ``supported=True`` — the catalog carries no greyed placeholder
 today. The machinery for one nonetheless stays as dormant capability: the

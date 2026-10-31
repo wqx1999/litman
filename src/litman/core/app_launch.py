@@ -26,7 +26,8 @@ platform finds the app:
 
 On Windows, an exe plus an ``app_args`` template starts the exe directly,
 at the vault when the template names it. Everywhere else the app's link goes
-to the system opener; the app may ask the user to confirm it.
+to the system opener, on Windows from a short-lived child process; the app may
+ask the user to confirm it.
 """
 
 from __future__ import annotations
