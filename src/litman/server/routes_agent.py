@@ -247,9 +247,6 @@ def agent_status(response: Response) -> dict[str, object]:
             # Per-agent skill verdict; placeholders are never probed (their
             # adapters loud-fail by design).
             "skill_state": spec.skill_state() if spec.supported else None,
-            # What the panel's not-installed line goes by: a row with a CLI
-            # keeps the CLI's wording, whichever way it starts.
-            "kind": "terminal" if "terminal" in agents.launch_modes(spec) else "app",
             "mode": agents.choose_mode(spec, saved_modes.get(spec.name)),
             "modes": [
                 {

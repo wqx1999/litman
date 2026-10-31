@@ -16,9 +16,10 @@ import {
   installAgentSkill,
   launchAgent,
   postSelfUpdate,
+  setAgentLaunchMode,
   setDefaultAgent,
 } from '../api'
-import type { AgentLaunchResult, AgentStatus } from '../api'
+import type { AgentLaunchMode, AgentLaunchResult, AgentStatus } from '../api'
 import SearchBox from './SearchBox'
 import ProjectManager from './ProjectManager'
 import VaultManager from './VaultManager'
@@ -353,6 +354,7 @@ export default function TopBar({
   // neither idle-deferred nor per-vault — the status is machine-global and one
   // cheap read, so it goes out with the rest of the boot fetches.
   const [agentStatus, setAgentStatus] = useState<AgentStatus | null>(null)
+  const launchModeSavesRef = useRef(0)
   useEffect(() => {
     fetchAgentStatus()
       .then(setAgentStatus)
@@ -369,15 +371,21 @@ export default function TopBar({
   // via refreshAgentStatus) and the setup panel if it happens to be open. Drives
   // the auto-recheck-on-focus effect below and the panel's manual "Recheck"
   // button. Best-effort — a failed re-read just leaves the last known state.
-  const recheckAgentStatus = () =>
-    refreshAgentStatus()
+  const recheckAgentStatus = () => {
+    const saves = launchModeSavesRef.current
+    return fetchAgentStatus()
       .then((s) => {
+        // A read that overlapped a mode save may predate it (coming back to
+        // the window by clicking the control does exactly this).
+        if (saves !== launchModeSavesRef.current) return
+        setAgentStatus(s)
         setAgentUi((ui) =>
           ui?.kind === 'setup' ? { kind: 'setup', status: s } : ui,
         )
         return s
       })
       .catch(() => {})
+  }
 
   // Auto-recheck when the browser regains focus / the tab becomes visible — the
   // "go install the agent CLI (or its skill) in a terminal, come back to the
@@ -415,7 +423,9 @@ export default function TopBar({
       }
     } else if (res.mode === 'app') {
       setAgentUi(null)
-      if (!res.permission_warning) {
+      if (res.hint) {
+        notify(res.hint, 'success')
+      } else if (!res.permission_warning) {
         const display =
           agentStatus?.agents.find((a) => a.name === res.agent)?.display ??
           res.agent
@@ -534,6 +544,42 @@ export default function TopBar({
         notify(err instanceof Error ? err.message : String(err), 'error'),
       )
       .finally(() => setAgentBusy(false))
+  }
+
+  // Save which way an agent's button starts it. The control moves at once and
+  // moves back if the save fails; resolves to whether the choice is on disk.
+  const chooseLaunchMode = (name: string, mode: AgentLaunchMode) => {
+    const show = (shown: AgentLaunchMode) => {
+      setAgentUi((ui) =>
+        ui?.kind === 'setup'
+          ? {
+              kind: 'setup',
+              status: {
+                ...ui.status,
+                agents: ui.status.agents.map((a) =>
+                  a.name === name ? { ...a, mode: shown } : a,
+                ),
+              },
+            }
+          : ui,
+      )
+    }
+    const before =
+      agentUi?.kind === 'setup'
+        ? agentUi.status.agents.find((a) => a.name === name)?.mode
+        : undefined
+    launchModeSavesRef.current += 1
+    show(mode)
+    return setAgentLaunchMode(name, mode)
+      .then(() => true)
+      .catch((err) => {
+        if (before) show(before)
+        notify(err instanceof Error ? err.message : String(err), 'error')
+        return false
+      })
+      .finally(() => {
+        launchModeSavesRef.current += 1
+      })
   }
 
   // Badge counts off the last run (ruling 1): error wins (rose), else warning
@@ -934,6 +980,7 @@ export default function TopBar({
           onPick={pickAgent}
           onInstallSkill={installSkillFor}
           onChooseAgent={chooseAgent}
+          onChooseMode={chooseLaunchMode}
           onRecheck={recheckAgentStatus}
           onClose={() => setAgentUi(null)}
           notify={notify}

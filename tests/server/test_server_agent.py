@@ -248,12 +248,11 @@ def test_status_returns_seven_catalog_entries(vault: Path) -> None:
             "detected",
             "install_url",
             "skill_state",
-            "kind",
             "mode",
             "modes",
         }
         assert isinstance(e["detected"], bool)
-        assert e["kind"] in {"terminal", "app"}
+        assert e["mode"] in {"terminal", "app"}
         # Per-agent skill verdict: every catalog agent is supported today, so
         # each reads a real verdict. The null branch is the latent
         # supported=False placeholder contract (no such entry ships now).
@@ -305,7 +304,9 @@ def test_status_recheck_detects_cli_added_to_live_windows_registry_path(
     after = agent_status(Response())
     # A desktop app is found through its own registry key, not PATH.
     assert all(
-        entry["detected"] for entry in after["agents"] if entry["kind"] == "terminal"
+        entry["detected"]
+        for entry in after["agents"]
+        if "terminal" in [way["mode"] for way in entry["modes"]]
     )
 
 
@@ -820,7 +821,7 @@ def test_status_never_leaks_the_app_exe_path(
     resp = _client(vault).get("/api/agent/status")
     zcode = next(e for e in resp.json()["agents"] if e["name"] == "zcode")
     assert zcode["detected"] is True
-    assert zcode["kind"] == "app"
+    assert zcode["mode"] == "app"
     # The Autonomous-mode hint is a CLI line (install-skill / setup); the GUI
     # never shows it, so the status payload doesn't carry it.
     assert "permission_hint" not in zcode
@@ -1106,15 +1107,6 @@ def test_status_mode_is_what_the_button_would_do(
     assert entry["detected"] is detected
 
 
-@pytest.mark.parametrize("terminal", [True, False])
-@pytest.mark.parametrize("app", [True, False])
-def test_status_kind_of_a_row_with_both_stays_terminal_for_the_shipped_panel(
-    vault: Path, monkeypatch: pytest.MonkeyPatch, terminal: bool, app: bool
-) -> None:
-    _machine(monkeypatch, terminal=terminal, app=app)
-    assert _claude_entry(vault)["kind"] == "terminal"
-
-
 def test_status_over_ssh_lists_no_app_for_a_row_with_both(
     vault: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -1144,7 +1136,6 @@ def test_status_of_every_row_with_one_way_is_unchanged_by_the_session(
         "opencode": ("terminal", True, "https://opencode.ai/"),
     }
     for name, (mode, usable, url) in expected.items():
-        assert entries[name]["kind"] == mode
         assert entries[name]["mode"] == mode
         assert entries[name]["detected"] is usable
         assert entries[name]["install_url"] == url
