@@ -615,6 +615,8 @@ def test_scheme_handler_real_probe_answers_for_a_registered_scheme() -> None:
     with winreg.CreateKey(winreg.HKEY_CURRENT_USER, command) as key:
         winreg.SetValueEx(key, "", 0, winreg.REG_SZ, f'"{sys.executable}" "%1"')
     try:
+        result = app_launch._handler_name_result(scheme)
+        assert result == 0, f"HRESULT {result}"
         assert _REAL_SCHEME_HAS_HANDLER(scheme) is True
     finally:
         # Leaf first: DeleteKey refuses a key that has subkeys.
@@ -622,6 +624,15 @@ def test_scheme_handler_real_probe_answers_for_a_registered_scheme() -> None:
         for depth in range(len(parts), 2, -1):
             winreg.DeleteKey(winreg.HKEY_CURRENT_USER, "\\".join(parts[:depth]))
     assert _REAL_SCHEME_HAS_HANDLER(scheme) is False
+
+
+def test_diag_print_handler_results(capsys: pytest.CaptureFixture[str]) -> None:
+    """TEMPORARY: prints the raw results into the CI log, then gets removed."""
+    with capsys.disabled():
+        for name in (".txt", ".exe", ".bat", ".html", "http", "https", "mailto", "ms-settings", "litman-none"):
+            result = app_launch._handler_name_result(name)
+            shown = None if result is None else hex(result & 0xFFFFFFFF)
+            print(f"\nLITMAN-DIAG {name} {shown}")
 
 
 def test_windows_opens_a_packaged_app_by_its_link_through_the_short_lived_child(

@@ -99,15 +99,10 @@ def _read_scheme_command(scheme: str) -> str | None:
     return value if isinstance(value, str) else None
 
 
-def _scheme_has_handler(scheme: str) -> bool:
-    """Does Windows know a program for ``<scheme>:`` links?
-
-    The one probe that sees a packaged app. Measured on Win11 with Claude
-    4.29: it has no ``HKCR`` open command, and asking for the executable fails,
-    while asking for the display name returns 0 and ``Claude``. A scheme nothing
-    handles returns ``ERROR_NO_ASSOCIATION``. Any failure reads as no handler,
-    which is also the answer off Windows, where ctypes has no ``WinDLL``.
-    """
+def _handler_name_result(scheme: str) -> int | None:
+    """The HRESULT of asking Windows for the display name of ``<scheme>:``'s
+    handler, or None when the call could not be made: off Windows, ctypes has
+    no ``WinDLL``."""
     try:
         import ctypes
         from ctypes import wintypes
@@ -124,8 +119,19 @@ def _scheme_has_handler(scheme: str) -> bool:
             ctypes.byref(size),
         )
     except (ImportError, AttributeError, OSError):
-        return False
-    return bool(result == 0)
+        return None
+    return int(result)
+
+
+def _scheme_has_handler(scheme: str) -> bool:
+    """Does Windows know a program for ``<scheme>:`` links?
+
+    The one probe that sees a packaged app. Measured on Win11 with Claude
+    4.29: it has no ``HKCR`` open command, and asking for the executable fails,
+    while asking for the display name returns 0 and ``Claude``. A scheme nothing
+    handles returns ``ERROR_NO_ASSOCIATION``. Any failure reads as no handler.
+    """
+    return _handler_name_result(scheme) == 0
 
 
 def _app_dirs() -> list[Path]:
