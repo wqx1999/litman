@@ -23,6 +23,7 @@ from litman.core import agents, app_launch
 
 ZCODE = agents.get_agent("zcode")
 CLAUDE = agents.get_agent("claude")
+CODEX = agents.get_agent("codex")
 # The conftest stubs these probes for every test; captured at import, before it.
 _REAL_XDG_DEFAULT_HANDLER = app_launch._xdg_default_handler
 _REAL_SCHEME_HAS_HANDLER = app_launch._scheme_has_handler
@@ -767,6 +768,63 @@ def test_claude_link_encodes_a_windows_vault_path(vault: str, encoded: str) -> N
     url = app_launch.workspace_url(CLAUDE, cast(Path, PureWindowsPath(vault)))
     assert url == f"claude://code/new?folder={encoded}"
     assert parse_qs(urlsplit(url).query) == {"folder": [vault]}
+
+
+@pytest.mark.parametrize(
+    ("vault", "encoded"),
+    [
+        (r"C:\lib", "C%3A%5Clib"),
+        (r"C:\Users\Wang Q\My Lib", "C%3A%5CUsers%5CWang%20Q%5CMy%20Lib"),
+        (r"D:\litm0 测试", "D%3A%5Clitm0%20%E6%B5%8B%E8%AF%95"),
+    ],
+)
+def test_codex_link_encodes_a_windows_vault_path(vault: str, encoded: str) -> None:
+    url = app_launch.workspace_url(CODEX, cast(Path, PureWindowsPath(vault)))
+    assert url == f"codex://threads/new?path={encoded}"
+    assert parse_qs(urlsplit(url).query) == {"path": [vault]}
+
+
+def test_codex_on_windows_is_a_handler_opened_through_the_short_lived_child(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, started: list
+) -> None:
+    """Measured on Win11, Store install: no open command, a handler named
+    ChatGPT."""
+    _on(monkeypatch, "win32")
+    monkeypatch.setattr(app_launch, "_read_scheme_command", lambda _scheme: None)
+    monkeypatch.setattr(
+        app_launch, "_scheme_has_handler", lambda scheme: scheme == "codex"
+    )
+    vault = tmp_path / "lit 测试 库"
+    assert app_launch.app_installed(CODEX) is True
+    assert app_launch.opens_at_vault(CODEX) is True
+
+    app_launch.open_app(CODEX, vault)
+
+    assert started == [("link", app_launch.workspace_url(CODEX, vault))]
+
+
+@pytest.mark.parametrize(
+    ("platforms", "platform", "offered"),
+    [
+        (None, "win32", True),
+        (None, "darwin", True),
+        (None, "linux", True),
+        (("win32",), "win32", True),
+        (("win32",), "darwin", False),
+        (("win32",), "linux", False),
+        (("darwin", "linux"), "win32", False),
+        (("darwin", "linux"), "linux", True),
+    ],
+)
+def test_app_offered_here_goes_by_the_rows_platforms(
+    monkeypatch: pytest.MonkeyPatch,
+    platforms: tuple[str, ...] | None,
+    platform: str,
+    offered: bool,
+) -> None:
+    _on(monkeypatch, platform)
+    row = dataclasses.replace(CLAUDE, app_platforms=platforms)
+    assert app_launch.app_offered_here(row) is offered
 
 
 @pytest.mark.parametrize(
