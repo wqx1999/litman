@@ -79,14 +79,14 @@ whatever you already pay for. **Start with Claude Code.**
 
 | Agent | Recommended model |
 |:---|:---|
-| [Claude Code](https://claude.ai/code), CLI or desktop app | Official subscription |
+| [Claude Code](https://claude.ai/code) | Official subscription |
 | [ZCode](https://zcode.z.ai) | GLM, official subscription; turn on Autonomous mode |
 
 These also work — last checked with litman 1.3.8:
 
 | Agent | Recommended model |
 |:---|:---|
-| [Codex](https://developers.openai.com/codex/cli/), CLI, or desktop app on Windows | Official subscription |
+| [Codex](https://developers.openai.com/codex/cli/) | Official subscription |
 | [DeepSeek Harness](https://www.deepseek.com/harness/) | DeepSeek |
 | [Antigravity CLI](https://antigravity.google/download#antigravity-cli) | Official subscription |
 | [Cursor](https://cursor.com/cli) | Composer 2.5 |
