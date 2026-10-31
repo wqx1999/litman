@@ -49,6 +49,7 @@ if TYPE_CHECKING:
 # names for them, and the Windows branch is tested on every platform.
 _DETACHED_PROCESS = 0x00000008
 _CREATE_NEW_PROCESS_GROUP = 0x00000200
+_CREATE_NO_WINDOW = 0x08000000
 
 # AssocQueryStringW's ASSOCSTR value for the handler's display name.
 _ASSOCSTR_FRIENDLYAPPNAME = 4
@@ -247,6 +248,13 @@ def _open_link_detached_windows(url: str) -> None:
     with ``ELECTRON_NO_ATTACH_CONSOLE=1``, which this app ignores; through this
     child the window stayed clean and the app opened normally.
 
+    ``CREATE_NO_WINDOW`` rather than ``DETACHED_PROCESS``: a venv's
+    ``python.exe`` is a launcher that starts the real python, and with no console
+    to inherit that one opens its own, visible. Measured on Win11 in a uv tool
+    environment: with ``DETACHED_PROCESS`` a window flashed on every launch; with
+    ``CREATE_NO_WINDOW`` the child's console has no window, and Claude, not running
+    beforehand, opened normally with nothing logged into the parent's window.
+
     The child is not waited on, so a failed open goes unnoticed here, which is
     why :func:`open_app` checks :func:`app_installed` first.
     """
@@ -255,7 +263,7 @@ def _open_link_detached_windows(url: str) -> None:
         stdin=subprocess.DEVNULL,
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
-        creationflags=_DETACHED_PROCESS | _CREATE_NEW_PROCESS_GROUP,
+        creationflags=_CREATE_NO_WINDOW | _CREATE_NEW_PROCESS_GROUP,
         close_fds=True,
     )
 

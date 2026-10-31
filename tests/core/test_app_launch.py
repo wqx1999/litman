@@ -668,7 +668,7 @@ def test_short_lived_child_is_exactly_this_process(
 ) -> None:
     """The real seam, with only Popen stubbed. Each part is what kept a
     measured cold start out of the console: a separate python, NUL on all
-    three streams, detached."""
+    three streams, no window for its console."""
     seen: list[tuple[object, dict]] = []
     monkeypatch.setattr(
         app_launch.subprocess, "Popen", lambda argv, **kw: seen.append((argv, kw))
@@ -684,11 +684,33 @@ def test_short_lived_child_is_exactly_this_process(
                 "stdin": subprocess.DEVNULL,
                 "stdout": subprocess.DEVNULL,
                 "stderr": subprocess.DEVNULL,
-                "creationflags": 0x00000008 | 0x00000200,
+                "creationflags": 0x08000000 | 0x00000200,
                 "close_fds": True,
             },
         )
     ]
+
+
+def test_opening_a_link_on_windows_flashes_no_console_window(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """From the launch itself, with only Popen stubbed. DETACHED_PROCESS leaves
+    a venv's launcher python with no console to pass on, so the real python opens
+    a visible one; Windows also ignores CREATE_NO_WINDOW alongside it."""
+    _on(monkeypatch, "win32")
+    monkeypatch.setattr(app_launch, "_scheme_has_handler", lambda _scheme: True)
+    flags: list[int] = []
+    monkeypatch.setattr(
+        app_launch.subprocess,
+        "Popen",
+        lambda _argv, **kw: flags.append(kw["creationflags"]),
+    )
+
+    app_launch.open_app(CLAUDE, tmp_path / "vault")
+
+    assert len(flags) == 1
+    assert flags[0] & 0x08000000  # CREATE_NO_WINDOW
+    assert not flags[0] & 0x00000008  # DETACHED_PROCESS
 
 
 def test_short_lived_child_that_cannot_start_reads_as_not_found(
