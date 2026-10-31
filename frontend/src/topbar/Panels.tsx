@@ -609,7 +609,7 @@ function AgentSetup({
                 data-agent={a.name}
                 aria-current={active}
                 onClick={() => setSelected(a.name)}
-                className={`flex w-full shrink-0 items-center gap-2.5 rounded-lg px-2.5 py-2 text-left transition-colors duration-200 ease-fluid focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-accent-300 ${
+                className={`flex w-full shrink-0 items-center gap-2.5 rounded-lg px-2.5 py-2 text-left transition-colors duration-200 ease-fluid focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-accent-500 ${
                   active ? 'bg-accent-100/70' : 'hover:bg-stone-200/70'
                 }`}
               >
