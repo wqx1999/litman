@@ -123,6 +123,7 @@ def agent_cmd(
     if permission["warning"]:
         click.echo(f"warning: {permission['warning']}", err=True)
 
+    env = agents.launch_env(spec)
     if sys.platform == "win32":
         # No real exec on Windows: run as a child and pass its exit code on.
         # The absolute path avoids relying on a stale parent-shell PATH and is
@@ -130,8 +131,8 @@ def agent_cmd(
         argv[0] = resolved
         if Path(resolved).suffix.casefold() in {".bat", ".cmd"}:
             argv = ["cmd", "/c", *argv]
-        result = subprocess.run(argv, cwd=vault)
+        result = subprocess.run(argv, cwd=vault, env=env)
         sys.exit(result.returncode)
 
     os.chdir(vault)
-    os.execvp(argv[0], argv)
+    os.execvpe(argv[0], argv, env)

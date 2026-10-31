@@ -192,7 +192,7 @@ def test_a_cross_site_agent_launch_is_refused_and_launches_nothing(
     """The bodyless POST that needs no preflight at all."""
     spawned: list[list[str]] = []
 
-    def fake_spawn(argv: list[str], cwd: Path) -> bool:
+    def fake_spawn(argv: list[str], cwd: Path, _env: dict[str, str]) -> bool:
         spawned.append(argv)
         return True
 

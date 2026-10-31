@@ -186,7 +186,9 @@ async def launch_agent(request: Request) -> dict[str, object]:
         resolved = agents.resolve_launch(spec)
         if resolved is not None:
             argv[0] = resolved
-    if argv and terminal.spawn_terminal(argv, request.app.state.vault):
+    if argv and terminal.spawn_terminal(
+        argv, request.app.state.vault, agents.launch_env(spec)
+    ):
         return {
             "ok": True,
             "mode": "spawned",

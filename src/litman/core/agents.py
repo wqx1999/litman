@@ -128,6 +128,9 @@ class AgentSpec:
     default_mode: LaunchMode = "terminal"
     # On a row with both ways: where to get the app (install_url is the CLI's).
     app_install_url: str | None = None
+    # Variables a terminal launch leaves out of the agent's environment: its own
+    # markers, inherited when lit itself runs inside one of its sessions.
+    launch_env_unset: tuple[str, ...] = ()
 
 
 # Every supported agent's skill adapter reuses core.skill verbatim:
@@ -173,6 +176,8 @@ AGENTS: tuple[AgentSpec, ...] = (
         open_url="claude://code/new?folder={vault}",
         mac_bundle="Claude.app",
         app_install_url="https://claude.com/download",
+        # A session that inherits this marker does not save its transcript.
+        launch_env_unset=("CLAUDE_CODE_CHILD_SESSION",),
     ),
     AgentSpec(
         name="zcode",
@@ -457,6 +462,15 @@ def resolve_launch(spec: AgentSpec) -> str | None:
     refresh_path()
     argv = shlex.split(spec.launch)
     return shutil.which(argv[0]) if argv else None
+
+
+def launch_env(spec: AgentSpec) -> dict[str, str]:
+    """The environment for ``spec``'s terminal launch, as a new dict.
+
+    This process's environment without the row's ``launch_env_unset``; call it
+    after anything that refreshes PATH.
+    """
+    return {k: v for k, v in os.environ.items() if k not in spec.launch_env_unset}
 
 
 def default_agent_name() -> str:

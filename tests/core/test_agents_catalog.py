@@ -880,3 +880,22 @@ def test_mode_install_url_goes_by_the_way_of_starting() -> None:
     # A row with one way has one link, whichever that way is.
     zcode = get_agent("zcode")
     assert agents.mode_install_url(zcode, "app") == zcode.install_url
+
+
+def test_only_claude_drops_a_variable_from_its_launch() -> None:
+    assert {a.name: a.launch_env_unset for a in AGENTS if a.launch_env_unset} == {
+        "claude": ("CLAUDE_CODE_CHILD_SESSION",)
+    }
+
+
+def test_launch_env_leaves_out_only_the_rows_variables(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("CLAUDE_CODE_CHILD_SESSION", "1")
+    monkeypatch.setenv("CLAUDECODE", "1")
+    monkeypatch.setenv("NO_COLOR", "1")
+    before = dict(os.environ)
+    env = agents.launch_env(get_agent("claude"))
+    assert env == {k: v for k, v in before.items() if k != "CLAUDE_CODE_CHILD_SESSION"}
+    assert dict(os.environ) == before  # a copy: this process keeps its own
+    assert agents.launch_env(get_agent("codex")) == before

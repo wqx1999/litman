@@ -187,6 +187,43 @@ def test_win32_falls_back_to_cmd_start(
     assert argv == ["cmd", "/c", "start", "cmd", "/K", "claude"]
 
 
+@pytest.mark.parametrize(
+    ("platform", "terminal"),
+    [
+        ("darwin", None),
+        ("win32", "wt"),
+        ("win32", None),
+        ("linux", "x-terminal-emulator"),
+        ("linux", "gnome-terminal"),
+        ("linux", "konsole"),
+        ("linux", "xfce4-terminal"),
+        ("linux", "xterm"),
+    ],
+)
+def test_every_branch_hands_the_environment_to_the_process_it_starts(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    platform: str,
+    terminal: str | None,
+) -> None:
+    monkeypatch.setattr(sys, "platform", platform)
+    monkeypatch.setenv("DISPLAY", ":0")
+    monkeypatch.setattr(
+        "litman.core.terminal.shutil.which",
+        lambda name: f"/bin/{name}" if name == terminal else None,
+    )
+    envs: list[object] = []
+
+    class _FakePopen:
+        def __init__(self, _argv: list[str], **kw: object):
+            envs.append(kw["env"])
+
+    monkeypatch.setattr("litman.core.terminal.subprocess.Popen", _FakePopen)
+    env = {"KEEP": "1"}
+    assert spawn_terminal(["claude"], tmp_path, env) is True
+    assert envs == [env]
+
+
 def test_spawn_failure_returns_false_never_raises(
     monkeypatch: pytest.MonkeyPatch,
     linux_display: None,

@@ -27,7 +27,7 @@ pytest.importorskip("fastapi")
 
 from fastapi import HTTPException, Response
 
-from litman.core import agent_prefs, agents
+from litman.core import agent_prefs, agents, terminal
 from litman.core.library import create_vault
 from litman.core.skill import list_bundled_skills
 from litman.server import create_app, routes_agent
@@ -85,7 +85,7 @@ def test_launch_ignores_body_command_field(
     monkeypatch.setattr(agents, "detect", lambda _spec: True)
     spawned: list[tuple[list[str], Path]] = []
 
-    def fake_spawn(argv: list[str], cwd: Path) -> bool:
+    def fake_spawn(argv: list[str], cwd: Path, _env: dict[str, str]) -> bool:
         spawned.append((argv, cwd))
         return True
 
@@ -104,11 +104,41 @@ def test_launch_ignores_body_command_field(
     assert spawned == [(["claude"], vault)]
 
 
+@pytest.mark.parametrize(
+    ("agent", "marker_stays"), [("claude", False), ("codex", True)]
+)
+def test_launch_opens_the_terminal_with_the_rows_environment(
+    vault: Path, monkeypatch: pytest.MonkeyPatch, agent: str, marker_stays: bool
+) -> None:
+    """Through the real spawn_terminal: only the process start is stubbed."""
+    monkeypatch.setenv("CLAUDE_CODE_CHILD_SESSION", "1")
+    monkeypatch.setenv("CLAUDECODE", "1")
+    monkeypatch.setenv("NO_COLOR", "1")
+    monkeypatch.setenv("DISPLAY", ":0")
+    monkeypatch.setattr(agents, "detect", lambda _spec: True)
+    monkeypatch.setattr(terminal.shutil, "which", lambda name: f"/bin/{name}")
+    envs: list[dict[str, str]] = []
+
+    class _FakePopen:
+        def __init__(self, _argv: list[str], **kw: dict[str, str]):
+            envs.append(kw["env"])
+
+    monkeypatch.setattr(terminal.subprocess, "Popen", _FakePopen)
+    resp = _client(vault).post("/api/agent/launch", json={"agent": agent})
+    assert resp.status_code == 200
+    assert resp.json()["mode"] == "spawned"
+    assert len(envs) == 1
+    assert ("CLAUDE_CODE_CHILD_SESSION" in envs[0]) is marker_stays
+    assert envs[0]["CLAUDECODE"] == "1"
+    assert envs[0]["NO_COLOR"] == "1"
+    assert os.environ["CLAUDE_CODE_CHILD_SESSION"] == "1"
+
+
 def test_launch_bodyless_uses_default_agent(
     vault: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setattr(agents, "detect", lambda _spec: True)
-    monkeypatch.setattr("litman.core.terminal.spawn_terminal", lambda _a, _c: True)
+    monkeypatch.setattr("litman.core.terminal.spawn_terminal", lambda _a, _c, _e: True)
     resp = _client(vault).post("/api/agent/launch")
     assert resp.status_code == 200
     assert resp.json()["agent"] == "claude"
@@ -121,7 +151,7 @@ def test_launch_copy_fallback_wraps_as_lit_agent(
     """No terminal available → mode "copy" with the `lit agent` wrapper. Only a
     SUPPORTED agent (claude, the default) reaches the copy-fallback."""
     monkeypatch.setattr(agents, "detect", lambda _spec: True)
-    monkeypatch.setattr("litman.core.terminal.spawn_terminal", lambda _a, _c: False)
+    monkeypatch.setattr("litman.core.terminal.spawn_terminal", lambda _a, _c, _e: False)
     resp = _client(vault).post("/api/agent/launch", json={})
     assert resp.json() == {
         "ok": True,
@@ -142,7 +172,7 @@ def test_launch_windows_passes_resolved_absolute_command_to_terminal(
     spawned: list[list[str]] = []
     monkeypatch.setattr(
         "litman.core.terminal.spawn_terminal",
-        lambda argv, _cwd: spawned.append(argv) or True,
+        lambda argv, _cwd, _env: spawned.append(argv) or True,
     )
     async def body_agent_name(_request: object) -> str:
         return "codex"
@@ -161,7 +191,7 @@ def test_launch_rejects_agent_that_is_not_installed(
     spawned: list[object] = []
     monkeypatch.setattr(
         "litman.core.terminal.spawn_terminal",
-        lambda argv, cwd: spawned.append((argv, cwd)) or True,
+        lambda argv, cwd, _env: spawned.append((argv, cwd)) or True,
     )
 
     async def body_agent_name(_request: object) -> str:
@@ -200,7 +230,7 @@ def test_launch_unsupported_agent_is_400(
     spawned: list[object] = []
     monkeypatch.setattr(
         "litman.core.terminal.spawn_terminal",
-        lambda a, c: spawned.append((a, c)) or True,
+        lambda a, c, _e: spawned.append((a, c)) or True,
     )
     resp = _client(vault).post("/api/agent/launch", json={"agent": "future"})
     assert resp.status_code == 400
@@ -699,7 +729,7 @@ def _record_open_app(monkeypatch: pytest.MonkeyPatch) -> list[tuple[str, Path]]:
     )
     monkeypatch.setattr(
         "litman.core.terminal.spawn_terminal",
-        lambda _a, _c: pytest.fail("an app must never go through a terminal"),
+        lambda _a, _c, _e: pytest.fail("an app must never go through a terminal"),
     )
     return opened
 
@@ -915,7 +945,9 @@ def _machine(
     monkeypatch.setattr(
         "litman.core.terminal.spawn_terminal",
         # By name: Windows passes the resolved path, others the bare command.
-        lambda argv, _cwd: started["terminal"].append([Path(argv[0]).name, *argv[1:]])
+        lambda argv, _cwd, _env: started["terminal"].append(
+            [Path(argv[0]).name, *argv[1:]]
+        )
         or True,
     )
     monkeypatch.setattr(

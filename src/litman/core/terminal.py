@@ -22,6 +22,7 @@ import shlex
 import shutil
 import subprocess
 import sys
+from collections.abc import Mapping
 from pathlib import Path
 
 # Probe order: the Debian alternatives symlink first (it points at whatever
@@ -46,10 +47,13 @@ def _linux_terminal_argv(name: str, exe: str, argv: list[str]) -> list[str]:
     return [exe, "-e", *argv]
 
 
-def _popen_detached(spawn_argv: list[str], cwd: Path) -> None:
+def _popen_detached(
+    spawn_argv: list[str], cwd: Path, env: Mapping[str, str] | None
+) -> None:
     subprocess.Popen(
         spawn_argv,
         cwd=str(cwd),
+        env=env,
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
         stdin=subprocess.DEVNULL,
@@ -68,10 +72,13 @@ def _windows_terminal_argv(argv: list[str]) -> list[str]:
     return argv
 
 
-def spawn_terminal(argv: list[str], cwd: Path) -> bool:
+def spawn_terminal(
+    argv: list[str], cwd: Path, env: Mapping[str, str] | None = None
+) -> bool:
     """Open a native terminal window running ``argv`` in ``cwd``.
 
-    Returns True when a window spawn was fired, False when this session
+    ``env`` is the environment of the process that opens the window; None
+    inherits this one's. Returns True when a window spawn was fired, False when this session
     cannot open one (the caller falls back to showing the command). Never
     raises.
     """
@@ -88,6 +95,7 @@ def spawn_terminal(argv: list[str], cwd: Path) -> bool:
                     f'tell application "Terminal" to do script "{escaped}"',
                 ],
                 cwd,
+                env,
             )
             return True
 
@@ -95,12 +103,12 @@ def spawn_terminal(argv: list[str], cwd: Path) -> bool:
             wt = shutil.which("wt")
             if wt:
                 _popen_detached(
-                    [wt, "-d", str(cwd), *_windows_terminal_argv(argv)], cwd
+                    [wt, "-d", str(cwd), *_windows_terminal_argv(argv)], cwd, env
                 )
             else:
                 # `start` opens a new console; /K keeps it open after exit.
                 _popen_detached(
-                    ["cmd", "/c", "start", "cmd", "/K", *argv], cwd
+                    ["cmd", "/c", "start", "cmd", "/K", *argv], cwd, env
                 )
             return True
 
@@ -111,7 +119,7 @@ def spawn_terminal(argv: list[str], cwd: Path) -> bool:
             exe = shutil.which(name)
             if exe is None:
                 continue
-            _popen_detached(_linux_terminal_argv(name, exe, argv), cwd)
+            _popen_detached(_linux_terminal_argv(name, exe, argv), cwd, env)
             return True
         return False
     except Exception:
