@@ -376,7 +376,7 @@ def test_agent_with_both_runs_in_the_terminal_even_with_the_app_saved(
     assert opened == []
 
 
-def test_agent_with_only_its_app_here_opens_it_with_the_hint(
+def test_agent_with_only_its_app_here_opens_it(
     vault: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     opened = _claude_installed(monkeypatch, terminal=False, app=True)
@@ -384,7 +384,7 @@ def test_agent_with_only_its_app_here_opens_it_with_the_hint(
     result = CliRunner().invoke(agent_cmd, ["claude", "--library", str(vault)])
     assert result.exit_code == 0, result.output
     assert opened == [("claude", vault)]
-    assert result.output == "Opened Claude. Confirm the folder to start.\n"
+    assert result.output == f"Opened Claude Code at {vault}.\n"
 
 
 def test_agent_with_both_and_neither_here_names_the_cli_download(

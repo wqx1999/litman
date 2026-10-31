@@ -715,14 +715,12 @@ def test_claude_row_has_both_ways_and_defaults_to_the_cli() -> None:
     assert claude.app_args == ()
     assert claude.install_url == "https://docs.claude.com/en/docs/claude-code/overview"
     assert claude.app_install_url == "https://claude.com/download"
-    assert claude.app_open_hint == "Opened Claude. Confirm the folder to start."
 
 
-def test_only_a_row_with_both_ways_carries_the_app_download_and_hint() -> None:
+def test_only_a_row_with_both_ways_carries_the_app_download() -> None:
     for spec in AGENTS:
         if spec.name != "claude":
             assert spec.app_install_url is None
-            assert spec.app_open_hint is None
             assert spec.default_mode == "terminal"
 
 

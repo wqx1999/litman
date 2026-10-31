@@ -423,9 +423,7 @@ export default function TopBar({
       }
     } else if (res.mode === 'app') {
       setAgentUi(null)
-      if (res.hint) {
-        notify(res.hint, 'success')
-      } else if (!res.permission_warning) {
+      if (!res.permission_warning) {
         const display =
           agentStatus?.agents.find((a) => a.name === res.agent)?.display ??
           res.agent

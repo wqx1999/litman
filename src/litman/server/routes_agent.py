@@ -160,16 +160,13 @@ async def launch_agent(request: Request) -> dict[str, object]:
             return _copy_fallback(agent_name, default, permission["warning"])
         except app_launch.AppNotFound as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
-        opened: dict[str, object] = {
+        return {
             "ok": True,
             "mode": "app",
             "agent": agent_name,
             "command": "",
             "permission_warning": permission["warning"],
         }
-        if spec.app_open_hint:
-            opened["hint"] = spec.app_open_hint
-        return opened
 
     # A CLI may have been installed while this long-running GUI server was
     # open, or live under a per-user bin dir the desktop session's PATH omits.

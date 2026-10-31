@@ -128,8 +128,6 @@ class AgentSpec:
     default_mode: LaunchMode = "terminal"
     # On a row with both ways: where to get the app (install_url is the CLI's).
     app_install_url: str | None = None
-    # The success line after opening an app that then asks the user something.
-    app_open_hint: str | None = None
 
 
 # Every supported agent's skill adapter reuses core.skill verbatim:
@@ -175,7 +173,6 @@ AGENTS: tuple[AgentSpec, ...] = (
         open_url="claude://code/new?folder={vault}",
         mac_bundle="Claude.app",
         app_install_url="https://claude.com/download",
-        app_open_hint="Opened Claude. Confirm the folder to start.",
     ),
     AgentSpec(
         name="zcode",

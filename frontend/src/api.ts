@@ -860,15 +860,13 @@ export function fetchAgents(): Promise<AgentsPayload> {
  * on the server's machine; `app` = a desktop app opened straight at the vault
  * (no terminal, `command` empty); `copy` = it couldn't (headless / remote
  * server), and `command` carries the `lit agent …` line for the user's own
- * terminal. `hint` is what the user still has to do in an app that just
- * opened, present only for an app that asks for something. */
+ * terminal. */
 export interface AgentLaunchResult {
   ok: boolean
   mode: 'spawned' | 'app' | 'copy'
   agent: string
   command: string
   permission_warning: string | null
-  hint?: string
 }
 
 /** Launch a configured agent in a terminal at the vault. Sends the agent NAME

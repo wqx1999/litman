@@ -100,9 +100,7 @@ def agent_cmd(
             raise LitmanError(
                 f"{exc} Get {spec.display}: {agents.mode_install_url(spec, 'app')}"
             ) from exc
-        if spec.app_open_hint:
-            click.echo(spec.app_open_hint)
-        elif app_launch.opens_at_vault(spec):
+        if app_launch.opens_at_vault(spec):
             click.echo(f"Opened {spec.display} at {vault}.")
         else:
             click.echo(f"Opened {spec.display}.")

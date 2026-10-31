@@ -950,7 +950,7 @@ def test_launch_with_both_installed_and_no_choice_goes_to_the_cli(
     assert started == {"terminal": [["claude"]], "app": []}
 
 
-def test_launch_with_the_app_saved_opens_it_and_says_to_confirm(
+def test_launch_with_the_app_saved_opens_it(
     vault: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     started = _machine(monkeypatch, terminal=True, app=True)
@@ -961,7 +961,6 @@ def test_launch_with_the_app_saved_opens_it_and_says_to_confirm(
         "agent": "claude",
         "command": "",
         "permission_warning": None,
-        "hint": "Opened Claude. Confirm the folder to start.",
     }
     assert started == {"terminal": [], "app": ["claude"]}
 
