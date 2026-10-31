@@ -150,7 +150,8 @@ def check_project_path_exists(
     (:func:`_drift._exists_bounded`) so a dropped HPC mount yields ``None``
     (unknown, never flagged) instead of hanging on a bare ``stat()``. This
     keeps the divergence-free guarantee in the ``health-check`` path too, not
-    just the hook. A definite ``False`` is "does not exist"; a ``True`` that is
+    just the hook. A definite ``False``, or a value that is not a full path
+    (``stored_project_dir``), is "does not exist"; a ``True`` that is
     not a directory is still surfaced via a direct ``is_dir`` check (the path
     is reachable, so the extra stat is cheap and cannot hang).
 
@@ -159,7 +160,11 @@ def check_project_path_exists(
     re-probe. Tier-2 passes ``None`` → falls back to its own probe, unchanged.
     """
     from litman.commands._drift import _exists_bounded
-    from litman.core.config import load_config
+    from litman.core.config import (
+        load_config,
+        project_probe_paths,
+        stored_project_dir,
+    )
 
     try:
         config = load_config(vault)
@@ -172,23 +177,20 @@ def check_project_path_exists(
     if not config.projects:
         return []
 
-    paths = {
-        name: str(Path(path_str).expanduser())
-        for name, path_str in config.projects.items()
-    }
+    paths = project_probe_paths(config.projects)
     if exists_status is None:
-        status = _exists_bounded(list(paths.values()))
+        status = _exists_bounded(paths)
     else:
-        status = {p: exists_status.get(p) for p in paths.values()}
+        status = {p: exists_status.get(p) for p in paths}
 
     out: list[Issue] = []
     for name, path_str in sorted(config.projects.items()):
-        project_dir = Path(path_str).expanduser()
-        present = status.get(str(project_dir))
+        project_dir = stored_project_dir(path_str)
+        present = False if project_dir is None else status.get(str(project_dir))
         if present is None:
             # Unknown (slow / dropped mount) — never flag (ADR-014).
             continue
-        if present is False:
+        if project_dir is None or present is False:
             out.append(
                 Issue(
                     category="project_path_exists",
@@ -276,7 +278,11 @@ def check_project_references(
     ``project_path_exists`` (ledger #5), not flagged as content drift here.
     """
     from litman.commands._drift import _exists_bounded
-    from litman.core.config import load_config
+    from litman.core.config import (
+        load_config,
+        project_probe_paths,
+        stored_project_dir,
+    )
 
     try:
         config = load_config(vault)
@@ -287,16 +293,12 @@ def check_project_references(
     if not config.projects:
         return []
 
-    paths = {
-        name: str(Path(path_str).expanduser())
-        for name, path_str in config.projects.items()
-    }
-    status = _exists_bounded(list(paths.values()))
+    status = _exists_bounded(project_probe_paths(config.projects))
 
     out: list[Issue] = []
     for name in sorted(config.projects):
-        project_dir = Path(paths[name])
-        if status.get(str(project_dir)) is not True:
+        project_dir = stored_project_dir(config.projects[name])
+        if project_dir is None or status.get(str(project_dir)) is not True:
             # Unreachable / unknown — project_path_exists owns that case.
             continue
         if not project_dir.is_dir():
@@ -534,7 +536,7 @@ def check_link_support(
     collapse into a single finding: a vault on such a drive fails all of them
     at once and deserves one line, not N.
     """
-    from litman.core.config import load_config
+    from litman.core.config import load_config, stored_project_dir
 
     scopes: list[str] = []
 
@@ -547,8 +549,8 @@ def check_link_support(
         config = None
     if config is not None:
         for name in sorted(config.projects):
-            project_dir = Path(config.projects[name]).expanduser()
-            if not project_dir.is_dir():
+            project_dir = stored_project_dir(config.projects[name])
+            if project_dir is None or not project_dir.is_dir():
                 # Unreachable / missing — project_path_exists owns that case.
                 continue
             if not links_supported(project_dir):
@@ -632,7 +634,7 @@ def check_project_bridge_dangling(
     own second bounded call (the shared probe never stats link targets).
     """
     from litman.commands._drift import _exists_bounded
-    from litman.core.config import load_config
+    from litman.core.config import load_config, project_probe_paths
     from litman.core.project_link import find_dangling_bridges
 
     try:
@@ -643,14 +645,11 @@ def check_project_bridge_dangling(
     if not config.projects:
         return []
 
-    paths = {
-        name: str(Path(path_str).expanduser())
-        for name, path_str in config.projects.items()
-    }
+    paths = project_probe_paths(config.projects)
     if exists_status is None:
-        dir_status = _exists_bounded(list(paths.values()))
+        dir_status = _exists_bounded(paths)
     else:
-        dir_status = {p: exists_status.get(p) for p in paths.values()}
+        dir_status = {p: exists_status.get(p) for p in paths}
 
     out: list[Issue] = []
     for name, dangling in find_dangling_bridges(

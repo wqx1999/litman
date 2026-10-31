@@ -61,6 +61,7 @@ from litman.core.code import (
     make_repo_meta,
     repo_meta_text,
 )
+from litman.core.config import stored_project_dir
 from litman.core.dates import now_iso
 from litman.core.document import load_yaml_or_raise
 from litman.core.locking import rmtree
@@ -759,8 +760,8 @@ def _rebuild_project_links(
         project_dir_str = registry.get(project)
         if not project_dir_str:
             continue
-        project_dir = Path(project_dir_str).expanduser()
-        if not project_dir.is_dir():
+        project_dir = stored_project_dir(project_dir_str)
+        if project_dir is None or not project_dir.is_dir():
             continue
 
         errors_before = len(link_errors)

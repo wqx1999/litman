@@ -375,7 +375,8 @@ def check_and_prompt_project_drift(
       present → return silently (the missing-vault case belongs to the
       registry-drift segment; we don't double-report).
     * Probe each project dir with a bounded stat. Only a definite ``False``
-      counts as drift; ``None`` (timeout / unknown) is skipped silently.
+      counts as drift; ``None`` (timeout / unknown) is skipped silently. A value
+      that is not a full path is drift without a stat (``stored_project_dir``).
     * Enter is NON-destructive (ADR-014): a missing project dir is more likely a
       not-yet-mounted / other-machine situation than a real deletion, and
       ``lit project rm`` is an irreversible cascade — so blank = skip, and
@@ -423,6 +424,7 @@ def check_and_prompt_project_drift(
 
     if load_config_fn is None:
         from litman.core.config import load_config as load_config_fn
+    from litman.core.config import project_probe_paths, stored_project_dir
 
     vault = Path(active.path)
     try:
@@ -437,11 +439,12 @@ def check_and_prompt_project_drift(
     if not projects:
         return
 
-    status = exists(list(projects.values()))
+    status = exists(project_probe_paths(projects))
     missing = [
         name
         for name, path in projects.items()
-        if status.get(path) is False
+        if (project_dir := stored_project_dir(path)) is None
+        or status.get(str(project_dir)) is False
     ]
     if not missing:
         return
@@ -653,11 +656,10 @@ def check_and_prompt_bridge_drift(
     if not projects:
         return
 
+    from litman.core.config import project_probe_paths
     from litman.core.project_link import find_dangling_bridges
 
-    dir_status = exists(
-        [str(Path(p).expanduser()) for p in projects.values()]
-    )
+    dir_status = exists(project_probe_paths(projects))
     dangling = find_dangling_bridges(projects, dir_status, exists)
     if not dangling:
         return

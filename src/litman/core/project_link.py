@@ -37,7 +37,7 @@ from pathlib import Path
 from typing import Any, Literal, NamedTuple
 
 from litman.core.atomic import staged_write
-from litman.core.config import config_to_yaml_dict, load_config
+from litman.core.config import config_to_yaml_dict, load_config, stored_project_dir
 from litman.core.dates import now_iso
 from litman.core.document import list_papers, read_metadata_or_raise
 from litman.core.locking import rmtree
@@ -122,10 +122,10 @@ def _resolve_project_dir(
             f"  projects:\n    {project}: /path/to/{project}\n"
             f"Registered: {sorted(registry) or '(none)'}"
         )
-    project_dir = Path(registry[project]).expanduser()
-    if not project_dir.is_dir():
+    project_dir = stored_project_dir(registry[project])
+    if project_dir is None or not project_dir.is_dir():
         raise LinkError(
-            f"Project {project!r} resolves to {project_dir}, "
+            f"Project {project!r} resolves to {project_dir or registry[project]}, "
             "but that directory does not exist on this machine. "
             "Either create / sync the project, or fix the path in "
             "lit-config.yaml's `projects:` map."
@@ -558,8 +558,8 @@ def find_dangling_bridges(
     """
     links: dict[str, list[Path]] = {}
     for name in sorted(projects):
-        project_dir = Path(projects[name]).expanduser()
-        if dir_status.get(str(project_dir)) is not True:
+        project_dir = stored_project_dir(projects[name])
+        if project_dir is None or dir_status.get(str(project_dir)) is not True:
             continue
         if not project_dir.is_dir():
             continue
@@ -656,8 +656,8 @@ def refresh_project_code_links(
         project_dir_str = registry.get(project)
         if not project_dir_str:
             continue
-        project_dir = Path(project_dir_str).expanduser()
-        if not project_dir.is_dir():
+        project_dir = stored_project_dir(project_dir_str)
+        if project_dir is None or not project_dir.is_dir():
             continue
         try:
             out[project] = reconcile_project_code_links(
@@ -1212,9 +1212,7 @@ def remove_project(
     referencing = find_referencing_papers(papers, _PROJECTS_DICT, name)
 
     project_dir_str = config.projects.get(name)
-    project_dir = (
-        Path(project_dir_str).expanduser() if project_dir_str else None
-    )
+    project_dir = stored_project_dir(project_dir_str) if project_dir_str else None
 
     # Build the post-removal truth sources.
     new_taxonomy_values = [
@@ -1503,12 +1501,12 @@ def rebuild_all_project_links(
     out: dict[str, dict[str, Any]] = {}
 
     for project, project_dir_str in sorted(registry.items()):
-        project_dir = Path(project_dir_str).expanduser()
+        project_dir = stored_project_dir(project_dir_str)
         tagged_papers = [
             p for p in papers if project in (p.get("projects") or [])
         ]
         n_tagged = len(tagged_papers)
-        if not project_dir.is_dir():
+        if project_dir is None or not project_dir.is_dir():
             out[project] = {
                 "status": "skipped",
                 "n_tagged": n_tagged,
@@ -1517,7 +1515,7 @@ def rebuild_all_project_links(
                 "n_replaced_copies": 0,
                 "n_moved_aside": 0,
                 "aside_paths": [],
-                "detail": f"project dir not found: {project_dir}",
+                "detail": f"project dir not found: {project_dir or project_dir_str}",
             }
             continue
 

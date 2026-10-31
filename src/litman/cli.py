@@ -480,12 +480,9 @@ class LitGroup(click.Group):
 
         if vault is not None:
             try:
-                from litman.core.config import load_config
+                from litman.core.config import load_config, project_probe_paths
 
-                config = load_config(vault)
-                paths.update(
-                    str(Path(p).expanduser()) for p in config.projects.values()
-                )
+                paths.update(project_probe_paths(load_config(vault).projects))
             except Exception:
                 pass
 

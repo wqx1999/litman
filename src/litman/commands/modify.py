@@ -42,7 +42,7 @@ from litman.commands._hub_report import (
 )
 from litman.commands._options import library_option, vault_option
 from litman.core.atomic import staged_write
-from litman.core.config import load_config
+from litman.core.config import load_config, stored_project_dir
 from litman.core.correctors import (
     link_errors_from,
     moved_aside_from,
@@ -951,8 +951,8 @@ def _apply_modify(
             project_dir_str = registry.get(proj)
             if not project_dir_str:
                 continue
-            project_dir = Path(project_dir_str).expanduser()
-            if not project_dir.is_dir():
+            project_dir = stored_project_dir(project_dir_str)
+            if project_dir is None or not project_dir.is_dir():
                 continue
             try:
                 write_references_md(

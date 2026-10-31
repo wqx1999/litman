@@ -86,7 +86,7 @@ from litman.core.code import (
     can_fetch_again,
     repo_changes,
 )
-from litman.core.config import load_config
+from litman.core.config import load_config, stored_project_dir
 from litman.core.confirm import _confirm_destructive
 from litman.core.correctors import reconcile_derived
 from litman.core.dates import now_iso
@@ -373,8 +373,8 @@ def _teardown_project_links(
         project_dir_str = registry.get(project)
         if not project_dir_str:
             continue
-        project_dir = Path(project_dir_str).expanduser()
-        if not project_dir.is_dir():
+        project_dir = stored_project_dir(project_dir_str)
+        if project_dir is None or not project_dir.is_dir():
             continue
 
         paper_link = project_dir / LITERATURE_SUBDIR / target_id

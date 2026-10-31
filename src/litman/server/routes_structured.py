@@ -874,7 +874,7 @@ async def put_active_vault(request: Request) -> dict[str, object]:
     # links a healthy project got from elsewhere (blind review W1).
     try:
         from litman.commands._drift import _exists_bounded
-        from litman.core.config import load_config
+        from litman.core.config import load_config, project_probe_paths
         from litman.core.project_link import (
             find_dangling_bridges,
             rebuild_all_project_links,
@@ -883,9 +883,7 @@ async def put_active_vault(request: Request) -> dict[str, object]:
 
         projects = dict(load_config(target).projects)
         if projects:
-            dir_status = _exists_bounded(
-                [str(Path(p).expanduser()) for p in projects.values()]
-            )
+            dir_status = _exists_bounded(project_probe_paths(projects))
             dangling = find_dangling_bridges(projects, dir_status, _exists_bounded)
             if dangling:
                 affected = {proj: projects[proj] for proj in dangling}
@@ -1000,7 +998,7 @@ async def put_vault_path(request: Request, name: str) -> dict[str, object]:
     # the fallback.
     try:
         from litman.commands._drift import _exists_bounded
-        from litman.core.config import load_config
+        from litman.core.config import load_config, project_probe_paths
         from litman.core.project_link import (
             find_dangling_bridges,
             rebuild_all_project_links,
@@ -1009,9 +1007,7 @@ async def put_vault_path(request: Request, name: str) -> dict[str, object]:
 
         projects = dict(load_config(target).projects)
         if projects:
-            dir_status = _exists_bounded(
-                [str(Path(p).expanduser()) for p in projects.values()]
-            )
+            dir_status = _exists_bounded(project_probe_paths(projects))
             dangling = find_dangling_bridges(projects, dir_status, _exists_bounded)
             if dangling:
                 affected = {proj: projects[proj] for proj in dangling}
