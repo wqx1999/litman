@@ -601,12 +601,27 @@ def test_scheme_handler_real_probe_finds_no_handler_for_a_made_up_scheme() -> No
     assert _REAL_SCHEME_HAS_HANDLER("litman-no-such-scheme") is False
 
 
-@pytest.mark.skipif(sys.platform != "win32", reason="Win32 API, Windows only")
-def test_scheme_handler_real_probe_finds_a_known_association() -> None:
+def test_scheme_handler_real_probe_answers_for_a_registered_scheme() -> None:
     """The control for the test above: the real call can answer yes, so its
-    no is not a broken ctypes signature. Notepad's ``.txt`` is on every
-    Windows runner; the app's own scheme is not."""
-    assert _REAL_SCHEME_HAS_HANDLER(".txt") is True
+    no is not a broken ctypes signature. The scheme is registered here, as the
+    runner's own associations are not something to count on."""
+    if sys.platform != "win32":
+        pytest.skip("Win32 API, Windows only")
+    import winreg
+
+    scheme = f"litman-test-{os.getpid()}"
+    command = rf"Software\Classes\{scheme}\shell\open\command"
+    assert _REAL_SCHEME_HAS_HANDLER(scheme) is False
+    with winreg.CreateKey(winreg.HKEY_CURRENT_USER, command) as key:
+        winreg.SetValueEx(key, "", 0, winreg.REG_SZ, f'"{sys.executable}" "%1"')
+    try:
+        assert _REAL_SCHEME_HAS_HANDLER(scheme) is True
+    finally:
+        # Leaf first: DeleteKey refuses a key that has subkeys.
+        parts = command.split("\\")
+        for depth in range(len(parts), 2, -1):
+            winreg.DeleteKey(winreg.HKEY_CURRENT_USER, "\\".join(parts[:depth]))
+    assert _REAL_SCHEME_HAS_HANDLER(scheme) is False
 
 
 def test_windows_opens_a_packaged_app_by_its_link_through_the_short_lived_child(

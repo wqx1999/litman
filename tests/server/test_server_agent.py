@@ -913,7 +913,9 @@ def _machine(
     started: dict[str, list] = {"terminal": [], "app": []}
     monkeypatch.setattr(
         "litman.core.terminal.spawn_terminal",
-        lambda argv, _cwd: started["terminal"].append(argv) or True,
+        # By name: Windows passes the resolved path, others the bare command.
+        lambda argv, _cwd: started["terminal"].append([Path(argv[0]).name, *argv[1:]])
+        or True,
     )
     monkeypatch.setattr(
         app_launch,
