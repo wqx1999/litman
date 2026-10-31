@@ -224,6 +224,11 @@ def _isolate_machine_config_roots(
     home = tmp_path_factory.mktemp("machine-home")
     monkeypatch.setenv("HOME", str(home))
     monkeypatch.setenv("USERPROFILE", str(home))
+    # refresh_path() writes PATH straight into os.environ, so this restores it.
+    # On Windows the registry's %USERPROFILE%\\... entry expands to this test's
+    # new home, and left in place one such entry per test passes the 32767
+    # limit on an environment variable partway through the suite.
+    monkeypatch.setenv("PATH", os.environ.get("PATH", ""))
     for var in (
         "XDG_CONFIG_HOME",
         "XDG_DATA_HOME",

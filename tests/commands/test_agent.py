@@ -263,6 +263,8 @@ def test_agent_windows_runs_npm_cmd_shim_through_cmd(
     monkeypatch.setattr(sys, "platform", "win32")
     codex = r"C:\Users\Wang\AppData\Roaming\npm\codex.CMD"
     monkeypatch.setattr(agents, "resolve_launch", lambda _spec: codex)
+    # Codex has an app too, so its CLI is probed to choose.
+    monkeypatch.setattr(agents.shutil, "which", lambda name: f"C:\\bin\\{name}.exe")
     monkeypatch.setenv("CLAUDE_CODE_CHILD_SESSION", "1")
     calls: list[list[str]] = []
     envs: list[dict[str, str]] = []
