@@ -208,6 +208,21 @@ def test_a_cross_site_agent_launch_is_refused_and_launches_nothing(
     assert spawned == [["claude"]]
 
 
+def test_a_foreign_page_cannot_save_a_launch_mode(vault: Path) -> None:
+    from litman.core import agent_prefs
+
+    client = TestClient(create_app(vault))
+    body = {"agent": "claude", "mode": "app"}
+
+    resp = client.put("/api/agent/launch-mode", json=body, headers={"Origin": FOREIGN})
+    assert resp.status_code == 403
+    assert agent_prefs.load_launch_modes() == {}
+
+    resp = client.put("/api/agent/launch-mode", json=body, headers={"Origin": GUI_URL})
+    assert resp.status_code == 200
+    assert agent_prefs.load_launch_modes() == {"claude": "app"}
+
+
 @pytest.mark.parametrize(
     "origin",
     [

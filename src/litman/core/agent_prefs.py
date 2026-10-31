@@ -13,6 +13,9 @@ recomputed on every call — so the test suite's ``_isolate_registry`` fixture
 (which points that env var at a tmp dir) isolates ``preferences.yaml`` for
 free, and the file rides along with the registry on a cloud-synced config dir.
 
+The same file holds the way the GUI button starts each agent, for an agent with
+both a CLI and an app. ``lit agent`` never reads it.
+
 This writes a machine-global config file, NOT a vault TRUTH/DERIVED surface:
 invariant #16 (the WebUI structured-write whitelist) does not apply and there
 is no drift-ledger pair to register. The write is atomic (tmp-file +
@@ -25,17 +28,20 @@ from __future__ import annotations
 import io
 import os
 from pathlib import Path
+from typing import Any, cast
 
 from platformdirs import user_config_dir
 
-from litman.core.agents import get_agent
+from litman.core.agents import LaunchMode, get_agent, launch_modes
 from litman.core.vault_registry import REGISTRY_APP_NAME, REGISTRY_ENV_VAR
 from litman.core.yaml_pool import ThreadLocalYAML
 
 PREFS_FILENAME = "preferences.yaml"
 
-# Sole key stored in the file today: the chosen default agent name.
+# The chosen default agent name.
 _DEFAULT_AGENT_KEY = "default_agent"
+# Per agent name, the chosen way of starting it.
+_LAUNCH_MODES_KEY = "launch_modes"
 
 _yaml = ThreadLocalYAML(
     indent={"mapping": 2, "sequence": 4, "offset": 2},
@@ -60,6 +66,36 @@ def prefs_path() -> Path:
     return Path(user_config_dir(REGISTRY_APP_NAME)) / PREFS_FILENAME
 
 
+def _load_prefs() -> dict[str, Any]:
+    """The file's top-level mapping; empty for a missing file, unreadable YAML
+    or a non-mapping top level."""
+    path = prefs_path()
+    if not path.is_file():
+        return {}
+    try:
+        raw = _yaml.load(path.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+    return dict(raw) if isinstance(raw, dict) else {}
+
+
+def _write_pref(key: str, value: object) -> None:
+    """Set one key, keeping the others, in an atomic write."""
+    prefs = _load_prefs()
+    prefs[key] = value
+    path = prefs_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    buf = io.StringIO()
+    buf.write(
+        "# litman machine-level preferences (not per-vault). Managed by\n"
+        "# `lit setup`, the GUI agent panel, and `lit agent --set-default`.\n\n"
+    )
+    _yaml.dump(prefs, buf)
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp.write_text(buf.getvalue(), encoding="utf-8")
+    tmp.replace(path)
+
+
 def load_default_agent() -> str | None:
     """Return the user's chosen default agent name, or ``None``.
 
@@ -67,16 +103,7 @@ def load_default_agent() -> str | None:
     or non-string key) means "the user has not chosen yet" — the caller falls
     back to the catalog default and the GUI red dot stays lit.
     """
-    path = prefs_path()
-    if not path.is_file():
-        return None
-    try:
-        raw = _yaml.load(path.read_text(encoding="utf-8"))
-    except Exception:
-        return None
-    if not isinstance(raw, dict):
-        return None
-    value = raw.get(_DEFAULT_AGENT_KEY)
+    value = _load_prefs().get(_DEFAULT_AGENT_KEY)
     return value if isinstance(value, str) else None
 
 
@@ -92,17 +119,38 @@ def save_default_agent(name: str) -> None:
         raise ValueError(
             f"Cannot set default agent to {name!r}: not a supported agent."
         )
-    path = prefs_path()
-    path.parent.mkdir(parents=True, exist_ok=True)
-    buf = io.StringIO()
-    buf.write(
-        "# litman machine-level preferences (not per-vault). Managed by\n"
-        "# `lit setup`, the GUI agent panel, and `lit agent --set-default`.\n\n"
-    )
-    _yaml.dump({_DEFAULT_AGENT_KEY: name}, buf)
-    tmp = path.with_suffix(path.suffix + ".tmp")
-    tmp.write_text(buf.getvalue(), encoding="utf-8")
-    tmp.replace(path)
+    _write_pref(_DEFAULT_AGENT_KEY, name)
+
+
+def load_launch_modes() -> dict[str, LaunchMode]:
+    """The saved way of starting each agent; an entry that is not a mode, like
+    a broken file, counts as not chosen."""
+    raw = _load_prefs().get(_LAUNCH_MODES_KEY)
+    if not isinstance(raw, dict):
+        return {}
+    return {
+        str(name): cast(LaunchMode, mode)
+        for name, mode in raw.items()
+        if mode == "terminal" or mode == "app"
+    }
+
+
+def save_launch_mode(name: str, mode: str) -> None:
+    """Save the way the GUI button starts agent ``name`` (atomic write).
+
+    Whether it is installed here is not asked: a choice that is not usable
+    right now is passed over at launch, not refused.
+
+    Raises:
+        ValueError: ``name`` is not a supported catalog agent, or has no such
+            way of starting. The endpoint layer turns that into an HTTP 400.
+    """
+    spec = get_agent(name)
+    if spec is None or not spec.supported:
+        raise ValueError(f"Cannot save a launch mode for {name!r}: not a supported agent.")
+    if mode not in launch_modes(spec):
+        raise ValueError(f"Agent {name!r} has no launch mode {mode!r}.")
+    _write_pref(_LAUNCH_MODES_KEY, {**load_launch_modes(), name: mode})
 
 
 def remove_prefs() -> dict[str, object]:

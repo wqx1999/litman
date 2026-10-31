@@ -10,6 +10,8 @@ Endpoints:
   server computes ``needs_setup`` (single source of truth for the state machine)
 * ``POST /api/agent/skill/install`` — install / refresh the named agent's skill
 * ``PUT  /api/agent/default``     — record the machine-level default agent
+* ``PUT  /api/agent/launch-mode`` — record how the button starts an agent that
+  has both a CLI and a desktop app
 
 The agent set + launch commands + install targets all come from the code-level
 catalog (:mod:`litman.core.agents`); the chosen default comes from the
@@ -68,11 +70,11 @@ def _copy_fallback(
     }
 
 
-async def _body_agent_name(request: Request) -> str | None:
-    """Read ``body["agent"]`` (a string) or ``None``.
+async def _body_string(request: Request, key: str) -> str | None:
+    """Read ``body[key]`` (a string) or ``None``.
 
-    Mirrors the RCE-safe body parse: only the ``agent`` name is ever read; a
-    malformed body 400s, a non-string ``agent`` 400s, and every other field
+    Mirrors the RCE-safe body parse: only the named field is ever read; a
+    malformed body 400s, a non-string value 400s, and every other field
     (``command`` / ``target`` / ``path`` / …) is ignored.
     """
     body = await request.body()
@@ -82,12 +84,17 @@ async def _body_agent_name(request: Request) -> str | None:
         payload = await request.json()
     except Exception as exc:
         raise HTTPException(status_code=400, detail="Body must be JSON.") from exc
-    if isinstance(payload, dict) and payload.get("agent") is not None:
-        name = payload["agent"]
-        if not isinstance(name, str):
-            raise HTTPException(status_code=400, detail="'agent' must be a string.")
-        return name
+    if isinstance(payload, dict) and payload.get(key) is not None:
+        value = payload[key]
+        if not isinstance(value, str):
+            raise HTTPException(status_code=400, detail=f"'{key}' must be a string.")
+        return value
     return None
+
+
+async def _body_agent_name(request: Request) -> str | None:
+    """Read ``body["agent"]``: the only field most of these endpoints look at."""
+    return await _body_string(request, "agent")
 
 
 @router.get("/agents")
@@ -102,7 +109,8 @@ def get_agents() -> dict[str, object]:
 @router.post("/agent/launch")
 async def launch_agent(request: Request) -> dict[str, object]:
     """Launch a catalog agent in a terminal window at the vault, or open a
-    desktop-app agent at the vault (``mode: "app"``).
+    desktop-app agent at the vault (``mode: "app"``). An agent with both goes
+    the way :func:`litman.core.agents.choose_mode` says.
 
     Body JSON (optional): ``{"agent": "<name>"}`` — an absent body / key
     launches the resolved default. ONLY the name is read; the command comes
@@ -130,7 +138,7 @@ async def launch_agent(request: Request) -> dict[str, object]:
     if not agents.detect(spec):
         detail = (
             app_launch.not_installed_message(spec)
-            if spec.kind == "app"
+            if agents.choose_mode(spec) == "app"
             else (
                 f"Agent '{agent_name}' is not installed or is not available "
                 "on PATH. Install it, then recheck."
@@ -143,7 +151,8 @@ async def launch_agent(request: Request) -> dict[str, object]:
     # launch so "Ready" plus "Set default" cannot leave it prompting forever.
     permission = spec.install_lit_permission()
 
-    if spec.kind == "app":
+    saved = agent_prefs.load_launch_modes().get(agent_name)
+    if agents.choose_mode(spec, saved) == "app":
         # Module-attribute access, as for the spawn below.
         try:
             app_launch.open_app(spec, request.app.state.vault)
@@ -151,13 +160,16 @@ async def launch_agent(request: Request) -> dict[str, object]:
             return _copy_fallback(agent_name, default, permission["warning"])
         except app_launch.AppNotFound as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
-        return {
+        opened: dict[str, object] = {
             "ok": True,
             "mode": "app",
             "agent": agent_name,
             "command": "",
             "permission_warning": permission["warning"],
         }
+        if spec.app_open_hint:
+            opened["hint"] = spec.app_open_hint
+        return opened
 
     # A CLI may have been installed while this long-running GUI server was
     # open, or live under a per-user bin dir the desktop session's PATH omits.
@@ -205,7 +217,10 @@ def agent_status(response: Response) -> dict[str, object]:
     litman), ``"current"``, or ``null`` for a ``supported=False`` placeholder
     (never probed). The panel's per-card install/update/ready branch reads
     this per-row value; agents sharing a skills directory legitimately share
-    a state.
+    a state. It also carries ``mode``, the way the button would start it now,
+    and ``modes``, the ways this machine could start it, each with ``usable``
+    and its ``install_url``. An SSH session or a Linux box without a display
+    lists no app for an agent that also has a CLI.
 
     The top-level ``skill_state`` is the resolved default's verdict, kept for
     the ``needs_setup`` formula and older consumers. ``skill_installed``
@@ -220,6 +235,7 @@ def agent_status(response: Response) -> dict[str, object]:
     buys nothing anyway.
     """
     response.headers["Cache-Control"] = "no-store"
+    saved_modes = agent_prefs.load_launch_modes()
     entries = [
         {
             "name": spec.name,
@@ -231,7 +247,18 @@ def agent_status(response: Response) -> dict[str, object]:
             # Per-agent skill verdict; placeholders are never probed (their
             # adapters loud-fail by design).
             "skill_state": spec.skill_state() if spec.supported else None,
-            "kind": spec.kind,
+            # What the panel's not-installed line goes by: a row with a CLI
+            # keeps the CLI's wording, whichever way it starts.
+            "kind": "terminal" if "terminal" in agents.launch_modes(spec) else "app",
+            "mode": agents.choose_mode(spec, saved_modes.get(spec.name)),
+            "modes": [
+                {
+                    "mode": mode,
+                    "usable": agents.mode_usable(spec, mode),
+                    "install_url": agents.mode_install_url(spec, mode),
+                }
+                for mode in agents.machine_modes(spec)
+            ],
         }
         for spec in agents.AGENTS
     ]
@@ -328,7 +355,7 @@ async def set_default_agent(request: Request) -> dict[str, object]:
         detail = (
             f"Agent '{name}' cannot be the default: "
             f"{app_launch.not_installed_message(spec)}"
-            if spec.kind == "app"
+            if agents.choose_mode(spec) == "app"
             else (
                 f"Agent '{name}' cannot be the default because it is not "
                 "installed or is not available on PATH."
@@ -340,3 +367,25 @@ async def set_default_agent(request: Request) -> dict[str, object]:
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     return {"ok": True, "default": name}
+
+
+@router.put("/agent/launch-mode")
+async def set_launch_mode(request: Request) -> dict[str, object]:
+    """Record the way the button starts an agent.
+
+    Body JSON: ``{"agent": "<name>", "mode": "terminal" | "app"}``. ONLY those
+    two fields are read. An unknown agent, or a mode the agent's row does not
+    have, 400s (``save_launch_mode`` validates against the catalog).
+    """
+    name = await _body_agent_name(request)
+    mode = await _body_string(request, "mode")
+    if name is None or mode is None:
+        raise HTTPException(
+            status_code=400,
+            detail='Body must name an agent and a mode: {"agent": "<name>", "mode": "app"}.',
+        )
+    try:
+        agent_prefs.save_launch_mode(name, mode)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {"ok": True, "agent": name, "mode": mode}

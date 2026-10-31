@@ -187,6 +187,8 @@ def test_agent_windows_child_exit_code_passes_through(
     monkeypatch.setattr(
         agents, "resolve_launch", lambda spec: f"C:\\bin\\{spec.name}.exe"
     )
+    # The default agent has an app too, so its CLI is probed to choose.
+    monkeypatch.setattr(agents.shutil, "which", lambda name: f"C:\\bin\\{name}.exe")
     calls: dict[str, object] = {}
 
     def fake_run(argv: list[str], cwd: Path) -> SimpleNamespace:
@@ -250,7 +252,7 @@ def test_agent_launches_saved_default(
 
 
 # ---------------------------------------------------------------------------
-# A desktop-app agent (kind="app", task-zcode-agent): open it and return
+# A desktop-app agent (task-zcode-agent): open it and return
 # ---------------------------------------------------------------------------
 
 
@@ -310,7 +312,7 @@ def test_agent_dsh_on_windows_starts_its_exe_and_does_not_claim_the_vault(
     )
     monkeypatch.setattr(
         app_launch,
-        "_startfile",
+        "_open_link_detached_windows",
         lambda _url: pytest.fail("the system opener lets DSH log into our console"),
     )
 
@@ -334,4 +336,96 @@ def test_agent_dsh_never_opened_names_the_download(
         "DeepSeek Harness isn't installed, or hasn't been opened yet. "
         "Open it once, then try again. "
         "Get DeepSeek Harness: https://www.deepseek.com/harness/"
+    )
+
+
+# ---------------------------------------------------------------------------
+# An agent with both a CLI and an app (task-agent-launch-modes): the terminal
+# first, whatever the GUI button saved
+# ---------------------------------------------------------------------------
+
+
+def _claude_installed(
+    monkeypatch: pytest.MonkeyPatch, *, terminal: bool, app: bool
+) -> list[tuple[str, Path]]:
+    """A desktop machine; returns the record of apps opened."""
+    from litman.core import app_launch
+
+    monkeypatch.delenv("SSH_CONNECTION", raising=False)
+    monkeypatch.delenv("SSH_CLIENT", raising=False)
+    monkeypatch.setattr(app_launch, "_platform", lambda: "win32")
+    monkeypatch.setattr(
+        agents.shutil, "which", lambda name: f"/usr/bin/{name}" if terminal else None
+    )
+    monkeypatch.setattr(app_launch, "app_installed", lambda _spec: app)
+    opened: list[tuple[str, Path]] = []
+    monkeypatch.setattr(
+        app_launch, "open_app", lambda spec, at: opened.append((spec.name, at))
+    )
+    return opened
+
+
+def test_agent_with_both_runs_in_the_terminal_even_with_the_app_saved(
+    vault: Path, monkeypatch: pytest.MonkeyPatch, exec_capture: dict[str, object]
+) -> None:
+    opened = _claude_installed(monkeypatch, terminal=True, app=True)
+    agent_prefs.save_launch_mode("claude", "app")
+    result = CliRunner().invoke(agent_cmd, ["claude", "--library", str(vault)])
+    assert result.exit_code == 0, result.output
+    assert exec_capture["argv"] == ["claude"]
+    assert opened == []
+
+
+def test_agent_with_only_its_app_here_opens_it_with_the_hint(
+    vault: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    opened = _claude_installed(monkeypatch, terminal=False, app=True)
+    monkeypatch.setattr(os, "execvp", lambda *_a: pytest.fail("no CLI to exec"))
+    result = CliRunner().invoke(agent_cmd, ["claude", "--library", str(vault)])
+    assert result.exit_code == 0, result.output
+    assert opened == [("claude", vault)]
+    assert result.output == "Opened Claude. Confirm the folder to start.\n"
+
+
+def test_agent_with_both_and_neither_here_names_the_cli_download(
+    vault: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    opened = _claude_installed(monkeypatch, terminal=False, app=False)
+    monkeypatch.setattr(agents, "resolve_launch", lambda _spec: None)
+    result = CliRunner().invoke(agent_cmd, ["claude", "--library", str(vault)])
+    assert result.exit_code != 0
+    assert isinstance(result.exception, LitmanError)
+    message = str(result.exception)
+    assert "'claude' not found on PATH" in message
+    assert agents.get_agent("claude").install_url in message
+    assert opened == []
+
+
+def test_agent_with_both_over_ssh_never_opens_the_app(
+    vault: Path, monkeypatch: pytest.MonkeyPatch, exec_capture: dict[str, object]
+) -> None:
+    opened = _claude_installed(monkeypatch, terminal=True, app=True)
+    monkeypatch.setenv("SSH_CONNECTION", "1.2.3.4 5 6.7.8.9 22")
+    result = CliRunner().invoke(agent_cmd, ["claude", "--library", str(vault)])
+    assert result.exit_code == 0, result.output
+    assert exec_capture["argv"] == ["claude"]
+    assert opened == []
+
+
+def test_agent_app_start_failure_names_the_app_download_not_the_clis(
+    vault: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from litman.core import app_launch
+
+    _claude_installed(monkeypatch, terminal=False, app=True)
+
+    def broken(_spec: object, _at: Path) -> None:
+        raise app_launch.AppNotFound("Could not open Claude Code: denied")
+
+    monkeypatch.setattr(app_launch, "open_app", broken)
+    result = CliRunner().invoke(agent_cmd, ["claude", "--library", str(vault)])
+    assert result.exit_code != 0
+    assert str(result.exception) == (
+        "Could not open Claude Code: denied "
+        "Get Claude Code: https://claude.com/download"
     )

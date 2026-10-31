@@ -8,10 +8,13 @@ every platform's branch runs on every CI runner. No real app is started.
 
 from __future__ import annotations
 
+import ctypes
 import dataclasses
 import os
 import subprocess
-from pathlib import Path
+import sys
+from pathlib import Path, PureWindowsPath
+from typing import cast
 from urllib.parse import parse_qs, urlsplit
 
 import pytest
@@ -19,8 +22,10 @@ import pytest
 from litman.core import agents, app_launch
 
 ZCODE = agents.get_agent("zcode")
-# The conftest stubs this probe for every test; captured at import, before it.
+CLAUDE = agents.get_agent("claude")
+# The conftest stubs these probes for every test; captured at import, before it.
 _REAL_XDG_DEFAULT_HANDLER = app_launch._xdg_default_handler
+_REAL_SCHEME_HAS_HANDLER = app_launch._scheme_has_handler
 
 
 @pytest.fixture
@@ -33,7 +38,11 @@ def started(monkeypatch: pytest.MonkeyPatch) -> list[tuple[str, object]]:
         lambda argv, env: calls.append(("popen", (argv, env))),
     )
     monkeypatch.setattr(app_launch, "_spawn", lambda argv: calls.append(("spawn", argv)))
-    monkeypatch.setattr(app_launch, "_startfile", lambda url: calls.append(("startfile", url)))
+    monkeypatch.setattr(
+        app_launch,
+        "_open_link_detached_windows",
+        lambda url: calls.append(("link", url)),
+    )
     return calls
 
 
@@ -320,13 +329,13 @@ def test_windows_without_an_arg_template_opens_the_link(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, started: list
 ) -> None:
     _on(monkeypatch, "win32")
-    _registered_exe(monkeypatch, tmp_path)
+    monkeypatch.setattr(app_launch, "_scheme_has_handler", lambda _scheme: True)
     spec = dataclasses.replace(ZCODE, app_args=())
     vault = tmp_path / "vault"
 
     app_launch.open_app(spec, vault)
 
-    assert started == [("startfile", app_launch.workspace_url(spec, vault))]
+    assert started == [("link", app_launch.workspace_url(spec, vault))]
 
 
 def test_macos_opens_the_link(
@@ -502,3 +511,233 @@ def test_only_an_app_whose_link_or_arguments_name_the_vault_opens_at_it() -> Non
     assert app_launch.opens_at_vault(
         dataclasses.replace(DSH, open_url="dsh://open?path={vault}")
     )
+
+
+# ---------------------------------------------------------------------------
+# A packaged app on Windows: no exe to find or start (task-agent-launch-modes)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("handled", [True, False])
+def test_windows_row_without_args_is_installed_when_its_link_has_a_handler(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, handled: bool
+) -> None:
+    """The handler decides, whatever the registry's open command says."""
+    _on(monkeypatch, "win32")
+    _registered_exe(monkeypatch, tmp_path)
+    asked: list[str] = []
+
+    def has_handler(scheme: str) -> bool:
+        asked.append(scheme)
+        return handled
+
+    monkeypatch.setattr(app_launch, "_scheme_has_handler", has_handler)
+    assert app_launch.app_installed(CLAUDE) is handled
+    assert asked == ["claude"]
+
+
+@pytest.mark.parametrize("name", ["zcode", "dsh"])
+def test_windows_row_with_args_still_needs_the_exe(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, name: str
+) -> None:
+    _on(monkeypatch, "win32")
+    monkeypatch.setattr(
+        app_launch,
+        "_scheme_has_handler",
+        lambda _scheme: pytest.fail("a row with app_args goes by its exe"),
+    )
+    spec = agents.get_agent(name)
+    assert app_launch.app_installed(spec) is False
+
+    _registered_exe(monkeypatch, tmp_path)
+    assert app_launch.app_installed(spec) is True
+
+
+class _FakeShlwapi:
+    def __init__(self, result: int) -> None:
+        self.result = result
+        self.calls: list[tuple[object, ...]] = []
+
+    def AssocQueryStringW(self, *args: object) -> int:
+        self.calls.append(args)
+        return self.result
+
+
+@pytest.mark.parametrize(
+    ("result", "handled"),
+    # 0x80070483, ERROR_NO_ASSOCIATION as ctypes hands it back: a signed int.
+    [(0, True), (0x80070483 - 2**32, False)],
+)
+def test_scheme_handler_probe_is_the_display_name_call(
+    monkeypatch: pytest.MonkeyPatch, result: int, handled: bool
+) -> None:
+    shlwapi = _FakeShlwapi(result)
+    loaded: list[str] = []
+
+    def win_dll(name: str) -> _FakeShlwapi:
+        loaded.append(name)
+        return shlwapi
+
+    monkeypatch.setattr(ctypes, "WinDLL", win_dll, raising=False)
+    assert _REAL_SCHEME_HAS_HANDLER("claude") is handled
+    assert loaded == ["shlwapi"]
+    [(flags, which, scheme, extra, _out, _size)] = shlwapi.calls
+    assert (flags, which, extra) == (0, 4, None)
+    assert cast(ctypes.c_wchar_p, scheme).value == "claude"
+
+
+def test_scheme_handler_probe_that_fails_reads_as_no_handler(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def broken(_name: str) -> object:
+        raise OSError("no such library")
+
+    monkeypatch.setattr(ctypes, "WinDLL", broken, raising=False)
+    assert _REAL_SCHEME_HAS_HANDLER("claude") is False
+
+
+def test_scheme_handler_real_probe_finds_no_handler_for_a_made_up_scheme() -> None:
+    """Un-stubbed: off Windows there is no WinDLL, on Windows no such scheme."""
+    assert _REAL_SCHEME_HAS_HANDLER("litman-no-such-scheme") is False
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Win32 API, Windows only")
+def test_scheme_handler_real_probe_finds_a_known_association() -> None:
+    """The control for the test above: the real call can answer yes, so its
+    no is not a broken ctypes signature. Notepad's ``.txt`` is on every
+    Windows runner; the app's own scheme is not."""
+    assert _REAL_SCHEME_HAS_HANDLER(".txt") is True
+
+
+def test_windows_opens_a_packaged_app_by_its_link_through_the_short_lived_child(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, started: list
+) -> None:
+    _on(monkeypatch, "win32")
+    monkeypatch.setattr(app_launch, "_scheme_has_handler", lambda _scheme: True)
+    vault = tmp_path / "lit 测试 库"
+
+    app_launch.open_app(CLAUDE, vault)
+
+    assert started == [("link", app_launch.workspace_url(CLAUDE, vault))]
+
+
+def test_windows_packaged_app_not_installed_starts_nothing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, started: list
+) -> None:
+    _on(monkeypatch, "win32")
+    with pytest.raises(app_launch.AppNotFound, match="Claude Code isn't installed"):
+        app_launch.open_app(CLAUDE, tmp_path / "vault")
+    assert started == []
+
+
+def test_short_lived_child_is_exactly_this_process(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The real seam, with only Popen stubbed. Each part is what kept a
+    measured cold start out of the console: a separate python, NUL on all
+    three streams, detached."""
+    seen: list[tuple[object, dict]] = []
+    monkeypatch.setattr(
+        app_launch.subprocess, "Popen", lambda argv, **kw: seen.append((argv, kw))
+    )
+    url = "claude://code/new?folder=C%3A%5Clib"
+
+    app_launch._open_link_detached_windows(url)
+
+    assert seen == [
+        (
+            [sys.executable, "-c", "import os,sys; os.startfile(sys.argv[1])", url],
+            {
+                "stdin": subprocess.DEVNULL,
+                "stdout": subprocess.DEVNULL,
+                "stderr": subprocess.DEVNULL,
+                "creationflags": 0x00000008 | 0x00000200,
+                "close_fds": True,
+            },
+        )
+    ]
+
+
+def test_short_lived_child_that_cannot_start_reads_as_not_found(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _on(monkeypatch, "win32")
+    monkeypatch.setattr(app_launch, "_scheme_has_handler", lambda _scheme: True)
+
+    def broken(*_args: object, **_kwargs: object) -> None:
+        raise OSError("no python here")
+
+    monkeypatch.setattr(app_launch.subprocess, "Popen", broken)
+    with pytest.raises(app_launch.AppNotFound, match="no python here"):
+        app_launch.open_app(CLAUDE, tmp_path / "vault")
+
+
+def test_claude_on_macos_is_its_bundle_opened_by_its_link(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, started: list
+) -> None:
+    _on(monkeypatch, "darwin")
+    monkeypatch.setattr(app_launch, "_app_dirs", lambda: [tmp_path])
+    assert app_launch.app_installed(CLAUDE) is False
+
+    (tmp_path / "Claude.app").mkdir()
+    assert app_launch.app_installed(CLAUDE) is True
+
+    vault = tmp_path / "vault"
+    app_launch.open_app(CLAUDE, vault)
+    assert started == [("spawn", ["open", app_launch.workspace_url(CLAUDE, vault)])]
+
+
+def test_claude_on_linux_is_its_link_handler_opened_by_xdg(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, started: list
+) -> None:
+    _on(monkeypatch, "linux")
+    monkeypatch.setenv("DISPLAY", ":0")
+    monkeypatch.setattr(app_launch, "_xdg_default_handler", lambda _s: "claude.desktop")
+    vault = tmp_path / "vault"
+
+    app_launch.open_app(CLAUDE, vault)
+
+    assert started == [("spawn", ["xdg-open", app_launch.workspace_url(CLAUDE, vault)])]
+
+
+@pytest.mark.parametrize(
+    ("vault", "encoded"),
+    [
+        (r"C:\lib", "C%3A%5Clib"),
+        (r"C:\Users\Wang Q\My Lib", "C%3A%5CUsers%5CWang%20Q%5CMy%20Lib"),
+        (r"D:\文献库", "D%3A%5C%E6%96%87%E7%8C%AE%E5%BA%93"),
+    ],
+)
+def test_claude_link_encodes_a_windows_vault_path(vault: str, encoded: str) -> None:
+    url = app_launch.workspace_url(CLAUDE, cast(Path, PureWindowsPath(vault)))
+    assert url == f"claude://code/new?folder={encoded}"
+    assert parse_qs(urlsplit(url).query) == {"folder": [vault]}
+
+
+@pytest.mark.parametrize(
+    ("platform", "ssh", "display", "reaches"),
+    [
+        ("win32", None, None, True),
+        ("darwin", None, None, True),
+        ("linux", None, ":0", True),
+        ("linux", None, None, False),
+        ("win32", "SSH_CONNECTION", None, False),
+        ("darwin", "SSH_CLIENT", None, False),
+        ("linux", "SSH_CONNECTION", ":0", False),
+    ],
+)
+def test_app_reaches_user(
+    monkeypatch: pytest.MonkeyPatch,
+    platform: str,
+    ssh: str | None,
+    display: str | None,
+    reaches: bool,
+) -> None:
+    _on(monkeypatch, platform)
+    for variable in ("SSH_CONNECTION", "SSH_CLIENT", "DISPLAY", "WAYLAND_DISPLAY"):
+        monkeypatch.delenv(variable, raising=False)
+    if ssh:
+        monkeypatch.setenv(ssh, "1.2.3.4 5 6.7.8.9 22")
+    if display:
+        monkeypatch.setenv("DISPLAY", display)
+    assert app_launch.app_reaches_user() is reaches

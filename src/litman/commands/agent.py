@@ -15,9 +15,10 @@ new command code.
 On POSIX the launch is a true ``exec`` (process replacement), so Ctrl-C /
 exit semantics belong to the agent, not a lingering ``lit`` shell; Windows has
 no exec, so it falls back to a child process whose exit code is passed through.
-A desktop-app agent (``kind="app"``) is instead opened — at the vault, if
-the app takes a folder (:mod:`litman.core.app_launch`) — and the command
-returns at once.
+A desktop-app agent is instead opened — at the vault, if the app takes a
+folder (:mod:`litman.core.app_launch`) — and the command returns at once. An
+agent with both runs in this terminal when its CLI is here; the GUI button's
+saved choice does not apply.
 """
 
 from __future__ import annotations
@@ -89,17 +90,19 @@ def agent_cmd(
             f"Agent '{agent_name}' is not available yet. "
             f"Supported agents: {supported}."
         )
-    if spec.kind == "app":
-        # A no-op for an app today (its approvals are set in the app); kept so
-        # both kinds heal their rule on launch the same way.
+    if agents.cli_mode(spec) == "app":
+        # Heal the rule on launch, as the terminal path below does. A no-op for
+        # an agent whose approvals are set in the app.
         spec.install_lit_permission()
         try:
             app_launch.open_app(spec, vault)
         except app_launch.AppNotFound as exc:
             raise LitmanError(
-                f"{exc} Get {spec.display}: {spec.install_url}"
+                f"{exc} Get {spec.display}: {agents.mode_install_url(spec, 'app')}"
             ) from exc
-        if app_launch.opens_at_vault(spec):
+        if spec.app_open_hint:
+            click.echo(spec.app_open_hint)
+        elif app_launch.opens_at_vault(spec):
             click.echo(f"Opened {spec.display} at {vault}.")
         else:
             click.echo(f"Opened {spec.display}.")

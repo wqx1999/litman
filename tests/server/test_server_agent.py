@@ -249,6 +249,8 @@ def test_status_returns_seven_catalog_entries(vault: Path) -> None:
             "install_url",
             "skill_state",
             "kind",
+            "mode",
+            "modes",
         }
         assert isinstance(e["detected"], bool)
         assert e["kind"] in {"terminal", "app"}
@@ -684,7 +686,7 @@ def test_needs_setup_default_agy_follows_antigravity_dir(
 
 
 # ---------------------------------------------------------------------------
-# A desktop-app agent (kind="app", task-zcode-agent): opened, not spawned
+# A desktop-app agent (task-zcode-agent): opened, not spawned
 # ---------------------------------------------------------------------------
 
 
@@ -849,7 +851,7 @@ def test_launch_dsh_on_windows_starts_its_exe_with_its_link(
     )
     monkeypatch.setattr(
         app_launch,
-        "_startfile",
+        "_open_link_detached_windows",
         lambda _url: pytest.fail("the system opener lets DSH log into our console"),
     )
 
@@ -883,3 +885,419 @@ def test_put_default_dsh_on_linux_is_409(
         "or hasn't been opened yet. Open it once, then try again."
     )
     assert agent_prefs.load_default_agent() is None
+
+
+# ---------------------------------------------------------------------------
+# An agent with both a CLI and an app (task-agent-launch-modes)
+# ---------------------------------------------------------------------------
+
+_CLAUDE_CLI_URL = "https://docs.claude.com/en/docs/claude-code/overview"
+_CLAUDE_APP_URL = "https://claude.com/download"
+_SSH = "1.2.3.4 5 6.7.8.9 22"
+
+
+def _machine(
+    monkeypatch: pytest.MonkeyPatch, *, terminal: bool, app: bool
+) -> dict[str, list]:
+    """A desktop machine with the CLI and the app installed or not; records
+    what a launch starts."""
+    from litman.core import app_launch
+
+    monkeypatch.delenv("SSH_CONNECTION", raising=False)
+    monkeypatch.delenv("SSH_CLIENT", raising=False)
+    monkeypatch.setattr(app_launch, "_platform", lambda: "win32")
+    monkeypatch.setattr(
+        agents.shutil, "which", lambda name: f"/usr/bin/{name}" if terminal else None
+    )
+    monkeypatch.setattr(app_launch, "app_installed", lambda _spec: app)
+    started: dict[str, list] = {"terminal": [], "app": []}
+    monkeypatch.setattr(
+        "litman.core.terminal.spawn_terminal",
+        lambda argv, _cwd: started["terminal"].append(argv) or True,
+    )
+    monkeypatch.setattr(
+        app_launch,
+        "open_app",
+        lambda spec, _vault: started["app"].append(spec.name),
+    )
+    return started
+
+
+def _launch_claude(vault: Path) -> dict:
+    resp = _client(vault).post("/api/agent/launch", json={"agent": "claude"})
+    assert resp.status_code == 200, resp.text
+    return resp.json()
+
+
+def _claude_entry(vault: Path) -> dict:
+    return next(e for e in _status(_client(vault))["agents"] if e["name"] == "claude")
+
+
+def test_launch_with_both_installed_and_no_choice_goes_to_the_cli(
+    vault: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    started = _machine(monkeypatch, terminal=True, app=True)
+    assert _launch_claude(vault) == {
+        "ok": True,
+        "mode": "spawned",
+        "agent": "claude",
+        "command": "claude",
+        "permission_warning": None,
+    }
+    assert started == {"terminal": [["claude"]], "app": []}
+
+
+def test_launch_with_the_app_saved_opens_it_and_says_to_confirm(
+    vault: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    started = _machine(monkeypatch, terminal=True, app=True)
+    agent_prefs.save_launch_mode("claude", "app")
+    assert _launch_claude(vault) == {
+        "ok": True,
+        "mode": "app",
+        "agent": "claude",
+        "command": "",
+        "permission_warning": None,
+        "hint": "Opened Claude. Confirm the folder to start.",
+    }
+    assert started == {"terminal": [], "app": ["claude"]}
+
+
+def test_launch_passes_over_a_saved_choice_not_usable_without_forgetting_it(
+    vault: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    started = _machine(monkeypatch, terminal=True, app=False)
+    agent_prefs.save_launch_mode("claude", "app")
+    assert _launch_claude(vault)["mode"] == "spawned"
+    assert started["app"] == []
+    assert agent_prefs.load_launch_modes() == {"claude": "app"}
+
+
+def test_launch_with_only_the_app_installed_opens_it(
+    vault: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    started = _machine(monkeypatch, terminal=False, app=True)
+    assert _launch_claude(vault)["mode"] == "app"
+    assert started == {"terminal": [], "app": ["claude"]}
+
+
+def test_launch_with_neither_installed_keeps_the_cli_error(
+    vault: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    started = _machine(monkeypatch, terminal=False, app=False)
+    resp = _client(vault).post("/api/agent/launch", json={"agent": "claude"})
+    assert resp.status_code == 409
+    assert resp.json()["detail"] == (
+        "Agent 'claude' is not installed or is not available on PATH. "
+        "Install it, then recheck."
+    )
+    assert started == {"terminal": [], "app": []}
+
+
+def test_catalog_default_app_opens_it_and_neither_installed_talks_app(
+    vault: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The row M4 will add: both ways, defaulting to the app, end to end."""
+    import dataclasses
+
+    row = dataclasses.replace(agents.get_agent("claude"), default_mode="app")
+    monkeypatch.setattr(
+        agents, "AGENTS", tuple(row if a.name == "claude" else a for a in agents.AGENTS)
+    )
+    started = _machine(monkeypatch, terminal=True, app=True)
+    assert _launch_claude(vault)["mode"] == "app"
+    assert started["app"] == ["claude"]
+    assert _claude_entry(vault)["mode"] == "app"
+
+    _machine(monkeypatch, terminal=False, app=False)
+    resp = _client(vault).post("/api/agent/launch", json={"agent": "claude"})
+    assert resp.status_code == 409
+    assert "hasn't been opened yet" in resp.json()["detail"]
+    assert "PATH" not in resp.json()["detail"]
+
+
+def test_launch_over_ssh_never_tries_the_app(
+    vault: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    started = _machine(monkeypatch, terminal=True, app=True)
+    monkeypatch.setenv("SSH_CONNECTION", _SSH)
+    agent_prefs.save_launch_mode("claude", "app")
+    assert _launch_claude(vault)["mode"] == "spawned"
+    assert started == {"terminal": [["claude"]], "app": []}
+
+
+def test_launch_on_linux_without_a_display_never_tries_the_app(
+    vault: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from litman.core import app_launch
+
+    started = _machine(monkeypatch, terminal=True, app=True)
+    monkeypatch.setattr(app_launch, "_platform", lambda: "linux")
+    monkeypatch.delenv("DISPLAY", raising=False)
+    monkeypatch.delenv("WAYLAND_DISPLAY", raising=False)
+    agent_prefs.save_launch_mode("claude", "app")
+    assert _launch_claude(vault)["mode"] == "spawned"
+    assert started["app"] == []
+
+
+def test_launch_claude_on_windows_goes_through_the_short_lived_child(
+    vault: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The real app_launch, faked down to the handler probe and Popen."""
+    from litman.core import app_launch
+
+    monkeypatch.delenv("SSH_CONNECTION", raising=False)
+    monkeypatch.delenv("SSH_CLIENT", raising=False)
+    monkeypatch.setattr(app_launch, "_platform", lambda: "win32")
+    monkeypatch.setattr(app_launch, "_scheme_has_handler", lambda _scheme: True)
+    monkeypatch.setattr(agents.shutil, "which", lambda _name: None)
+    started: list[list[str]] = []
+    monkeypatch.setattr(
+        app_launch.subprocess, "Popen", lambda argv, **_kw: started.append(argv)
+    )
+
+    assert _launch_claude(vault)["mode"] == "app"
+
+    [argv] = started
+    assert argv[:2] == [sys.executable, "-c"]
+    assert argv[-1] == app_launch.workspace_url(agents.get_agent("claude"), vault)
+    assert argv[-1].startswith("claude://code/new?folder=")
+
+
+def test_status_lists_both_ways_with_their_own_downloads(
+    vault: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _machine(monkeypatch, terminal=True, app=False)
+    entry = _claude_entry(vault)
+    assert entry["mode"] == "terminal"
+    assert entry["modes"] == [
+        {"mode": "terminal", "usable": True, "install_url": _CLAUDE_CLI_URL},
+        {"mode": "app", "usable": False, "install_url": _CLAUDE_APP_URL},
+    ]
+
+
+@pytest.mark.parametrize(
+    ("terminal", "app", "saved", "mode", "detected"),
+    [
+        (True, True, None, "terminal", True),
+        (True, True, "app", "app", True),
+        (True, False, "app", "terminal", True),
+        (False, True, None, "app", True),
+        (False, True, "terminal", "app", True),
+        (False, False, "app", "terminal", False),
+    ],
+)
+def test_status_mode_is_what_the_button_would_do(
+    vault: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    terminal: bool,
+    app: bool,
+    saved: str | None,
+    mode: str,
+    detected: bool,
+) -> None:
+    _machine(monkeypatch, terminal=terminal, app=app)
+    if saved:
+        agent_prefs.save_launch_mode("claude", saved)
+    entry = _claude_entry(vault)
+    assert entry["mode"] == mode
+    assert entry["detected"] is detected
+
+
+@pytest.mark.parametrize("terminal", [True, False])
+@pytest.mark.parametrize("app", [True, False])
+def test_status_kind_of_a_row_with_both_stays_terminal_for_the_shipped_panel(
+    vault: Path, monkeypatch: pytest.MonkeyPatch, terminal: bool, app: bool
+) -> None:
+    _machine(monkeypatch, terminal=terminal, app=app)
+    assert _claude_entry(vault)["kind"] == "terminal"
+
+
+def test_status_over_ssh_lists_no_app_for_a_row_with_both(
+    vault: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _machine(monkeypatch, terminal=False, app=True)
+    monkeypatch.setenv("SSH_CONNECTION", _SSH)
+    entry = _claude_entry(vault)
+    assert entry["mode"] == "terminal"
+    assert entry["detected"] is False
+    assert entry["modes"] == [
+        {"mode": "terminal", "usable": False, "install_url": _CLAUDE_CLI_URL}
+    ]
+
+
+def test_status_of_every_row_with_one_way_is_unchanged_by_the_session(
+    vault: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Regression: over SSH too, each other row lists its one way as before."""
+    monkeypatch.setenv("SSH_CONNECTION", _SSH)
+    monkeypatch.setattr(agents.shutil, "which", lambda name: f"/usr/bin/{name}")
+    entries = {e["name"]: e for e in _status(_client(vault))["agents"]}
+    expected = {
+        "zcode": ("app", False, "https://zcode.z.ai"),
+        "dsh": ("app", False, "https://www.deepseek.com/harness/"),
+        "agy": ("terminal", True, "https://antigravity.google/download#antigravity-cli"),
+        "codex": ("terminal", True, "https://developers.openai.com/codex/cli/"),
+        "cursor": ("terminal", True, "https://cursor.com/cli"),
+        "opencode": ("terminal", True, "https://opencode.ai/"),
+    }
+    for name, (mode, usable, url) in expected.items():
+        assert entries[name]["kind"] == mode
+        assert entries[name]["mode"] == mode
+        assert entries[name]["detected"] is usable
+        assert entries[name]["install_url"] == url
+        assert entries[name]["modes"] == [
+            {"mode": mode, "usable": usable, "install_url": url}
+        ]
+
+
+def test_a_row_with_one_way_launches_without_a_hint(
+    vault: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A saved choice the row does not have changes nothing."""
+    started = _machine(monkeypatch, terminal=True, app=True)
+    path = agent_prefs.prefs_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("launch_modes:\n  codex: app\n  zcode: terminal\n", encoding="utf-8")
+
+    codex = _client(vault).post("/api/agent/launch", json={"agent": "codex"}).json()
+    assert codex["mode"] == "spawned"
+    assert started == {"terminal": [["codex"]], "app": []}
+
+    zcode = _client(vault).post("/api/agent/launch", json={"agent": "zcode"}).json()
+    assert zcode == {
+        "ok": True,
+        "mode": "app",
+        "agent": "zcode",
+        "command": "",
+        "permission_warning": None,
+    }
+    assert started["app"] == ["zcode"]
+
+
+def test_put_launch_mode_saves_and_status_and_launch_follow(
+    vault: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    started = _machine(monkeypatch, terminal=True, app=True)
+    resp = _client(vault).put(
+        "/api/agent/launch-mode", json={"agent": "claude", "mode": "app"}
+    )
+    assert resp.status_code == 200
+    assert resp.json() == {"ok": True, "agent": "claude", "mode": "app"}
+    assert _claude_entry(vault)["mode"] == "app"
+    assert _launch_claude(vault)["mode"] == "app"
+    assert started["app"] == ["claude"]
+
+    assert (
+        _client(vault)
+        .put("/api/agent/launch-mode", json={"agent": "claude", "mode": "terminal"})
+        .status_code
+        == 200
+    )
+    assert _claude_entry(vault)["mode"] == "terminal"
+
+
+def test_put_launch_mode_reads_only_agent_and_mode(
+    vault: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Malicious body: `command` and `path` reach neither the file nor a launch."""
+    started = _machine(monkeypatch, terminal=True, app=True)
+    resp = _client(vault).put(
+        "/api/agent/launch-mode",
+        json={
+            "agent": "claude",
+            "mode": "app",
+            "command": "rm -rf /",
+            "path": str(tmp_path / "x"),
+            "target": "evil",
+        },
+    )
+    assert resp.status_code == 200
+    assert resp.json() == {"ok": True, "agent": "claude", "mode": "app"}
+    assert started == {"terminal": [], "app": []}
+    text = agent_prefs.prefs_path().read_text(encoding="utf-8")
+    assert "rm -rf" not in text
+    assert "evil" not in text
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        {"agent": "nope", "mode": "app"},
+        {"agent": "claude", "mode": "fullscreen"},
+        {"agent": "codex", "mode": "app"},
+        {"agent": "zcode", "mode": "terminal"},
+        {"agent": "claude"},
+        {"mode": "app"},
+        {"agent": "claude", "mode": 1},
+        {"agent": ["claude"], "mode": "app"},
+        ["claude", "app"],
+    ],
+    ids=[
+        "unknown-agent",
+        "illegal-mode",
+        "cli-row-has-no-app",
+        "app-row-has-no-cli",
+        "no-mode",
+        "no-agent",
+        "mode-not-a-string",
+        "agent-not-a-string",
+        "not-a-mapping",
+    ],
+)
+def test_put_launch_mode_refuses_with_400(vault: Path, body: object) -> None:
+    resp = _client(vault).put("/api/agent/launch-mode", json=body)
+    assert resp.status_code == 400
+    assert not agent_prefs.prefs_path().exists()
+
+
+def test_put_launch_mode_malformed_body_is_400(vault: Path) -> None:
+    resp = _client(vault).put(
+        "/api/agent/launch-mode",
+        content=b"{not json",
+        headers={"Content-Type": "application/json"},
+    )
+    assert resp.status_code == 400
+
+
+def test_put_launch_mode_keeps_the_default_agent(
+    vault: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _machine(monkeypatch, terminal=True, app=True)
+    client = _client(vault)
+    assert client.put("/api/agent/default", json={"agent": "codex"}).status_code == 200
+    client.put("/api/agent/launch-mode", json={"agent": "claude", "mode": "app"})
+    assert _status(client)["default"] == "codex"
+    assert client.put("/api/agent/default", json={"agent": "cursor"}).status_code == 200
+    assert agent_prefs.load_launch_modes() == {"claude": "app"}
+
+
+def test_put_default_row_with_both_not_installed_keeps_the_cli_wording(
+    vault: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _machine(monkeypatch, terminal=False, app=False)
+    resp = _client(vault).put("/api/agent/default", json={"agent": "claude"})
+    assert resp.status_code == 409
+    assert resp.json()["detail"] == (
+        "Agent 'claude' cannot be the default because it is not installed or "
+        "is not available on PATH."
+    )
+
+
+def test_put_default_row_with_only_its_app_here_is_accepted(
+    vault: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _machine(monkeypatch, terminal=False, app=True)
+    assert (
+        _client(vault).put("/api/agent/default", json={"agent": "claude"}).status_code
+        == 200
+    )
+
+
+def test_status_with_both_never_leaks_a_process_or_skill_path(
+    vault: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _machine(monkeypatch, terminal=True, app=True)
+    resp = _client(vault).get("/api/agent/status")
+    assert "/usr/bin" not in resp.text
+    assert sys.executable not in resp.text
