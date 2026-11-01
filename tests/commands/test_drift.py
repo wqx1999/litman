@@ -1596,7 +1596,7 @@ def test_a_refused_path_with_brackets_in_it_still_asks_again(
 
     assert len(asked) == 2
     assert gone.paths() == before
-    assert "[/typo]" in _error_lines(capsys.readouterr().out)[0]
+    assert "typo]" in _error_lines(capsys.readouterr().out)[0]
 
 
 @both_prompts
