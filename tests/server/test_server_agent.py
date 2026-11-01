@@ -105,7 +105,7 @@ def test_launch_ignores_body_command_field(
 
 
 @pytest.mark.parametrize(
-    ("agent", "marker_stays"), [("claude", False), ("cursor", True)]
+    ("agent", "marker_stays"), [("claude", False), ("codex", True)]
 )
 def test_launch_opens_the_terminal_with_the_rows_environment(
     vault: Path, monkeypatch: pytest.MonkeyPatch, agent: str, marker_stays: bool
@@ -175,7 +175,7 @@ def test_launch_windows_passes_resolved_absolute_command_to_terminal(
         lambda argv, _cwd, _env: spawned.append(argv) or True,
     )
     async def body_agent_name(_request: object) -> str:
-        return "cursor"
+        return "codex"
 
     monkeypatch.setattr(routes_agent, "_body_agent_name", body_agent_name)
     request = SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace(vault=vault)))
@@ -195,7 +195,7 @@ def test_launch_rejects_agent_that_is_not_installed(
     )
 
     async def body_agent_name(_request: object) -> str:
-        return "cursor"
+        return "codex"
 
     monkeypatch.setattr(routes_agent, "_body_agent_name", body_agent_name)
     request = SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace(vault=vault)))
@@ -595,7 +595,7 @@ def test_put_default_rejects_agent_that_is_not_installed(
 ) -> None:
     monkeypatch.setattr(agents, "detect", lambda _spec: False)
     async def body_agent_name(_request: object) -> str:
-        return "cursor"
+        return "codex"
 
     monkeypatch.setattr(routes_agent, "_body_agent_name", body_agent_name)
     with pytest.raises(HTTPException) as exc_info:
@@ -1050,135 +1050,6 @@ def test_catalog_default_app_opens_it_and_neither_installed_talks_app(
     assert "PATH" not in resp.json()["detail"]
 
 
-_CODEX_CLI_URL = "https://developers.openai.com/codex/cli/"
-_CODEX_APP_URL = "https://chatgpt.com/codex/"
-
-
-def _codex_entry(vault: Path) -> dict:
-    return next(e for e in _status(_client(vault))["agents"] if e["name"] == "codex")
-
-
-def _launch_codex(vault: Path) -> dict:
-    resp = _client(vault).post("/api/agent/launch", json={"agent": "codex"})
-    assert resp.status_code == 200, resp.text
-    return resp.json()
-
-
-def _off_windows(monkeypatch: pytest.MonkeyPatch, platform: str) -> None:
-    from litman.core import app_launch
-
-    monkeypatch.setattr(app_launch, "_platform", lambda: platform)
-    monkeypatch.setenv("DISPLAY", ":0")
-
-
-def test_codex_status_on_windows_lists_both_ways(
-    vault: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    _machine(monkeypatch, terminal=True, app=False)
-    entry = _codex_entry(vault)
-    assert entry["mode"] == "terminal"
-    assert entry["install_url"] == _CODEX_CLI_URL
-    assert entry["modes"] == [
-        {"mode": "terminal", "usable": True, "install_url": _CODEX_CLI_URL},
-        {"mode": "app", "usable": False, "install_url": _CODEX_APP_URL},
-    ]
-
-
-def test_codex_on_windows_with_both_opens_the_app_until_the_cli_is_saved(
-    vault: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    started = _machine(monkeypatch, terminal=True, app=True)
-    assert _codex_entry(vault)["mode"] == "app"
-    assert _launch_codex(vault)["mode"] == "app"
-    assert started == {"terminal": [], "app": ["codex"]}
-
-    started = _machine(monkeypatch, terminal=True, app=True)
-    agent_prefs.save_launch_mode("codex", "terminal")
-    assert _codex_entry(vault)["mode"] == "terminal"
-    assert _launch_codex(vault)["mode"] == "spawned"
-    assert started == {"terminal": [["codex"]], "app": []}
-
-
-def test_codex_on_windows_with_only_the_cli_opens_a_terminal(
-    vault: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    started = _machine(monkeypatch, terminal=True, app=False)
-    assert _launch_codex(vault)["mode"] == "spawned"
-    assert started == {"terminal": [["codex"]], "app": []}
-
-
-@pytest.mark.parametrize("platform", ["darwin", "linux"])
-def test_codex_off_windows_has_no_app_even_with_one_found(
-    vault: Path, monkeypatch: pytest.MonkeyPatch, platform: str
-) -> None:
-    started = _machine(monkeypatch, terminal=True, app=True)
-    _off_windows(monkeypatch, platform)
-    entry = _codex_entry(vault)
-    assert entry["mode"] == "terminal"
-    assert entry["modes"] == [
-        {"mode": "terminal", "usable": True, "install_url": _CODEX_CLI_URL}
-    ]
-    assert _launch_codex(vault)["mode"] == "spawned"
-    assert started == {"terminal": [["codex"]], "app": []}
-
-
-@pytest.mark.parametrize("platform", ["darwin", "linux"])
-def test_codex_off_windows_with_no_cli_points_at_the_cli(
-    vault: Path, monkeypatch: pytest.MonkeyPatch, platform: str
-) -> None:
-    started = _machine(monkeypatch, terminal=False, app=True)
-    _off_windows(monkeypatch, platform)
-    entry = _codex_entry(vault)
-    assert entry["detected"] is False
-    assert entry["mode"] == "terminal"
-    assert entry["install_url"] == _CODEX_CLI_URL
-    assert entry["modes"] == [
-        {"mode": "terminal", "usable": False, "install_url": _CODEX_CLI_URL}
-    ]
-    resp = _client(vault).post("/api/agent/launch", json={"agent": "codex"})
-    assert resp.status_code == 409
-    assert "on PATH" in resp.json()["detail"]
-    assert started == {"terminal": [], "app": []}
-
-
-@pytest.mark.parametrize("platform", ["darwin", "linux"])
-def test_codex_off_windows_passes_over_a_saved_app_without_forgetting_it(
-    vault: Path, monkeypatch: pytest.MonkeyPatch, platform: str
-) -> None:
-    started = _machine(monkeypatch, terminal=True, app=True)
-    _off_windows(monkeypatch, platform)
-    agent_prefs.save_launch_mode("codex", "app")
-    assert _codex_entry(vault)["mode"] == "terminal"
-    assert _launch_codex(vault)["mode"] == "spawned"
-    assert started == {"terminal": [["codex"]], "app": []}
-    assert agent_prefs.load_launch_modes() == {"codex": "app"}
-
-
-def test_codex_over_ssh_lists_only_its_cli(
-    vault: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    started = _machine(monkeypatch, terminal=True, app=True)
-    monkeypatch.setenv("SSH_CONNECTION", _SSH)
-    entry = _codex_entry(vault)
-    assert [m["mode"] for m in entry["modes"]] == ["terminal"]
-    assert _launch_codex(vault)["mode"] == "spawned"
-    assert started == {"terminal": [["codex"]], "app": []}
-
-
-@pytest.mark.parametrize(
-    ("name", "ways"),
-    [("claude", ["terminal", "app"]), ("zcode", ["app"]), ("dsh", ["app"])],
-)
-@pytest.mark.parametrize("platform", ["win32", "darwin", "linux"])
-def test_status_of_a_row_offering_its_app_everywhere_is_the_same_on_every_platform(
-    vault: Path, monkeypatch: pytest.MonkeyPatch, platform: str, name: str, ways: list
-) -> None:
-    _machine(monkeypatch, terminal=True, app=True)
-    _off_windows(monkeypatch, platform)
-    entries = {e["name"]: e for e in _status(_client(vault))["agents"]}
-    assert [m["mode"] for m in entries[name]["modes"]] == ways
-
-
 def test_launch_over_ssh_never_tries_the_app(
     vault: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -1291,6 +1162,7 @@ def test_status_of_every_row_with_one_way_is_unchanged_by_the_session(
         "zcode": ("app", False, "https://zcode.z.ai"),
         "dsh": ("app", False, "https://www.deepseek.com/harness/"),
         "agy": ("terminal", True, "https://antigravity.google/download#antigravity-cli"),
+        "codex": ("terminal", True, "https://developers.openai.com/codex/cli/"),
         "cursor": ("terminal", True, "https://cursor.com/cli"),
         "opencode": ("terminal", True, "https://opencode.ai/"),
     }
@@ -1310,11 +1182,11 @@ def test_a_row_with_one_way_launches_without_a_hint(
     started = _machine(monkeypatch, terminal=True, app=True)
     path = agent_prefs.prefs_path()
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text("launch_modes:\n  cursor: app\n  zcode: terminal\n", encoding="utf-8")
+    path.write_text("launch_modes:\n  codex: app\n  zcode: terminal\n", encoding="utf-8")
 
-    cursor = _client(vault).post("/api/agent/launch", json={"agent": "cursor"}).json()
-    assert cursor["mode"] == "spawned"
-    assert started == {"terminal": [["cursor-agent"]], "app": []}
+    codex = _client(vault).post("/api/agent/launch", json={"agent": "codex"}).json()
+    assert codex["mode"] == "spawned"
+    assert started == {"terminal": [["codex"]], "app": []}
 
     zcode = _client(vault).post("/api/agent/launch", json={"agent": "zcode"}).json()
     assert zcode == {
@@ -1377,7 +1249,7 @@ def test_put_launch_mode_reads_only_agent_and_mode(
     [
         {"agent": "nope", "mode": "app"},
         {"agent": "claude", "mode": "fullscreen"},
-        {"agent": "cursor", "mode": "app"},
+        {"agent": "codex", "mode": "app"},
         {"agent": "zcode", "mode": "terminal"},
         {"agent": "claude"},
         {"mode": "app"},

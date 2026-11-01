@@ -682,7 +682,8 @@ def test_antigravity_skills_parent_dir_respects_home(
 
 
 def _both(default_mode: agents.LaunchMode = "terminal") -> AgentSpec:
-    """A row with both ways, with either catalog default."""
+    """The one row with both ways today, with either catalog default: no row
+    defaults to the app yet, and the rule must not wait for one."""
     return dataclasses.replace(get_agent("claude"), default_mode=default_mode)
 
 
@@ -716,105 +717,33 @@ def test_claude_row_has_both_ways_and_defaults_to_the_cli() -> None:
     assert claude.app_install_url == "https://claude.com/download"
 
 
-def test_codex_row_has_both_ways_and_defaults_to_the_app() -> None:
-    codex = get_agent("codex")
-    assert agents.launch_modes(codex) == ["terminal", "app"]
-    assert codex.default_mode == "app"
-    assert codex.launch == "codex"
-    assert codex.url_scheme == "codex"
-    assert codex.open_url == "codex://threads/new?path={vault}"
-    assert codex.mac_bundle is None
-    assert codex.app_args == ()
-    assert codex.launch_env_unset == ()
-    assert codex.install_url == "https://developers.openai.com/codex/cli/"
-    assert codex.app_install_url == "https://chatgpt.com/codex/"
-    assert codex.app_platforms == ("win32",)
-
-
 def test_only_a_row_with_both_ways_carries_the_app_download() -> None:
     for spec in AGENTS:
-        if spec.name not in ("claude", "codex"):
+        if spec.name != "claude":
             assert spec.app_install_url is None
             assert spec.default_mode == "terminal"
 
 
-def test_only_codex_limits_where_its_app_is_offered() -> None:
-    assert {a.name: a.app_platforms for a in AGENTS if a.app_platforms is not None} == {
-        "codex": ("win32",)
-    }
-
-
-def _on_desktop(monkeypatch: pytest.MonkeyPatch, platform: str) -> None:
-    _not_over_ssh(monkeypatch)
-    monkeypatch.setenv("DISPLAY", ":0")
-    monkeypatch.setattr(agents.app_launch, "_platform", lambda: platform)
-
-
-@pytest.mark.parametrize(
-    ("name", "modes"),
-    [
-        ("claude", ["terminal", "app"]),
-        ("zcode", ["app"]),
-        ("dsh", ["app"]),
-    ],
-)
 @pytest.mark.parametrize("platform", ["win32", "darwin", "linux"])
-def test_a_row_offering_its_app_everywhere_keeps_its_ways_on_every_platform(
-    monkeypatch: pytest.MonkeyPatch, platform: str, name: str, modes: list[str]
-) -> None:
-    _on_desktop(monkeypatch, platform)
-    assert agents.machine_modes(get_agent(name)) == modes
-
-
-@pytest.mark.parametrize(
-    ("terminal", "app", "saved", "expected"),
-    [
-        (True, False, None, "terminal"),
-        (True, True, None, "app"),
-        (True, True, "terminal", "terminal"),
-        (True, True, "app", "app"),
-        (False, True, None, "app"),
-        (False, False, None, "app"),
-    ],
-)
-def test_codex_on_windows_goes_by_the_saved_choice_then_the_app(
-    monkeypatch: pytest.MonkeyPatch,
-    terminal: bool,
-    app: bool,
-    saved: agents.LaunchMode | None,
-    expected: str,
-) -> None:
-    _installed(monkeypatch, terminal=terminal, app=app)
-    codex = get_agent("codex")
-    assert agents.machine_modes(codex) == ["terminal", "app"]
-    assert agents.choose_mode(codex, saved) == expected
-
-
-@pytest.mark.parametrize("platform", ["darwin", "linux"])
 @pytest.mark.parametrize("terminal", [True, False])
 @pytest.mark.parametrize("saved", [None, "terminal", "app"])
-def test_codex_off_windows_is_only_its_cli_even_with_an_app_found(
+def test_codex_is_only_its_cli_on_every_platform(
     monkeypatch: pytest.MonkeyPatch,
     platform: str,
     terminal: bool,
     saved: agents.LaunchMode | None,
 ) -> None:
     _installed(monkeypatch, terminal=terminal, app=True)
-    _on_desktop(monkeypatch, platform)
+    monkeypatch.setattr(agents.app_launch, "_platform", lambda: platform)
+    monkeypatch.setenv("DISPLAY", ":0")
     codex = get_agent("codex")
+    assert codex.url_scheme is None
+    assert codex.open_url is None
+    assert codex.app_install_url is None
     assert agents.machine_modes(codex) == ["terminal"]
     assert agents.mode_usable(codex, "app") is False
     assert agents.choose_mode(codex, saved) == "terminal"
     assert agents.cli_mode(codex) == "terminal"
-    assert detect(codex) is terminal
-
-
-def test_codex_over_ssh_is_only_its_cli(monkeypatch: pytest.MonkeyPatch) -> None:
-    _installed(monkeypatch, terminal=True, app=True)
-    monkeypatch.setenv("SSH_CONNECTION", "1.2.3.4 5 6.7.8.9 22")
-    codex = get_agent("codex")
-    assert agents.machine_modes(codex) == ["terminal"]
-    assert agents.choose_mode(codex, "app") == "terminal"
 
 
 def test_every_other_row_keeps_its_one_way() -> None:
@@ -822,7 +751,7 @@ def test_every_other_row_keeps_its_one_way() -> None:
         "claude": ["terminal", "app"],
         "zcode": ["app"],
         "agy": ["terminal"],
-        "codex": ["terminal", "app"],
+        "codex": ["terminal"],
         "dsh": ["app"],
         "cursor": ["terminal"],
         "opencode": ["terminal"],
@@ -865,7 +794,7 @@ def test_none_usable_points_at_the_default_never_the_saved_choice(
     assert detect(_both(default)) is False
 
 
-@pytest.mark.parametrize("name", ["zcode", "dsh", "agy", "cursor", "opencode"])
+@pytest.mark.parametrize("name", ["zcode", "dsh", "agy", "codex", "cursor", "opencode"])
 def test_a_row_with_one_way_ignores_a_saved_choice_and_probes_nothing(
     monkeypatch: pytest.MonkeyPatch, name: str
 ) -> None:

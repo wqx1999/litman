@@ -191,8 +191,8 @@ class LitConfig(BaseModel):
 def stored_project_dir(stored: str) -> Path | None:
     """The folder a ``projects:`` value names, or ``None`` when it names none.
 
-    Every reader of that map decides here. A value that is not a full path (litman
-    1.3.10's drift prompt could write one, and so can a hand edit) would name a
+    Every reader of that map decides here. A value that is not a full path (an earlier
+    drift prompt could write one, and so can a hand edit) would name a
     different folder in each working directory, so it counts as missing: a command
     must not report on, or write into, whatever happens to carry that name in the
     current directory. No stat happens here, so this cannot hang on a dead mount;

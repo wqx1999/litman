@@ -13,20 +13,14 @@ own entry. Read those before you upgrade, whatever the number says.
 
 ### Added
 
-- **Claude Code and Codex can start as the CLI or the desktop app.** Install either
-  one, or both. With both, pick one under **Launch with** in the agent panel and the
-  button remembers it; until you pick, Claude Code uses the CLI and Codex uses the
-  app. `lit agent` still runs the CLI in your terminal, and opens the app only when
-  the CLI is not there. Claude Code's app asks you to confirm the folder each time
-  litman opens it; Codex's asks the first time it opens a folder. Codex's desktop
-  app can be used on Windows only; on macOS and Linux, Codex stays CLI only.
+- **Claude Code can start as the CLI or the desktop app.** Install either one, or
+  both. With both, pick one under **Launch with** in the agent panel and the button
+  remembers it; until you pick, it uses the CLI. `lit agent` still runs the CLI in
+  your terminal, and opens the app only when the CLI is not there. The app asks you
+  to confirm the folder each time litman opens it.
 
 ### Changed
 
-- **The agent button opens Codex's desktop app if you have both.** On Windows, with
-  the Codex CLI and desktop app both installed and no choice made, the button used to
-  open a terminal and now opens the app. To go back, pick `CLI` under **Launch with**
-  in the agent panel. `lit agent codex` still runs the CLI.
 - **The agent panel is redesigned.** Agents are listed on the left with a status
   dot, and the one you select shows its details on the right. The panel stays the
   same size however many agents there are, so its title and **Done** no longer run

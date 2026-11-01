@@ -1095,12 +1095,10 @@ agent panel, or `lit agent --set-default`. Claude Code, ZCode, Antigravity CLI
 (`agy`), Codex, DeepSeek Harness (`dsh`), Cursor, and OpenCode are the
 supported agents.
 
-Claude Code and Codex start as their CLI or as their desktop app; Codex's desktop
-app can be used on Windows only, and on macOS and Linux Codex is CLI only.
-`lit agent claude` and `lit agent codex` run the CLI in this terminal when the CLI
-is on PATH. When only the app is installed, they open the app at the vault and
-return at once. Claude Code's app then asks you to confirm the folder, every time
-it is opened this way. Codex's app asks the first time it opens a folder.
+Claude Code starts as its CLI or as its desktop app. `lit agent claude` runs the
+CLI in this terminal when the CLI is on PATH. When only the app is installed, it
+opens the app at the vault and returns at once; the app then asks you to confirm
+the folder, every time it is opened this way.
 
 ZCode is a desktop app, not a terminal agent: `lit agent zcode` opens ZCode at
 the vault and returns at once. If ZCode is already open, it switches to the
@@ -1124,11 +1122,10 @@ the `lit agent` line to copy into your own terminal.
 When an agent has both a CLI and a desktop app, its entry in the agent panel has
 a **Launch with** switch, `App` or `CLI`. The button uses the one you pick and
 remembers it for this machine, in `preferences.yaml`. Until you pick, Claude Code
-uses the CLI and Codex uses the app. If the one the button would use is not installed, it uses the other.
+uses the CLI. If the one the button would use is not installed, it uses the other.
 Picking one that is not installed offers its download and is not remembered.
 `lit agent` does not read this choice. An SSH session, or Linux without a display,
-has no switch: the desktop app is not an option there. Nor does Codex on macOS or
-Linux.
+has no switch: the desktop app is not an option there.
 
 ### `lit self-update`
 

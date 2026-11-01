@@ -263,7 +263,7 @@ def test_agent_windows_runs_npm_cmd_shim_through_cmd(
     monkeypatch.setattr(sys, "platform", "win32")
     codex = r"C:\Users\Wang\AppData\Roaming\npm\codex.CMD"
     monkeypatch.setattr(agents, "resolve_launch", lambda _spec: codex)
-    # Codex has an app too, so its CLI is probed to choose.
+    # The real which breaks under a faked sys.platform on some Python versions.
     monkeypatch.setattr(agents.shutil, "which", lambda name: f"C:\\bin\\{name}.exe")
     monkeypatch.setenv("CLAUDE_CODE_CHILD_SESSION", "1")
     calls: list[list[str]] = []
@@ -480,46 +480,6 @@ def test_agent_with_only_its_app_here_opens_it(
     assert result.exit_code == 0, result.output
     assert opened == [("claude", vault)]
     assert result.output == f"Opened Claude Code at {vault}.\n"
-
-
-@pytest.mark.parametrize("platform", ["darwin", "linux"])
-def test_agent_codex_off_windows_with_no_cli_names_the_cli_and_opens_nothing(
-    vault: Path, monkeypatch: pytest.MonkeyPatch, platform: str
-) -> None:
-    from litman.core import app_launch
-
-    opened = _claude_installed(monkeypatch, terminal=False, app=True)
-    monkeypatch.setattr(app_launch, "_platform", lambda: platform)
-    monkeypatch.setenv("DISPLAY", ":0")
-    result = CliRunner().invoke(agent_cmd, ["codex", "--library", str(vault)])
-    assert result.exit_code != 0
-    assert isinstance(result.exception, LitmanError)
-    message = str(result.exception)
-    assert "'codex' not found on PATH" in message
-    assert "https://developers.openai.com/codex/cli/" in message
-    assert "chatgpt.com" not in message
-    assert opened == []
-
-
-def test_agent_codex_prefers_its_cli_over_a_saved_app_and_the_catalog_default(
-    vault: Path, monkeypatch: pytest.MonkeyPatch, exec_capture: dict[str, object]
-) -> None:
-    opened = _claude_installed(monkeypatch, terminal=True, app=True)
-    agent_prefs.save_launch_mode("codex", "app")
-    result = CliRunner().invoke(agent_cmd, ["codex", "--library", str(vault)])
-    assert result.exit_code == 0, result.output
-    assert exec_capture["argv"] == ["codex"]
-    assert opened == []
-
-
-def test_agent_codex_on_windows_with_only_its_app_opens_it_at_the_vault(
-    vault: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    opened = _claude_installed(monkeypatch, terminal=False, app=True)
-    result = CliRunner().invoke(agent_cmd, ["codex", "--library", str(vault)])
-    assert result.exit_code == 0, result.output
-    assert opened == [("codex", vault)]
-    assert result.output == f"Opened Codex at {vault}.\n"
 
 
 def test_agent_with_both_and_neither_here_names_the_cli_download(

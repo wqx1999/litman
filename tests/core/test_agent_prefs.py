@@ -161,7 +161,7 @@ def test_an_entry_that_is_not_a_mode_reads_as_not_chosen() -> None:
     [
         ("nope", "app", "not a supported agent"),
         ("claude", "fullscreen", "no launch mode"),
-        ("cursor", "app", "no launch mode"),
+        ("codex", "app", "no launch mode"),
         ("zcode", "terminal", "no launch mode"),
     ],
 )

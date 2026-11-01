@@ -332,11 +332,6 @@ def app_reaches_user() -> bool:
     return _platform() in ("win32", "darwin") or not viewer.is_headless()
 
 
-def app_offered_here(spec: AgentSpec) -> bool:
-    """Does the row offer its app on this platform?"""
-    return spec.app_platforms is None or _platform() in spec.app_platforms
-
-
 def app_installed(spec: AgentSpec) -> bool:
     """Is the app installed (on Windows, a row with ``app_args``: and opened
     once)? A row missing the field a platform needs is never reported as

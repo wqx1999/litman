@@ -1,6 +1,6 @@
 """A ``projects:`` value in lit-config.yaml that is not a full path.
 
-litman 1.3.10's drift prompt could write one, and so can a hand edit. It counts as
+An earlier drift prompt could write one, and so can a hand edit. It counts as
 missing whatever the current directory holds: reading it as it stands would judge,
 and write into, a folder that merely has that name where the command was run.
 """
