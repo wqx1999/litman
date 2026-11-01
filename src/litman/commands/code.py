@@ -30,6 +30,7 @@ from litman.core.code import (
     CODES_DIRNAME,
     REPO_DIRNAME,
     REPO_META_FILENAME,
+    bind_is_decided,
     bind_paper_to_repo,
     bump_repo_updated_at,
     clone_repo,
@@ -289,7 +290,11 @@ def code_add_cmd(
                 vault, paper_id, repo_name, link_errors=link_errors
             )
     except Exception:
-        if repo_root.exists():
+        # A bind past its decision point lands on the next `lit`, and the clone
+        # is what it will point at. It is not fully committed yet, so `--move`
+        # below still leaves the source alone.
+        decided = paper_id is not None and bind_is_decided(vault, paper_id, repo_name)
+        if repo_root.exists() and not decided:
             rmtree(repo_root, ignore_errors=True)
         raise
 

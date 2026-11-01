@@ -34,7 +34,7 @@ from urllib.parse import urlsplit
 
 from ruamel.yaml.error import YAMLError
 
-from litman.core.atomic import staged_write
+from litman.core.atomic import op_is_decided, staged_write
 from litman.core.dates import now_iso
 from litman.core.document import list_papers, load_yaml_or_raise
 from litman.core.locking import is_file_manager_dropping, rmtree
@@ -588,6 +588,18 @@ def write_notes(repo_dir: Path, name: str, upstream: str | None) -> Path:
 # ---------------------------------------------------------------------------
 
 
+def _bind_op_id(paper_id: str, repo_name: str) -> str:
+    return f"code-bind-{paper_id}-{repo_name}"
+
+
+def bind_is_decided(vault: Path, paper_id: str, repo_name: str) -> bool:
+    """Did a failed bind already pass its decision point?
+
+    Then the next ``lit`` finishes it, so the clone it points at must stay.
+    """
+    return op_is_decided(vault, _bind_op_id(paper_id, repo_name))
+
+
 def bind_paper_to_repo(
     vault: Path,
     paper_id: str,
@@ -669,9 +681,7 @@ def bind_paper_to_repo(
         rel_paper_meta = f"papers/{paper_id}/metadata.yaml"
         rel_repo_meta = f"{CODES_DIRNAME}/{repo_name}/{REPO_META_FILENAME}"
 
-        with staged_write(
-            vault, op_id=f"code-bind-{paper_id}-{repo_name}"
-        ) as stage:
+        with staged_write(vault, op_id=_bind_op_id(paper_id, repo_name)) as stage:
             if paper_changed:
                 stage.write_text(
                     rel_paper_meta, _dump_yaml_to_string(paper_meta)

@@ -36,6 +36,7 @@ from litman.core.code import (
     NOTES_FILENAME,
     REPO_DIRNAME,
     REPO_META_FILENAME,
+    bind_is_decided,
     bind_paper_to_repo,
     fetch_repo,
     make_repo_meta,
@@ -56,7 +57,7 @@ from litman.core.trash import (
     resolve_trash_entry,
     restore_from_trash,
 )
-from litman.exceptions import CodeError
+from litman.exceptions import CodeError, RepoBindPendingError
 
 console = Console()
 
@@ -172,6 +173,8 @@ def _reclone_missing_repo(
         CodeError: empty upstream, ``repo/`` already there, clone failure, or
             bind failure. The caller turns this into a kept-binding + warning
             (decision #3).
+        RepoBindPendingError: the bind passed its decision point and failed
+            after it, so the checkout stays and the next ``lit`` finishes it.
     """
     if not upstream:
         raise CodeError(
@@ -196,6 +199,11 @@ def _reclone_missing_repo(
         # half-built checkout (invariant #12: no clone without link).
         bind_paper_to_repo(vault, paper_id, repo_name, link_errors=link_errors)
     except Exception as e:
+        # A bind past its decision point lands on the next `lit`, and this
+        # checkout is what it will point at. Still a CodeError, so it does not
+        # crash an already-committed restore; the caller must not call it failed.
+        if bind_is_decided(vault, paper_id, repo_name):
+            raise RepoBindPendingError(str(e)) from e
         # Roll back what this attempt built so a failed re-clone (clone,
         # repo-meta, OR bind) leaves no half-built checkout — the binding on
         # the paper side is kept (caller's warning path). The repo-meta.yaml
@@ -265,6 +273,14 @@ def _handle_missing_repos(
                 vault, result.paper_id, repo_name, upstream,
                 link_errors=link_errors,
             )
+        except RepoBindPendingError as e:
+            console.print(
+                f"  [green]Re-cloned[/] '{escape(repo_name)}', but its binding "
+                f"was refused [dim]({escape(str(e))})[/]; "
+                "the next `lit` finishes it.",
+                soft_wrap=True,
+            )
+            continue
         except CodeError as e:
             first_line = str(e).splitlines()[0] if str(e) else "clone failed"
             console.print(

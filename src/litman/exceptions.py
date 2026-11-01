@@ -224,6 +224,10 @@ class CodeError(LitmanError):
     """
 
 
+class RepoBindPendingError(CodeError):
+    """A re-clone's bind failed past its decision point: it lands on the next `lit`."""
+
+
 class ConfigError(LitmanError):
     """`lit-config.yaml` could not be parsed or failed schema validation.
 

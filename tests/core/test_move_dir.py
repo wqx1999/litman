@@ -21,13 +21,16 @@ import pytest
 from click.testing import CliRunner
 
 from litman.cli import cli
+from litman.commands import rm as rm_mod
 from litman.core import atomic, project_link
 from litman.core import replace as replace_mod
 from litman.core.library import create_vault
 from litman.core.locking import lock_truth_file
 from litman.core.replace import move_dir
 from litman.core.trash import _sidecar_path, list_trash, move_to_trash
+from litman.exceptions import RmError
 from tests.commands.test_link import _make_paper
+from tests.commands.test_restore import _make_fake_repo, _write_paper
 
 PAPER = "2024_Foo_Bar"
 
@@ -59,6 +62,19 @@ def _contents(folder: Path) -> dict[str, bytes]:
 
 def _nothing_in_trash(vault: Path) -> bool:
     return list((vault / ".trash").iterdir()) == []
+
+
+STAYED = (
+    f"{PAPER} stayed in papers/, not the trash (Access is denied). "
+    "Close any program using it and run `lit rm` again."
+)
+
+
+def _assert_said_it_stayed(result: Any) -> None:
+    assert result.exit_code == 1, result.output
+    assert isinstance(result.exception, RmError)
+    assert "Trashed" not in result.output
+    assert "recover via" not in result.output
 
 
 def _refuse_rename(monkeypatch: Any, err: OSError) -> None:
@@ -157,15 +173,74 @@ def test_rm_with_a_refused_move_keeps_the_folder_and_can_be_run_again(
         _refuse_rename(held, PermissionError(errno.EACCES, "Access is denied"))
         refused = CliRunner().invoke(cli, ["rm", PAPER, "--yes", "--library", str(vault)])
 
-    assert refused.exception is None, refused.output
-    assert "could not remove" in refused.output
+    _assert_said_it_stayed(refused)
+    assert str(refused.exception) == STAYED
+    assert len(f"error: {STAYED}") <= 125
     assert _contents(_folder(vault)) == before
     assert list_trash(vault) == []
 
     again = CliRunner().invoke(cli, ["rm", PAPER, "--yes", "--library", str(vault)])
     assert again.exit_code == 0, again.output
+    assert "Trashed" in again.output
     assert not _folder(vault).exists()
     assert _contents(list_trash(vault)[0].entry_path) == before
+
+
+def test_a_purge_that_could_not_finish_does_not_say_purged(
+    vault: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def rmtree(_path: Any, **_kw: Any) -> None:
+        raise PermissionError(errno.EACCES, "Access is denied")
+
+    with monkeypatch.context() as held:
+        held.setattr(rm_mod, "rmtree", rmtree)
+        result = CliRunner().invoke(
+            cli, ["rm", PAPER, "--purge", "--yes", "--library", str(vault)]
+        )
+
+    assert result.exit_code == 1, result.output
+    assert isinstance(result.exception, RmError)
+    assert "Purged" not in result.output
+    assert str(result.exception) == (
+        f"Part of {PAPER} may remain in papers/ (Access is denied). "
+        "Close any program using it and delete what is left."
+    )
+
+
+def test_a_refused_move_keeps_the_repo_only_this_paper_used(
+    vault: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Its upstream is recorded only in the sidecar the refused move rolled back."""
+    _write_paper(vault, "2024_With_Repo", code_clones=["RepoX"])
+    _make_fake_repo(vault, "RepoX", papers=["2024_With_Repo"], upstream="https://x.test/r.git")
+    repo = vault / "codes" / "RepoX"
+
+    with monkeypatch.context() as held:
+        _refuse_rename(held, PermissionError(errno.EACCES, "Access is denied"))
+        refused = CliRunner().invoke(
+            cli, ["rm", "2024_With_Repo", "--yes", "--library", str(vault)]
+        )
+
+    assert refused.exit_code == 1, refused.output
+    assert (repo / "repo-meta.yaml").is_file()
+
+    again = CliRunner().invoke(cli, ["rm", "2024_With_Repo", "--yes", "--library", str(vault)])
+
+    assert again.exit_code == 0, again.output
+    assert not repo.exists()
+    assert list_trash(vault)[0].orphan_repos == {"RepoX": "https://x.test/r.git"}
+
+
+def test_a_refused_move_does_not_evict_from_a_trash_it_added_nothing_to(
+    vault: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    evicted: list[Any] = []
+    monkeypatch.setattr(rm_mod, "enforce_cap", lambda v: evicted.append(v) or [])
+    _refuse_rename(monkeypatch, PermissionError(errno.EACCES, "Access is denied"))
+
+    CliRunner().invoke(cli, ["rm", PAPER, "--yes", "--library", str(vault)])
+
+    assert evicted == []
 
 
 def test_a_refused_restore_leaves_the_entry_in_the_trash(
@@ -284,10 +359,17 @@ def test_rm_with_the_pdf_really_open_keeps_the_folder_whole(vault: Path) -> None
     with open(_folder(vault) / "paper.pdf", "rb"):
         result = CliRunner().invoke(cli, ["rm", PAPER, "--yes", "--library", str(vault)])
 
-    assert result.exception is None, result.output
-    assert "could not remove" in result.output
+    _assert_said_it_stayed(result)
+    assert "Close any program using it and run `lit rm` again." in str(result.exception)
     assert _contents(_folder(vault)) == before
     assert list_trash(vault) == []
+
+    again = CliRunner().invoke(cli, ["rm", PAPER, "--yes", "--library", str(vault)])
+
+    assert again.exit_code == 0, again.output
+    assert "Trashed" in again.output
+    assert not _folder(vault).exists()
+    assert _contents(list_trash(vault)[0].entry_path) == before
 
 
 @_ON_WINDOWS

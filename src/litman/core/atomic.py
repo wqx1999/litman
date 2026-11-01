@@ -1016,6 +1016,15 @@ class StagedWrite:
             _tear_down(self.staging_root, moved_folders=bool(self._moves))
 
 
+def op_is_decided(vault: Path, op_id: str) -> bool:
+    """Is ``op_id`` past its decision point and waiting for the next recovery?
+
+    For a caller with no :class:`StagedWrite` in hand whose rollback would pull
+    something out from under a write that is going to land anyway.
+    """
+    return (vault.resolve() / _STAGING_DIRNAME / op_id / _SENTINEL_FILENAME).is_file()
+
+
 def staged_write(vault: Path, op_id: str | None = None) -> StagedWrite:
     """Create a :class:`StagedWrite` context manager for the given vault.
 
