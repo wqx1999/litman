@@ -36,8 +36,9 @@ own entry. Read those before you upgrade, whatever the number says.
   project folder has moved, the answer must now be the full path of an existing
   folder. Anything else is refused and the same question comes back at once, here
   and for a moved vault, so a typo no longer waits for your next command. Press
-  Enter to leave it for later. A project path already saved that is not a full path
-  now counts as missing, whichever folder you run `lit` from.
+  Enter to leave it for later, or Ctrl+C to end the command, which used to carry on.
+  A project path already saved that is not a full path now counts as missing,
+  whichever folder you run `lit` from.
 
 ## 1.3.10 — 2026-10-30
 

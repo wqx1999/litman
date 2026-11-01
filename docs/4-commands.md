@@ -61,7 +61,7 @@ with its own answer:
 | Enter | Skip. Nothing changes and you are asked again next time. |
 
 Enter never removes anything, so holding Enter through the questions is always
-safe. Off a terminal — a script, a CI job, an agent — nothing is asked: a
+safe. Ctrl+C at a question ends the command you typed. Off a terminal — a script, a CI job, an agent — nothing is asked: a
 warning names the folder and the command that fixes it, and the command you
 typed carries on.
 

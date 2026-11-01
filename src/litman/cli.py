@@ -275,6 +275,8 @@ class LitGroup(click.Group):
         The whole hook is wrapped so a failure (hung mount, FS error inside a
         heal) never crashes the user's actual command — it degrades to a silent
         skip and the cold-path ``lit health-check`` catches the drift later.
+        ``click.Abort`` alone gets through: Ctrl+C or EOF at one of its prompts
+        ends the command, as Ctrl+C anywhere else does.
         """
         try:
             from litman.core.checks import cheap_checks
@@ -347,6 +349,8 @@ class LitGroup(click.Group):
 
                 try:
                     check_and_prompt_project_drift()
+                except click.Abort:
+                    raise
                 except Exception:
                     pass
 
@@ -364,6 +368,8 @@ class LitGroup(click.Group):
 
                 try:
                     check_and_prompt_bridge_drift()
+                except click.Abort:
+                    raise
                 except Exception:
                     pass
 
@@ -374,6 +380,10 @@ class LitGroup(click.Group):
             # report-only, no mutate.
             if vault is not None and "index_vs_disk" in categories:
                 self._repair_index_vs_disk(vault, issues)
+        except click.Abort:
+            # The prompt left the cursor on its own line, ahead of Click's Aborted!.
+            click.echo(err=True)
+            raise
         except Exception:
             pass
 

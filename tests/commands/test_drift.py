@@ -1658,3 +1658,139 @@ def test_running_out_of_input_after_a_refused_path_ends_the_loop(
     assert gone.paths() == before
     # Nobody pressed Enter, so the error starts on the prompt's own line.
     assert capsys.readouterr().out.count("error:") == 1
+
+
+# ---------------------------------------------------------------------------
+# The vault prompt's new path: a bounded probe ahead of the backend
+# ---------------------------------------------------------------------------
+
+
+def _vault_prompt_with_a_real_vault_at(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> tuple[_GoneFolders, Path]:
+    """Without the probe's say-so, the path would be accepted."""
+    gone = _gone_folders("vault", tmp_path, monkeypatch, "gone_one")
+    return gone, gone.moved_here
+
+
+def test_vault_prompt_asks_again_when_the_new_path_does_not_answer_in_time(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    gone, slow = _vault_prompt_with_a_real_vault_at(tmp_path, monkeypatch)
+    before = gone.paths()
+    real_exists = _drift._exists_bounded
+
+    def slow_there(paths: list[str], budget_s: float = 0.5) -> dict[str, bool | None]:
+        return {
+            p: None if Path(p) == slow else real_exists([p], budget_s)[p] for p in paths
+        }
+
+    monkeypatch.setattr(_drift, "_exists_bounded", slow_there)
+    asked = _answer(monkeypatch, str(slow), "")
+
+    gone.ask()
+
+    assert len(asked) == 2
+    assert gone.paths() == before
+    out = capsys.readouterr().out
+    assert "Could not reach" in out
+    assert out.count("directory not found") == 1
+
+
+def test_vault_prompt_new_path_on_a_hung_mount_cannot_hang_the_prompt(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """The real probe and its real budget, with a stat that never returns."""
+    gone, dead = _vault_prompt_with_a_real_vault_at(tmp_path, monkeypatch)
+    before = gone.paths()
+    release = threading.Event()
+    real_exists = Path.exists
+
+    def hang_on_dead(self: Path, *args: Any, **kwargs: Any) -> bool:
+        if self == dead:
+            release.wait(timeout=20)
+        return real_exists(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "exists", hang_on_dead)
+    asked = _answer(monkeypatch, str(dead), "")
+
+    started = time.monotonic()
+    try:
+        gone.ask()
+        elapsed = time.monotonic() - started
+    finally:
+        release.set()
+
+    assert elapsed < 10
+    assert len(asked) == 2
+    assert gone.paths() == before
+    assert "Could not reach" in capsys.readouterr().out
+
+
+def test_vault_prompt_probes_the_expanded_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fake_home: Path
+) -> None:
+    monkeypatch.setenv("USERPROFILE", str(fake_home))
+    gone = _gone_folders("vault", tmp_path, monkeypatch, "gone_one")
+    moved = create_vault(fake_home)
+    probed: list[str] = []
+    real_exists = _drift._exists_bounded
+
+    def recording(paths: list[str], budget_s: float = 0.5) -> dict[str, bool | None]:
+        probed.extend(paths)
+        return real_exists(paths, budget_s)
+
+    monkeypatch.setattr(_drift, "_exists_bounded", recording)
+    asked = _answer(monkeypatch, f"~/{moved.name}")
+
+    gone.ask()
+
+    assert len(asked) == 1
+    assert str(fake_home / moved.name) in probed
+    assert not [p for p in probed if p.startswith("~")]
+    assert Path(gone.paths()["gone_one"]) == moved.resolve()
+
+
+def test_vault_prompt_asks_again_after_a_path_it_cannot_even_read(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    gone, locked = _vault_prompt_with_a_real_vault_at(tmp_path, monkeypatch)
+    before = gone.paths()
+    real_resolve = Path.resolve
+
+    def no_access(self: Path, *args: Any, **kwargs: Any) -> Path:
+        if self == locked:
+            raise PermissionError(13, "Permission denied")
+        return real_resolve(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "resolve", no_access)
+    asked = _answer(monkeypatch, str(locked), "")
+
+    gone.ask()
+
+    assert len(asked) == 2
+    assert gone.paths() == before
+    assert "Could not check" in capsys.readouterr().out
+
+
+def test_vault_prompt_asks_again_after_a_home_folder_it_cannot_expand(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """POSIX cannot expand it; Windows guesses a home folder that is not there."""
+    gone = _gone_folders("vault", tmp_path, monkeypatch, "gone_one")
+    before = gone.paths()
+    asked = _answer(monkeypatch, "~no_such_user_here/x", "")
+
+    gone.ask()
+
+    assert len(asked) == 2
+    assert gone.paths() == before
+    assert "no_such_user_here" in capsys.readouterr().out

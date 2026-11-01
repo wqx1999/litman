@@ -23,6 +23,7 @@ Behavior contract — **both external drifts offer the same three answers**, one
 entry at a time: enter a new path / ``rm`` / blank to skip. Blank is the default
 everywhere, so pressing Enter is always the conservative answer. A new path that
 is refused asks the same question again, until an answer settles that entry.
+Ctrl+C or EOF at a question ends the whole command.
 
 * Registry drift — a new path re-points the registration (``lit vault
   set-path``'s backend, which validates the target is a real vault); ``rm``
@@ -77,6 +78,7 @@ from litman.exceptions import TaxonomyError
 
 if TYPE_CHECKING:
     from litman.core.config import LitConfig
+    from litman.core.vault_registry import VaultEntry
 
 
 def _default_tty_probe() -> bool:
@@ -127,6 +129,13 @@ def _exists_bounded(
     return result
 
 
+def _could_not_reach(reply: str) -> str:
+    return (
+        f"Could not reach {reply!r} in time. "
+        "If its drive is not mounted yet, mount it first."
+    )
+
+
 def _checked_new_project_path(reply: str, budget_s: float = 0.5) -> str:
     """The path a project moves to, from an answer typed at the drift prompt.
 
@@ -161,13 +170,36 @@ def _checked_new_project_path(reply: str, budget_s: float = 0.5) -> str:
     worker.start()
     worker.join(timeout=budget_s)
     if not verdict:
-        raise TaxonomyError(
-            f"Could not reach {reply!r} in time. "
-            "If its drive is not mounted yet, mount it first."
-        )
+        raise TaxonomyError(_could_not_reach(reply))
     if isinstance(verdict[0], TaxonomyError):
         raise verdict[0]
     return verdict[0]
+
+
+def _relocate_vault(name: str, reply: str) -> VaultEntry:
+    """Re-point vault ``name`` at an answer typed at the drift prompt.
+
+    ``lit vault set-path``'s backend stats the path with no time limit and then
+    writes the registry. The write stays off a thread, so a bounded probe goes
+    first and only asks whether the path answers at all; what it finds there is
+    still for that backend's rules to judge.
+
+    Raises:
+        VaultRegistryError: the path breaks those rules, or did not answer in time.
+    """
+    from litman.core.vault_registry import apply_vault_set_path
+
+    try:
+        target = str(Path(reply).expanduser())
+        if _exists_bounded([target])[target] is None:
+            raise VaultRegistryError(_could_not_reach(reply))
+        return apply_vault_set_path(name, reply)
+    except (OSError, RuntimeError, ValueError) as exc:
+        # No read access, a symlink loop, an unknown ``~user``: this runs ahead
+        # of the user's own command and must not take it down.
+        raise VaultRegistryError(
+            f"Could not check {reply!r} ({exc}). Give the full path to the folder."
+        ) from exc
 
 
 # The keyword that means "remove this" in BOTH drift prompts. Matched
@@ -209,7 +241,7 @@ def _ask_until_settled[T](
 
     A new path that ``relocate`` refuses prints why and asks again, so a typo is
     fixed on the spot; ``rm`` and blank still work after one. Ctrl+C or EOF leave
-    the loop the way they leave ``click.prompt`` anywhere.
+    as ``click.Abort``, which the root group's hook lets through to end the command.
 
     Returns:
         ``("skip", None)``, ``("remove", None)`` or ``("relocate", <what
@@ -266,8 +298,7 @@ def check_and_prompt_registry_drift(
       remedies, and returns. Never blocks automation on an interactive prompt.
 
     A new path that is not a real vault prints the registry layer's own error
-    and leaves the drift untouched, so the next command asks again rather than
-    silently pointing the registry somewhere wrong.
+    and asks again rather than silently pointing the registry somewhere wrong.
 
     Args:
         stdin_is_tty: Indirection so tests can force either branch without
@@ -334,7 +365,6 @@ def check_and_prompt_registry_drift(
     # conservative answer in both (see the module docstring's History note).
     console = Console()
     from litman.commands.vault import vault_remove_cmd
-    from litman.core.vault_registry import apply_vault_set_path
 
     for entry in dangling:
         console.print()  # blank line before, separating from prior output
@@ -353,7 +383,7 @@ def check_and_prompt_registry_drift(
         kind, updated = _ask_until_settled(
             "    Moved? Enter the new path, 'rm' to unregister, "
             "or blank to skip",
-            partial(apply_vault_set_path, entry.name),
+            partial(_relocate_vault, entry.name),
             VaultRegistryError,
             console,
         )

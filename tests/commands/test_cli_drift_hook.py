@@ -9,6 +9,7 @@ itself is covered in ``test_drift.py``.
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
 
 import click
 import pytest
@@ -798,3 +799,138 @@ def test_tty_probe_survives_none_streams(
     monkeypatch.setattr(_drift.sys, "stdin", object())  # not None, no tty
     monkeypatch.setattr(_drift.sys, "stdout", None)
     assert _drift._default_tty_probe() is False
+
+
+# ---------------------------------------------------------------------------
+# Ctrl+C or EOF at a prompt ends the command; anything else still does not
+# ---------------------------------------------------------------------------
+
+
+def _active_vault_with_missing_project(tmp_path: Path) -> Path:
+    parent = tmp_path / "project_parent"
+    parent.mkdir()
+    vault = create_vault(parent)
+    save_registry(
+        VaultRegistry(vaults=[VaultEntry(name="v", path=str(vault), is_active=True)])
+    )
+    _add_missing_project(vault, tmp_path)
+    return vault
+
+
+def _bridge_prompt(tmp_path: Path) -> Path:
+    moved, _project_dir = _seed_active_vault_with_dangling_bridge(tmp_path)
+    return moved
+
+
+# Which prompt fires, and what `lit list` prints once it gets to run.
+_PROMPTS = pytest.mark.parametrize(
+    ("seed", "body_says"),
+    [
+        pytest.param(_seed_dangling_plus_active, "No papers", id="vault"),
+        pytest.param(_active_vault_with_missing_project, "No papers", id="project"),
+        pytest.param(_bridge_prompt, "Test paper", id="bridge"),
+    ],
+)
+
+
+def _machine_state(vault: Path) -> tuple[bytes, list[tuple[str, str]]]:
+    return (
+        (vault / "lit-config.yaml").read_bytes(),
+        [(v.name, v.path) for v in load_registry().vaults],
+    )
+
+
+@_PROMPTS
+def test_end_of_input_at_a_prompt_ends_the_command(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, seed: Any, body_says: str
+) -> None:
+    vault = seed(tmp_path)
+    before = _machine_state(vault)
+    monkeypatch.setattr(_drift, "_default_tty_probe", lambda: True)
+
+    result = CliRunner().invoke(cli, ["list"], input="")
+
+    assert result.exit_code == 1, result.output
+    assert "Aborted!" in result.output.splitlines()
+    assert body_says not in result.output
+    assert _machine_state(vault) == before
+
+
+@_PROMPTS
+def test_enter_at_the_same_prompt_lets_the_command_run(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, seed: Any, body_says: str
+) -> None:
+    """The control: the command above would have printed this."""
+    seed(tmp_path)
+    monkeypatch.setattr(_drift, "_default_tty_probe", lambda: True)
+
+    result = CliRunner().invoke(cli, ["list"], input="\n")
+
+    assert result.exit_code == 0, result.output
+    assert "Aborted!" not in result.output
+    assert body_says in result.output
+
+
+@pytest.mark.parametrize(
+    "seed",
+    [
+        pytest.param(_seed_dangling_plus_active, id="vault"),
+        pytest.param(_active_vault_with_missing_project, id="project"),
+    ],
+)
+def test_answering_no_to_a_removal_lets_the_command_run(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, seed: Any
+) -> None:
+    vault = seed(tmp_path)
+    before = _machine_state(vault)
+    monkeypatch.setattr(_drift, "_default_tty_probe", lambda: True)
+    monkeypatch.setattr("litman.core.confirm._stdin_is_tty", lambda: True)
+
+    result = CliRunner().invoke(cli, ["list"], input="rm\nn\n")
+
+    assert result.exit_code == 0, result.output
+    assert "No papers" in result.output
+    assert _machine_state(vault) == before
+
+
+@pytest.mark.parametrize(
+    ("corrector", "seed", "body_says"),
+    [
+        pytest.param(
+            "check_and_prompt_registry_drift",
+            _seed_dangling_plus_active,
+            "No papers",
+            id="vault",
+        ),
+        pytest.param(
+            "check_and_prompt_project_drift",
+            _active_vault_with_missing_project,
+            "No papers",
+            id="project",
+        ),
+        pytest.param(
+            "check_and_prompt_bridge_drift", _bridge_prompt, "Test paper", id="bridge"
+        ),
+    ],
+)
+def test_any_other_failure_in_a_corrector_still_lets_the_command_run(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    corrector: str,
+    seed: Any,
+    body_says: str,
+) -> None:
+    seed(tmp_path)
+    fired: list[str] = []
+
+    def boom(*_a: object, **_kw: object) -> None:
+        fired.append(corrector)
+        raise RuntimeError("heal blew up")
+
+    monkeypatch.setattr(_drift, corrector, boom)
+
+    result = CliRunner().invoke(cli, ["list"])
+
+    assert fired == [corrector]
+    assert result.exit_code == 0, result.output
+    assert body_says in result.output
