@@ -13,10 +13,12 @@ import click
 from click.core import ParameterSource
 
 from litman.core.locking import lock_truth_file, rmtree
+from litman.core.portable_link import _os_error_reason
 from litman.core.seeds import TAXONOMY_SEED, render_lit_config_seed
 from litman.core.undecodable import refusal
 from litman.core.views import write_index
 from litman.exceptions import (
+    IndexWriteError,
     LibraryNotFoundError,
     ParentNotFoundError,
     UndecodablePathError,
@@ -102,7 +104,13 @@ def create_vault(parent_dir: Path, name: str = DEFAULT_VAULT_NAME) -> Path:
         # INDEX.json seeded as the canonical empty form via the same renderer
         # that `lit refresh-views` uses, so the seed never drifts from the
         # regenerated output.
-        write_index(vault, [])
+        try:
+            write_index(vault, [])
+        except OSError as err:
+            raise IndexWriteError(
+                f"Could not write INDEX.json in {vault} ({_os_error_reason(err)}). "
+                "Try again."
+            ) from err
     except Exception:
         # Roll back: if we created the root, remove the half-built tree.
         if created_root and vault.exists():

@@ -49,6 +49,11 @@ own entry. Read those before you upgrade, whatever the number says.
   file paths, page ranges and `FIELD=VALUE` in single quotes. Without them, an id
   starting with a digit could send the whole command into the agent's sandbox. The
   commands `lit` prints for you to copy put quotes around such values too.
+- **A brief "access denied" while writing on Windows no longer stops the command.**
+  When another program had a library file open for a moment, `lit` crashed with a
+  traceback after your change was saved, and could leave links missing. It now waits
+  and tries again. If `INDEX.json` still cannot be written, the rest of the command
+  finishes, your change stays saved, and `lit` tells you to run `lit refresh-views`.
 - **A folder link refused with access denied is no longer blamed on the drive.**
   Inside an agent's sandbox, for example, `lit` said the filesystem could not hold
   folder links and to move the library. It now says access was denied and to run

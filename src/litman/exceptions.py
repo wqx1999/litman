@@ -259,6 +259,10 @@ class VaultRegistryError(LitmanError):
     """
 
 
+class IndexWriteError(LitmanError):
+    """INDEX.json could not be written, where nothing can go on without it."""
+
+
 class SelfUpdateError(LitmanError):
     """`lit self-update` cannot upgrade: neither uv nor pipx is available, or
     the chosen installer's upgrade subprocess failed / timed out.

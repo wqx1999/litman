@@ -34,6 +34,8 @@ from contextlib import suppress
 from pathlib import Path
 from typing import Any, Literal, TypedDict
 
+from litman.core.replace import replace_file
+
 
 class PermissionResult(TypedDict):
     agent: str
@@ -88,7 +90,7 @@ def _atomic_write_text(path: Path, content: str) -> None:
         tmp.write_text(content, encoding="utf-8")
         if mode is not None:
             tmp.chmod(mode)
-        os.replace(tmp, target)
+        replace_file(tmp, target)
     finally:
         with suppress(FileNotFoundError):
             tmp.unlink()

@@ -66,6 +66,7 @@ from litman.core.locking import (
     lock_truth_file,
     unlock_truth_file,
 )
+from litman.core.replace import replace_file
 
 _STAGING_DIRNAME = ".litman-staging"
 _MANIFEST_FILENAME = "MANIFEST.json"
@@ -568,7 +569,7 @@ def _drop_dir_moves(op_dir: Path) -> None:
     tmp = op_dir / (_MANIFEST_FILENAME + ".tmp")
     tmp.write_text(json.dumps(record, ensure_ascii=False), encoding="utf-8")
     _fsync_file(tmp)
-    os.replace(tmp, manifest_path)
+    replace_file(tmp, manifest_path)
     _fsync_dir(op_dir)
 
 
@@ -968,7 +969,7 @@ class StagedWrite:
             lockable = is_truth_lockable(self.vault, target_path)
             if lockable:
                 unlock_truth_file(target_path)
-            os.replace(staging_path, target_path)
+            replace_file(staging_path, target_path)
             _fsync_dir(target_path.parent)
             if lockable:
                 lock_truth_file(target_path)
@@ -1122,7 +1123,7 @@ def _recover_one_op(op_dir: Path, vault: Path) -> RecoveryResult | None:
                 if lockable:
                     # See _promote: Windows os.replace refuses a read-only dest.
                     unlock_truth_file(target_path)
-                os.replace(staging_path, target_path)
+                replace_file(staging_path, target_path)
                 _fsync_dir(target_path.parent)
                 if lockable:
                     lock_truth_file(target_path)

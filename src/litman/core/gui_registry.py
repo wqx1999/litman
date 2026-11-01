@@ -41,6 +41,7 @@ from typing import TYPE_CHECKING, Any
 
 from litman import __version__
 from litman.core.fs_identity import same_entry
+from litman.core.replace import replace_file
 from litman.core.vault_registry import registry_path
 
 if TYPE_CHECKING:
@@ -102,7 +103,7 @@ def _write_private(path: Path, text: str) -> None:
         fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
         with os.fdopen(fd, "w", encoding="utf-8") as f:
             f.write(text)
-        os.replace(tmp, path)
+        replace_file(tmp, path)
     finally:
         with suppress(FileNotFoundError):
             tmp.unlink()

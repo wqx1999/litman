@@ -49,6 +49,7 @@ from pathlib import Path
 
 from platformdirs import user_config_dir
 
+from litman.core.replace import replace_file
 from litman.core.vault_registry import (
     REGISTRY_APP_NAME,
     REGISTRY_ENV_VAR,
@@ -134,7 +135,7 @@ def _write_state(state: dict[str, object]) -> None:
     tmp.write_text(
         json.dumps(state, indent=2, ensure_ascii=False) + "\n", encoding="utf-8"
     )
-    tmp.replace(path)
+    replace_file(tmp, path)
 
 
 def load_pins(vault: Path) -> list[str]:

@@ -22,6 +22,7 @@ from __future__ import annotations
 import json
 import os
 import shutil
+from contextlib import suppress
 from datetime import date, datetime
 from pathlib import Path
 from typing import Any
@@ -33,6 +34,7 @@ from litman.core.portable_link import (
     make_portable_link,
     remove_link_if_present,
 )
+from litman.core.replace import replace_file
 
 # Views whose tag values come from a list-typed metadata field.
 LIST_VIEW_FIELDS: dict[str, str] = {
@@ -218,16 +220,26 @@ def render_index(papers: list[dict[str, Any]], timestamp: str) -> str:
 def write_index(vault: Path, papers: list[dict[str, Any]]) -> Path:
     """Write the rendered INDEX.json to ``<vault>/INDEX.json`` and return its path.
 
-    Uses a tmp-file + ``os.replace`` rename (same pattern as
+    Uses a tmp-file + ``replace_file`` rename (same pattern as
     ``sync.write_sync_state`` / ``vault_registry``) so a crash mid-write never
     leaves a half-written INDEX.json behind — a corrupt INDEX would break
     ``lit list`` / ``lit show`` / ``lit search`` and every agent workflow.
     """
     target = vault / "INDEX.json"
-    tmp = target.with_suffix(".json.tmp")
-    tmp.write_text(render_index(papers, now_iso()), encoding="utf-8")
-    tmp.replace(target)
+    _swap_in_index(target, render_index(papers, now_iso()))
     return target
+
+
+def _swap_in_index(target: Path, text: str) -> None:
+    """Put ``text`` at ``target`` in one step, leaving no tmp file on failure."""
+    tmp = target.with_suffix(".json.tmp")
+    try:
+        tmp.write_text(text, encoding="utf-8")
+        replace_file(tmp, target)
+    except BaseException:
+        with suppress(OSError):
+            tmp.unlink(missing_ok=True)
+        raise
 
 
 def load_index_ids(vault: Path) -> set[str] | None:
@@ -424,12 +436,7 @@ def rewrite_index_dropping_ids(vault: Path, dead_ids: set[str]) -> int:
     payload["generated_at"] = now_iso()
     # tmp-file + rename: same crash-safety as write_index (a half-written
     # INDEX would break every read path + the Tier-1 drift hook).
-    tmp = target.with_suffix(".json.tmp")
-    tmp.write_text(
-        json.dumps(payload, indent=2, ensure_ascii=False) + "\n",
-        encoding="utf-8",
-    )
-    tmp.replace(target)
+    _swap_in_index(target, json.dumps(payload, indent=2, ensure_ascii=False) + "\n")
     return n_dropped
 
 

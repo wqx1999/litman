@@ -75,6 +75,7 @@ from pydantic import (
 )
 
 from litman.core.id import find_case_fold_collision
+from litman.core.replace import replace_file
 from litman.core.shell import shell_arg
 from litman.core.undecodable import config_refusal, printable, refusal
 from litman.core.yaml_pool import ThreadLocalYAML
@@ -353,7 +354,7 @@ def save_registry(reg: VaultRegistry) -> None:
     _yaml.dump(payload, buf)
     tmp = path.with_suffix(path.suffix + ".tmp")
     tmp.write_text(buf.getvalue(), encoding="utf-8")
-    tmp.replace(path)
+    replace_file(tmp, path)
 
 
 # ---------------------------------------------------------------------------

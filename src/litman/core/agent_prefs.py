@@ -33,6 +33,7 @@ from typing import Any, cast
 from platformdirs import user_config_dir
 
 from litman.core.agents import LaunchMode, get_agent, launch_modes
+from litman.core.replace import replace_file
 from litman.core.vault_registry import REGISTRY_APP_NAME, REGISTRY_ENV_VAR
 from litman.core.yaml_pool import ThreadLocalYAML
 
@@ -93,7 +94,7 @@ def _write_pref(key: str, value: object) -> None:
     _yaml.dump(prefs, buf)
     tmp = path.with_suffix(path.suffix + ".tmp")
     tmp.write_text(buf.getvalue(), encoding="utf-8")
-    tmp.replace(path)
+    replace_file(tmp, path)
 
 
 def load_default_agent() -> str | None:

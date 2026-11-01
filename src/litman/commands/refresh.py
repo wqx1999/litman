@@ -16,10 +16,11 @@ from litman.commands._options import library_option, vault_option
 from litman.core.config import load_config
 from litman.core.document import list_papers
 from litman.core.library import find_vault, resolve_library_or_vault
-from litman.core.portable_link import warn_views_not_updated
+from litman.core.portable_link import _os_error_reason, warn_views_not_updated
 from litman.core.project_link import rebuild_all_project_links
 from litman.core.project_refs import rebuild_all_project_refs
 from litman.core.views import rebuild_views, write_index
+from litman.exceptions import IndexWriteError
 
 console = Console()
 
@@ -49,7 +50,13 @@ def refresh_views_cmd(
     papers = list_papers(vault)
     config = load_config(vault)
 
-    write_index(vault, papers)
+    try:
+        write_index(vault, papers)
+    except OSError as err:
+        raise IndexWriteError(
+            f"Could not update INDEX.json ({_os_error_reason(err)}). "
+            "Run `lit refresh-views` again."
+        ) from err
     view_errors: list[tuple[str, OSError]] = []
     counts = rebuild_views(vault, papers, view_errors=view_errors)
     # review F16: rebuild the litman_reflib/<id> symlinks too, not just
