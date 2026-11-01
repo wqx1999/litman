@@ -45,6 +45,7 @@ from litman.core.schema import (
     PROJECT_PRIORITY_PREFIX,
     PROJECT_PRIORITY_VALUES,
 )
+from litman.core.shell import shell_arg
 from litman.core.textclean import dirty_text_fields
 from litman.exceptions import MalformedMetadataError
 
@@ -92,7 +93,7 @@ def check_schema(vault: Path, papers: list[dict[str, Any]]) -> list[Issue]:
                         paper_id=pid,
                         message=f"missing or empty required field {field!r}",
                         hint=(
-                            f"set with `lit modify {pid} --set {field}=<value>`"
+                            f'set with `lit modify {shell_arg(pid)} --set "{field}=<value>"`'
                             if field != "id"
                             else "metadata.yaml `id` is the load-bearing identity field"
                         ),
@@ -136,7 +137,7 @@ def check_schema(vault: Path, papers: list[dict[str, Any]]) -> list[Issue]:
                         severity="error",
                         paper_id=pid,
                         message=f"required fixed-enum field {field!r} is missing",
-                        hint=f"set with `lit modify {pid} --set {field}=<value>`",
+                        hint=f'set with `lit modify {shell_arg(pid)} --set "{field}=<value>"`',
                     )
                 )
             elif value not in allowed:
@@ -149,7 +150,7 @@ def check_schema(vault: Path, papers: list[dict[str, Any]]) -> list[Issue]:
                             f"field {field!r} has value {value!r}, "
                             f"not in {sorted(allowed)}"
                         ),
-                        hint=f"correct via `lit modify {pid} --set {field}=<value>`",
+                        hint=f'correct via `lit modify {shell_arg(pid)} --set "{field}=<value>"`',
                     )
                 )
         # Per-project grade range. Not driven off _FIXED_ENUM_VALUES because
@@ -171,7 +172,7 @@ def check_schema(vault: Path, papers: list[dict[str, Any]]) -> list[Issue]:
                             f"field {key!r} has value {value!r}, "
                             f"not in {sorted(PROJECT_PRIORITY_VALUES)}"
                         ),
-                        hint=f"set with `lit modify {pid} --set {key}=<A|B|C>`",
+                        hint=f'set with `lit modify {shell_arg(pid)} --set "{key}=<A|B|C>"`',
                     )
                 )
         # Timestamp format (invariant #11 + review F9). The two technical
@@ -211,7 +212,10 @@ def check_schema(vault: Path, papers: list[dict[str, Any]]) -> list[Issue]:
                             f"field {field!r} value {value!r} is not a "
                             "YYYY-MM-DD date"
                         ),
-                        hint=f"correct via `lit modify {pid} --set {field}=<YYYY-MM-DD>`",
+                        hint=(
+                            f"correct via `lit modify {shell_arg(pid)} "
+                            f'--set "{field}=<YYYY-MM-DD>"`'
+                        ),
                     )
                 )
         # Date-ordering (invariant #11): read-date ≤ last-revisited ≤ today,
@@ -230,7 +234,7 @@ def check_schema(vault: Path, papers: list[dict[str, Any]]) -> list[Issue]:
                     message=msg,
                     hint=(
                         "read-date is the first-read stamp; correct via "
-                        f"`lit modify {pid} --set read-date=<YYYY-MM-DD>`"
+                        f'`lit modify {shell_arg(pid)} --set "read-date=<YYYY-MM-DD>"`'
                     ),
                 )
             )
@@ -265,7 +269,7 @@ def check_placeholder_metadata(
                     severity="warning",
                     paper_id=pid,
                     message=f"title is a placeholder: {title.strip()!r}",
-                    hint=f'set the real one with `lit modify {pid} --set title="…"`',
+                    hint=f'set the real one with `lit modify {shell_arg(pid)} --set "title=…"`',
                 )
             )
         authors = p.get("authors")
@@ -286,11 +290,11 @@ def check_placeholder_metadata(
                             # author filler (the common legacy case) it
                             # would silently install the wrong first author.
                             hint=(
-                                f"`lit modify {pid} "
+                                f"`lit modify {shell_arg(pid)} "
                                 '--set-author "Family, Given" ...` '
                                 "(one flag per author, the whole list in "
                                 "order), then "
-                                f"`lit rename {pid} <new-id>` if the id "
+                                f'`lit rename {shell_arg(pid)} "<new-id>"` if the id '
                                 "carries it too"
                             ),
                         )
@@ -339,7 +343,7 @@ def check_dirty_metadata(
                 target = _clean_title_rename_target(p, dirty)
                 if target is not None:
                     hint += (
-                        f", then `lit rename {pid} {target}` if you want the "
+                        f", then `lit rename {shell_arg(pid)} {shell_arg(target)}` if you want the "
                         "id to match"
                     )
             out.append(
@@ -457,9 +461,10 @@ def check_placeholder_id(vault: Path, papers: list[dict[str, Any]]) -> list[Issu
                     + ", ".join(repr(s) for s in bad)
                 ),
                 hint=(
-                    f"run `lit rename {pid} {target}`"
+                    f"run `lit rename {shell_arg(pid)} {shell_arg(target)}`"
                     if computed
-                    else f"fill in the blank, then `lit rename {pid} {target}`"
+                    else "fill in the blank, then "
+                    f"`lit rename {shell_arg(pid)} {shell_arg(target)}`"
                 ),
             )
         )
@@ -525,7 +530,7 @@ def check_weak_id_keyword(
                     f"id keyword {parts[2]!r} says nothing about the paper, "
                     f"and its title cannot produce a better one: {title!r}"
                 ),
-                hint=f"pick a keyword and run `lit rename {pid} {target}`",
+                hint=f"pick a keyword and run `lit rename {shell_arg(pid)} {shell_arg(target)}`",
             )
         )
     return out
@@ -600,7 +605,7 @@ def _unfinished_rename_blocker(
     if where is not None:
         return (
             f"{where} still names {folder!r}: set id in metadata.yaml back to "
-            f"{folder!r} by hand, then `lit rename {folder} {meta_id}`"
+            f"{folder!r} by hand, then `lit rename {shell_arg(folder)} {shell_arg(meta_id)}`"
         )
     return None
 
@@ -727,7 +732,7 @@ def check_paper_dir_validity(
                     ),
                     hint=(
                         "inspect the folder; if unwanted, "
-                        f"`lit rm {child.name} --purge` or move it manually"
+                        f"`lit rm {shell_arg(child.name)} --purge` or move it manually"
                     ),
                 )
             )
@@ -969,7 +974,7 @@ def check_duplicate_doi(vault: Path, papers: list[dict[str, Any]]) -> list[Issue
                 ),
                 hint=(
                     "decide which paper owns the DOI, then fix the others: "
-                    "`lit modify <id> --set doi=<correct-doi>` (or --set "
+                    '`lit modify "<id>" --set "doi=<correct-doi>"` (or --set '
                     "doi= to clear)"
                 ),
             )
@@ -1081,8 +1086,8 @@ def check_inbox_staleness(
                         f"(>{INBOX_STALE_DAYS} day threshold)"
                     ),
                     hint=(
-                        f"promote with `lit modify {pid} --set status=skim` "
-                        f"or drop with `lit modify {pid} --set status=dropped`"
+                        f"promote with `lit modify {shell_arg(pid)} --set status=skim` "
+                        f"or drop with `lit modify {shell_arg(pid)} --set status=dropped`"
                     ),
                 )
             )

@@ -21,6 +21,7 @@ from litman.core.portable_link import (
     links_unsupported_hint,
 )
 from litman.core.schema import PROJECT_PRIORITY_PREFIX
+from litman.core.shell import shell_arg
 from litman.core.taxonomy import parse_taxonomy, read_taxonomy_text
 from litman.exceptions import ConfigError, UnreadableTaxonomyError
 
@@ -111,9 +112,9 @@ def check_project_config_consistency(
                     "lit-config.yaml's projects: map"
                 ),
                 hint=(
-                    f"`lit project add {name} --path <path>` to register "
+                    f'`lit project add {shell_arg(name)} --path "<path>"` to register '
                     "its path, or remove it from TAXONOMY.md via "
-                    f"`lit project rm {name}`"
+                    f"`lit project rm {shell_arg(name)}`"
                 ),
             )
         )
@@ -128,7 +129,7 @@ def check_project_config_consistency(
                     "TAXONOMY.md's ## projects section"
                 ),
                 hint=(
-                    f"`lit project add {name} --path <existing-path>` to "
+                    f'`lit project add {shell_arg(name)} --path "<existing-path>"` to '
                     "complete the registration (or fix the yaml by hand)"
                 ),
             )
@@ -203,7 +204,7 @@ def check_project_path_exists(
                         f"project {name!r} path does not exist: {path_str}"
                     ),
                     hint=(
-                        f"`lit project set-path {name} <correct-path>` "
+                        f'`lit project set-path {shell_arg(name)} "<correct-path>"` '
                         "(likely cross-machine path drift)"
                     ),
                 )
@@ -219,7 +220,7 @@ def check_project_path_exists(
                         f"{path_str}"
                     ),
                     hint=(
-                        f"`lit project set-path {name} <correct-path>`"
+                        f'`lit project set-path {shell_arg(name)} "<correct-path>"`'
                     ),
                 )
             )
@@ -763,7 +764,12 @@ def _prefix_key_orphans(
                         message=message.format(
                             pid=pid, key=key, project=project
                         ),
-                        hint=hint.format(pid=pid, key=key, project=project),
+                        hint=hint.format(
+                            key=key,
+                            pid_arg=shell_arg(pid),
+                            project_arg=shell_arg(project),
+                            tag_arg=shell_arg(f"projects={project}"),
+                        ),
                     )
                 )
     return out
@@ -787,7 +793,7 @@ def check_relevance_orphan(
             "list does not contain {project!r} (orphan relevance)"
         ),
         hint=(
-            "`lit modify {pid} --add-tag projects={project}` to "
+            "`lit modify {pid_arg} --add-tag {tag_arg}` to "
             "re-link, or remove the {key} field by hand "
             "(authored text — never auto-deleted)"
         ),
@@ -813,7 +819,7 @@ def check_priority_orphan(
             "list does not contain {project!r} (orphan priority)"
         ),
         hint=(
-            "`lit modify {pid} --add-tag projects={project}` to re-link, or "
-            "`lit unlink {pid} --project {project}` to drop the grade"
+            "`lit modify {pid_arg} --add-tag {tag_arg}` to re-link, or "
+            "`lit unlink {pid_arg} --project {project_arg}` to drop the grade"
         ),
     )

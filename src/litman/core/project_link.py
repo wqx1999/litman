@@ -59,6 +59,7 @@ from litman.core.project_refs import (
     write_references_md,
 )
 from litman.core.schema import PROJECT_PRIORITY_PREFIX, PROJECT_PRIORITY_VALUES
+from litman.core.shell import shell_arg
 from litman.core.taxonomy import (
     find_referencing_papers,
     parse_taxonomy,
@@ -1137,8 +1138,8 @@ def add_project(vault: Path, name: str, path: Path) -> dict[str, Any]:
             f"Project {name!r} is already registered"
             + (f" → {existing_path}" if existing_path else "")
             + ". Use `lit project set-path "
-            f"{name} <new-path>` to change its path, or "
-            f"`lit project rename {name} <new-name>` to rename it."
+            f'{shell_arg(name)} "<new-path>"` to change its path, or '
+            f'`lit project rename {shell_arg(name)} "<new-name>"` to rename it.'
         )
 
     new_taxonomy_text = update_user_dict_section(
@@ -1458,7 +1459,7 @@ def set_project_path(vault: Path, name: str, new_path: Path) -> dict[str, Any]:
         raise TaxonomyError(
             f"Project {name!r} is not registered in lit-config.yaml. "
             "Run `lit project list` to inspect, or "
-            f"`lit project add {name} --path <abs-path>` to register it."
+            f'`lit project add {shell_arg(name)} --path "<abs-path>"` to register it.'
         )
     new_path_str = str(checked_project_path(new_path))
     if config.projects[name] == new_path_str:

@@ -184,7 +184,7 @@ def test_a_paper_without_si_says_how_to_add_it(
     result = _open(vault, B_ID, "--si", "si-01")
 
     assert result.exit_code == 1
-    line = f"error: {B_ID} has no SI files. Run lit add --si {B_ID} to add them."
+    line = f'error: {B_ID} has no SI files. Run lit add --si "{B_ID}" to add them.'
     assert len(line) > 80
     assert result.output.splitlines() == [line]
     assert opener.argvs == []

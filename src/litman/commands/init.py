@@ -24,6 +24,7 @@ from litman.commands._path_lines import path_lines, print_unwrapped
 from litman.commands._registry_first_time import maybe_first_time_registry_prompt
 from litman.core.confirm import is_interactive
 from litman.core.library import DEFAULT_VAULT_NAME, create_vault
+from litman.core.shell import shell_arg
 from litman.core.undecodable import has_undecodable, printable, refusal
 from litman.core.vault_registry import (
     VaultEntry,
@@ -205,9 +206,9 @@ def init_cmd(
                 "Point lit at it with one of:",
                 f"  [dim]•[/] {env_line}",
                 f"  [dim]•[/] lit <cmd> --library {shown}",
-                f"  [dim]•[/] lit vault add <name> {shown}",
+                f'  [dim]•[/] lit vault add "<name>" {shown}',
                 "",
-                "Then: lit add <path-to-pdf> --doi <doi>",
+                'Then: lit add "<path-to-pdf>" --doi "<doi>"',
             ],
         )
         return
@@ -244,7 +245,7 @@ def init_cmd(
             f"[bold]Registry name:[/] {register_name}  "
             f"[yellow](not active)[/]\n\n"
             f"Another vault is currently active. To switch:\n"
-            f"  [dim]•[/] lit vault use {register_name}"
+            f"  [dim]•[/] lit vault use {escape(shell_arg(register_name))}"
         )
 
     console.print(Panel.fit(body, title="lit init", border_style="green"))
@@ -253,6 +254,6 @@ def init_cmd(
         [
             *path_lines([("Vault:", vault)]),
             "",
-            "Next: lit add <path-to-pdf> --doi <doi>",
+            'Next: lit add "<path-to-pdf>" --doi "<doi>"',
         ],
     )

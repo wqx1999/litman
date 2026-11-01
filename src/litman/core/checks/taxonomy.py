@@ -5,11 +5,11 @@ once-used values.
 
 from __future__ import annotations
 
-import shlex
 from pathlib import Path
 from typing import Any
 
 from litman.core.checks._base import Issue
+from litman.core.shell import shell_arg
 from litman.core.taxonomy import USER_DICTS, count_usage, parse_taxonomy, read_taxonomy_text
 from litman.core.taxonomy_similarity import similar_values
 from litman.exceptions import UnreadableTaxonomyError
@@ -70,7 +70,7 @@ def check_taxonomy_drift(
                                 f"(unregistered)"
                             ),
                             hint=(
-                                f"register via `lit taxonomy add {dict_name} {value}` "
+                                f"register via `lit taxonomy add {dict_name} {shell_arg(value)}` "
                                 f"or rename it"
                             ),
                         )
@@ -133,7 +133,7 @@ def check_taxonomy_similar(
                         message=f"{dict_name}: {drop!r} looks like {keep!r} ({reason})",
                         hint=(
                             f"merge with `lit taxonomy merge {dict_name} "
-                            f"{shlex.quote(drop)} --into {shlex.quote(keep)}`"
+                            f"{shell_arg(drop)} --into {shell_arg(keep)}`"
                         ),
                     )
                 )
@@ -161,7 +161,7 @@ def check_taxonomy_unused(
                         severity="info",
                         paper_id=None,
                         message=f"{dict_name}: {value!r} is used by no paper",
-                        hint=f"remove with `lit taxonomy rm {dict_name} {shlex.quote(value)}`",
+                        hint=f"remove with `lit taxonomy rm {dict_name} {shell_arg(value)}`",
                     )
                 )
     return out

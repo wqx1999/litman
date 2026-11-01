@@ -29,6 +29,7 @@ from litman.core.project_link import (
     rebuild_all_project_links,
     unlink_paper_from_project,
 )
+from litman.core.shell import shell_arg
 from litman.exceptions import LitmanError
 
 console = Console()
@@ -61,7 +62,7 @@ console = Console()
     help=(
         "Set the relevance-<project> annotation in one shot. Without "
         "this flag, the field is left untouched and you can set it later "
-        "via lit modify <id> --set relevance-<project>='...'."
+        'via lit modify "<id>" --set "relevance-<project>=...".'
     ),
 )
 @click.option(
@@ -72,7 +73,7 @@ console = Console()
         "Grade the paper FOR THIS PROJECT (A/B/C) in the same step. Without "
         "this flag the link is left ungraded, which is legal — you usually "
         "only know the grade after reading. Set it later with "
-        "lit modify <id> --set priority-<project>=A."
+        'lit modify "<id>" --set "priority-<project>=A".'
     ),
 )
 @click.option(
@@ -104,10 +105,10 @@ def link_cmd(
     or --paper-doi <DOI>):
 
     \b
-        lit link <paper-id> --project <name>
-        lit link <paper-id> --project <name> --relevance "Direct baseline"
-        lit link <paper-id> --project <name> --priority A
-        lit link --paper-doi 10.1038/... --project <name>
+        lit link "<paper-id>" --project "<name>"
+        lit link "<paper-id>" --project "<name>" --relevance "Direct baseline"
+        lit link "<paper-id>" --project "<name>" --priority A
+        lit link --paper-doi "10.1038/..." --project "<name>"
 
     Cross-machine recovery mode (rebuild every project's links +
     REFERENCES.md from each paper's projects field):
@@ -123,7 +124,7 @@ def link_cmd(
         raise reject_second_positional(
             taken=paper_id or "",
             extra=misplaced_project,
-            correct=f"lit link {paper_id} --project {misplaced_project}",
+            correct=f"lit link {shell_arg(paper_id)} --project {shell_arg(misplaced_project)}",
         )
     if rebuild_all:
         if paper_id or project or paper_doi:
@@ -254,14 +255,14 @@ def link_cmd(
     if result["added_to_projects"] and not result["set_relevance"]:
         tips.append(
             f"[dim]Tip:[/] set the per-project note with "
-            f"`lit modify {escape(paper_id)} --set "
-            f"relevance-{escape(project)}='...'`."
+            f"`lit modify {escape(shell_arg(paper_id))} --set "
+            f'"relevance-{escape(project)}=..."`.'
         )
     if result["added_to_projects"] and not result["set_priority"]:
         tips.append(
             f"[dim]Tip:[/] grade it for this project with "
-            f"`lit modify {escape(paper_id)} --set "
-            f"priority-{escape(project)}=A`."
+            f"`lit modify {escape(shell_arg(paper_id))} --set "
+            f"{escape(shell_arg(f'priority-{project}=A'))}`."
         )
     console.print(
         Panel.fit("\n".join(body_lines), title="lit link", border_style="green")
@@ -350,7 +351,7 @@ def unlink_cmd(
         raise reject_second_positional(
             taken=paper_id or "",
             extra=misplaced_project,
-            correct=f"lit unlink {paper_id} --project {misplaced_project}",
+            correct=f"lit unlink {shell_arg(paper_id)} --project {shell_arg(misplaced_project)}",
         )
     if not project:
         raise click.UsageError("Missing option '--project'.")

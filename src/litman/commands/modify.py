@@ -76,6 +76,7 @@ from litman.core.schema import (
     fixed_enum_values,
     retired_field_replacement,
 )
+from litman.core.shell import shell_arg
 from litman.core.supplementary import SUPPLEMENTARY_FIELD
 from litman.core.taxonomy import USER_DICTS, parse_taxonomy, read_taxonomy_text
 from litman.core.textclean import TEXT_FIELDS, clean_metadata_text
@@ -212,7 +213,7 @@ def _apply_set(
     if key in FORBIDDEN_SET_FIELDS:
         if key == "id":
             raise ModifyError(
-                "Cannot --set id. Use `lit rename <old> <new>` (M2.6) so the "
+                'Cannot --set id. Use `lit rename "<old>" "<new>"` (M2.6) so the '
                 "paper directory and back-references stay in sync."
             )
         raise ModifyError(
@@ -245,8 +246,8 @@ def _apply_set(
         if graded_project not in (metadata.get("projects") or []):
             raise ModifyError(
                 f"Cannot --set {key!r}: not linked to {graded_project!r}. "
-                f"Link it first: lit link {paper_id} "
-                f"--project {graded_project} --priority A"
+                f"Link it first: lit link {shell_arg(paper_id)} "
+                f"--project {shell_arg(graded_project)} --priority A"
             )
         # Tolerate-don't-produce: check_schema ACCEPTS a present
         # `priority-<project>: null` so hand-edits and older data do not
@@ -368,11 +369,11 @@ def _apply_add_tag(
         if value not in registered:
             if key == "projects":
                 hint = (
-                    f"Run `lit project add {value} --path <abs-path>` "
+                    f'Run `lit project add {shell_arg(value)} --path "<abs-path>"` '
                     "first."
                 )
             else:
-                hint = f"Run `lit taxonomy add {key} {value}` first."
+                hint = f"Run `lit taxonomy add {key} {shell_arg(value)}` first."
             raise ModifyError(
                 f"{key!r} value {value!r} is not registered in "
                 f"TAXONOMY.md. {hint}"
@@ -524,8 +525,8 @@ def _reject_code_managed_field(key: str, flag_name: str) -> None:
         raise ModifyError(
             f"{flag_name} {key!r} is not allowed: {key!r} is maintained by the "
             "`lit code` commands so both the paper and the repo's reverse "
-            "list stay in sync. Use `lit code link <repo> --paper <id>` to "
-            "bind, `lit code unlink <repo> --paper <id>` to unbind."
+            'list stay in sync. Use `lit code link "<repo>" --paper "<id>"` to '
+            'bind, `lit code unlink "<repo>" --paper "<id>"` to unbind.'
         )
 
 

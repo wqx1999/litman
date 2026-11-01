@@ -353,8 +353,8 @@ def check_and_prompt_registry_drift(
         err.print(
             f"[yellow]warning:[/] vault registry has {len(dangling)} dangling "
             f"registration(s): {joined}. Run "
-            f"[bold]lit vault set-path <name> <new-path>[/] to fix "
-            f"(or [bold]lit vault remove <name>[/] to unregister).",
+            f'[bold]lit vault set-path "<name>" "<new-path>"[/] to fix '
+            f'(or [bold]lit vault remove "<name>"[/] to unregister).',
             soft_wrap=True,
         )
         return
@@ -511,8 +511,8 @@ def check_and_prompt_project_drift(
         err.print(
             f"[yellow]warning:[/] {len(missing)} project director"
             f"{'y' if len(missing) == 1 else 'ies'} not found: {joined}. "
-            f"Run [bold]lit project set-path <name> <new-path>[/] to fix "
-            f"(or [bold]lit project rm <name>[/] to drop).",
+            f'Run [bold]lit project set-path "<name>" "<new-path>"[/] to fix '
+            f'(or [bold]lit project rm "<name>"[/] to drop).',
             soft_wrap=True,
         )
         return

@@ -26,6 +26,7 @@ from litman.core.document import find_paper
 from litman.core.library import find_vault, resolve_library_or_vault
 from litman.core.notes import heal_wikilink_reminder
 from litman.core.paper_lookup import complete_paper_id, resolve_paper_input
+from litman.core.shell import shell_arg
 
 
 def apply_read(vault: Path, paper_id: str, date_value: str) -> tuple[bool, str]:
@@ -57,8 +58,8 @@ def apply_read(vault: Path, paper_id: str, date_value: str) -> tuple[bool, str]:
         message = (
             f"{paper_id} already read on {existing['read-date']}; "
             "leaving read-date unchanged. Log a return visit with "
-            f"`lit revisit {paper_id}`, or correct a wrong date with "
-            f"`lit modify {paper_id} --set read-date=<YYYY-MM-DD>`."
+            f"`lit revisit {shell_arg(paper_id)}`, or correct a wrong date with "
+            f'`lit modify {shell_arg(paper_id)} --set "read-date=<YYYY-MM-DD>"`.'
         )
         return False, message
     _apply_modify(
@@ -144,13 +145,13 @@ def read_cmd(
 ) -> None:
     """Mark a paper as read by stamping read-date (the first-read date).
 
-    Equivalent to lit modify <id> --set read-date=<YYYY-MM-DD>.
+    Equivalent to lit modify "<id>" --set "read-date=<YYYY-MM-DD>".
     Defaults to today (local timezone); use --date to backdate.
 
     read-date is the immutable first-read stamp: if it is already set this
     command is a no-op and leaves it unchanged. Log a return visit with
     lit revisit; correct a wrong date with
-    lit modify <id> --set read-date=<YYYY-MM-DD>.
+    lit modify "<id>" --set "read-date=<YYYY-MM-DD>".
 
     The paper id accepts a full id, a unique case-insensitive substring,
     or omit it and pass --paper-doi <DOI> instead.

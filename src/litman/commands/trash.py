@@ -134,7 +134,7 @@ def trash_list_cmd(
         )
     console.print(table)
     console.print(
-        "[dim]Restore via `lit trash restore <paper_id>` "
+        '[dim]Restore via `lit trash restore "<paper_id>"` '
         "(or pass full entry_name to disambiguate).[/]"
     )
 

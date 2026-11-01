@@ -321,7 +321,7 @@ def list_cmd(
         if not all_papers:
             console.print(
                 "[dim]No papers in vault yet. Run "
-                "`lit add <pdf> --doi <doi>` to add one.[/]"
+                '`lit add "<pdf>" --doi "<doi>"` to add one.[/]'
             )
         else:
             console.print(

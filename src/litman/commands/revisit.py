@@ -85,7 +85,7 @@ def revisit_cmd(
 ) -> None:
     """Mark a paper as revisited by stamping last-revisited.
 
-    Equivalent to lit modify <id> --set last-revisited=<YYYY-MM-DD>.
+    Equivalent to lit modify "<id>" --set "last-revisited=<YYYY-MM-DD>".
     Defaults to today (local timezone); use --date to backdate.
 
     Distinct from lit read (which stamps read-date, the first

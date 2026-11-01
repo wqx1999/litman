@@ -44,6 +44,7 @@ from litman.core.paper_lookup import (
     find_paper_id_by_doi,
     most_recent_paper_id,
 )
+from litman.core.shell import shell_arg
 from litman.core.viewer import (
     is_ssh_session,
     launch_file,
@@ -78,7 +79,7 @@ def _open_si(vault: Path, paper_id: str, name: str) -> None:
     if not records:
         console.print(
             f"[bold red]error:[/] {escape(paper_id)} has no SI files. "
-            f"Run lit add --si {escape(paper_id)} to add them.",
+            f"Run lit add --si {escape(shell_arg(paper_id))} to add them.",
             soft_wrap=True,
         )
         sys.exit(1)

@@ -253,7 +253,7 @@ def vault_use_cmd(name: str) -> None:
         Panel.fit(
             f"[bold green]Active vault:[/] {escape(name)}\n"
             f"[bold]Path:[/] {escape(entry.path)}\n\n"
-            f"[dim]`lit list`, `lit show <id>`, etc. now resolve to this vault.[/]",
+            f'[dim]`lit list`, `lit show "<id>"`, etc. now resolve to this vault.[/]',
             title="lit vault use",
             border_style="green",
         )
@@ -347,7 +347,7 @@ def vault_list_cmd(output_format: str) -> None:
     if not registry.vaults:
         console.print(
             "[yellow]No vaults registered.[/] "
-            "Run `lit vault add <name> <path>` to register one."
+            'Run `lit vault add "<name>" "<path>"` to register one.'
         )
         return
 
@@ -382,7 +382,7 @@ def vault_list_cmd(output_format: str) -> None:
     if active is None:
         console.print(
             "[yellow]No active vault.[/] "
-            "Run `lit vault use <name>` to set one."
+            'Run `lit vault use "<name>"` to set one.'
         )
 
 
@@ -464,7 +464,7 @@ def vault_remove_cmd(name: str, yes: bool) -> None:
     The vault directory itself is NOT deleted — only the registry entry
     is removed. To delete the directory too, rm -rf <path> after the
     unregister. Removing the active vault leaves the registry with no
-    active vault; pick the next one with lit vault use <other>.
+    active vault; pick the next one with lit vault use "<other>".
     """
     registry = load_registry()
     entry = find_by_name(registry, name)
@@ -487,7 +487,7 @@ def vault_remove_cmd(name: str, yes: bool) -> None:
     if entry.is_active:
         note = (
             "\n\n[yellow]The active vault was removed. "
-            "Run `lit vault use <name>` to pick the next one.[/]"
+            'Run `lit vault use "<name>"` to pick the next one.[/]'
         )
     console.print(
         Panel.fit(

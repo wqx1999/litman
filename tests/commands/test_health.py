@@ -748,7 +748,7 @@ def test_a_folder_the_library_still_names_is_left_for_a_person(
     assert issue.category == "paper_dir_validity"
     assert issue.hint == (
         f"{where} still names '2020_A_x': set id in metadata.yaml back to "
-        "'2020_A_x' by hand, then `lit rename 2020_A_x 2020_B_x`"
+        '\'2020_A_x\' by hand, then `lit rename "2020_A_x" "2020_B_x"`'
     )
     assert finish_unfinished_renames(vault) == (0, [])
     assert (vault / "papers" / "2020_A_x").is_dir()
@@ -2128,7 +2128,7 @@ def test_similar_keeps_the_alphabetically_first_value_on_a_tie(vault: Path) -> N
     issues = check_taxonomy_similar(vault, [])
 
     assert [i.hint for i in issues] == [
-        "merge with `lit taxonomy merge topics language-models --into 'language model'`"
+        'merge with `lit taxonomy merge topics language-models --into "language model"`'
     ]
 
 
@@ -2915,7 +2915,7 @@ def test_code_clone_integrity_dangling_ref(vault: Path) -> None:
     assert issues[0].paper_id == "2024_Foo_Bar"
     assert "Y" in issues[0].message
     assert issues[0].hint is not None
-    assert "lit code unlink Y --paper 2024_Foo_Bar" in issues[0].hint
+    assert 'lit code unlink Y --paper "2024_Foo_Bar"' in issues[0].hint
 
 
 def test_code_clone_integrity_asymmetric_forward_missing(vault: Path) -> None:
@@ -2936,7 +2936,7 @@ def test_code_clone_integrity_asymmetric_forward_missing(vault: Path) -> None:
     assert issues[0].paper_id == "2024_B"
     assert "one-sided" in issues[0].message
     assert issues[0].hint is not None
-    assert "lit code unlink R --paper 2024_B" in issues[0].hint
+    assert 'lit code unlink R --paper "2024_B"' in issues[0].hint
 
 
 def test_code_clone_integrity_missing_repo_meta(vault: Path) -> None:
@@ -4234,7 +4234,7 @@ def test_supplementary_check_reports_each_drift(vault: Path, tmp_path: Path) -> 
     by_category = {i.category: i for i in issues}
     assert "si-01.csv is recorded but missing" in by_category["supplementary_missing"].message
     assert by_category["supplementary_missing"].hint.endswith(
-        f"`lit rm {_SI_PAPER} --si si-01 --yes`"
+        f'`lit rm "{_SI_PAPER}" --si si-01 --yes`'
     )
     assert "'supplementary' is not a list" in by_category["supplementary_field"].message
     assert "notes from the email.txt" in by_category["supplementary_unrecorded"].message
@@ -4295,8 +4295,8 @@ def test_fix_without_a_terminal_records_only_what_verifies(
     )
 
     out = result.output
-    assert f"lit rm {_SI_PAPER} --si si-01 --yes" in out
-    assert f'lit add --si {_SI_PAPER} "{si / "Table S2.xlsx"}" --force' in out
+    assert f'lit rm "{_SI_PAPER}" --si si-01 --yes' in out
+    assert f'lit add --si "{_SI_PAPER}" "{si / "Table S2.xlsx"}" --force' in out
     assert "looks like the SI of 2023_Zhong_Other" in out
     assert "supplementary_unrecorded: cleaned 1 item" in out
     assert _si_records(vault) == [("si-01.csv", "filename"), ("si-02.csv", "filename")]
@@ -4391,7 +4391,7 @@ def test_fix_without_a_terminal_names_an_undecodable_stray_so_it_pastes_back(
     assert f"left {si}/Table S2 caf\ufffd.xlsx: can't confirm it belongs" in out
     quoted = shell_path(stray)
     assert quoted == f"$'{si}/Table S2 caf\\xe9.xlsx'"
-    assert f"lit add --si {_SI_PAPER} {quoted} --force" in out
+    assert f'lit add --si "{_SI_PAPER}" {quoted} --force' in out
     assert subprocess.run(["bash", "-c", f"test -f {quoted}"]).returncode == 0
     assert stray.exists()
 
@@ -4559,7 +4559,7 @@ def test_supplementary_cited_reports_each_case_with_its_line(
         (
             "notes.md:3 cites si-02.csv as other.csv, but si-02.csv is now "
             "ci9b00237_si_002.csv",
-            f"check which file it means — `lit show {_SI_PAPER}` lists each SI "
+            f'check which file it means — `lit show "{_SI_PAPER}"` lists each SI '
             "with its original name",
         ),
         (
@@ -4569,7 +4569,7 @@ def test_supplementary_cited_reports_each_case_with_its_line(
         ),
         (
             "notes.md:5 cites si-05, which this paper no longer has",
-            f"point it at the right file (`lit show {_SI_PAPER}` lists the SI), "
+            f'point it at the right file (`lit show "{_SI_PAPER}"` lists the SI), '
             "or remove it",
         ),
         (
@@ -4741,7 +4741,7 @@ def test_an_unreadable_added_date_is_a_finding_not_a_skip(vault: Path) -> None:
         (
             "discussion.md:4 (§2026-09-02) cites si-02, added later (2026-10-21) — "
             "may refer to a file since replaced",
-            "check which file it means — `lit show 2020_Hand_Made` lists each SI "
+            'check which file it means — `lit show "2020_Hand_Made"` lists each SI '
             "with its original name",
         ),
     ]
@@ -4844,7 +4844,7 @@ def test_dirty_metadata_reported_then_cleaned_by_fix(
     assert "(5 issues)" in report.output
     # Only A's id was derived from its broken title.
     clean_id = derive_id(2026, "Zhang", _CLEAN_A)
-    assert f"`lit rename {ids['A']} {clean_id}`" in report.output
+    assert f'`lit rename "{ids["A"]}" "{clean_id}"`' in report.output
     assert report.output.count("lit rename") == 1
 
     fix = runner.invoke(cli, ["health-check", "--fix", "--library", str(vault)])
@@ -4854,7 +4854,7 @@ def test_dirty_metadata_reported_then_cleaned_by_fix(
     assert "kept " not in fix.output
     assert "heading" not in fix.output
     assert (
-        f"rename {ids['A']}: `lit rename {ids['A']} {clean_id}` if you want "
+        f'rename {ids["A"]}: `lit rename "{ids["A"]}" "{clean_id}"` if you want '
         "the id to match the clean title"
     ) in fix.output
 
@@ -5072,7 +5072,7 @@ def test_fix_gives_the_rename_even_when_the_report_folded_the_finding(
 
     assert fix.exit_code == 0, fix.output
     assert (
-        f"rename {pid}: `lit rename {pid} {target}` if you want the id to "
+        f'rename {pid}: `lit rename "{pid}" "{target}"` if you want the id to '
         "match the clean title"
     ) in fix.output
     assert _meta(vault, pid)["id"] == pid

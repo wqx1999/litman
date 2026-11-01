@@ -51,6 +51,7 @@ from litman.core.document import find_paper
 from litman.core.gui_registry import GuiServer, find_gui, other_host_guis
 from litman.core.library import find_vault, resolve_library_or_vault
 from litman.core.paper_lookup import resolve_paper_id
+from litman.core.shell import shell_arg
 from litman.exceptions import SupplementaryError
 
 if TYPE_CHECKING:
@@ -175,7 +176,7 @@ def _ended(request: dict[str, Any], paper_id: str) -> GuiOutcome | None:
         if not files:
             raise SupplementaryError(
                 "The litman GUI answered that SI was added but named no file. "
-                f"`lit show {paper_id}` lists the paper's SI."
+                f"`lit show {shell_arg(paper_id)}` lists the paper's SI."
             )
         return GuiOutcome("added", request["id"], files, _strings(request.get("warnings")))
     if request["status"] == _CANCELLED:
@@ -333,7 +334,7 @@ def _fallback(paper_id: str, link: str | None) -> list[str]:
         if link
         else "No link on record — download the SI from the article's page yourself"
     )
-    return [where, f"Then add the files: lit add --si {paper_id} <file>..."]
+    return [where, f'Then add the files: lit add --si {shell_arg(paper_id)} "<file>"...']
 
 
 def _when(started: float) -> str:

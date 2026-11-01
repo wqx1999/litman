@@ -47,11 +47,11 @@ def drop_cmd(
 ) -> None:
     """Mark a paper as dropped by setting status=dropped.
 
-    Equivalent to lit modify <id> --set status=dropped.
+    Equivalent to lit modify "<id>" --set status=dropped.
 
     The paper id accepts a full id, a unique case-insensitive substring,
     or omit it and pass --paper-doi <DOI> instead. Reverse via
-    lit modify <id> --set status=<new-status>.
+    lit modify "<id>" --set "status=<new-status>".
     """
     vault = find_vault(resolve_library_or_vault(library, vault_name))
     paper_id = resolve_paper_input(vault, paper_id, paper_doi)

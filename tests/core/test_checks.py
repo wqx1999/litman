@@ -640,7 +640,7 @@ def test_placeholder_id_survives_the_metadata_repair(vault: Path) -> None:
     issues = check_placeholder_id(vault, [repaired])
     assert len(issues) == 1
     assert (
-        "lit rename 2024_Unknown_Untitled 2024_Zhang_Deep-learning-protein"
+        'lit rename "2024_Unknown_Untitled" "2024_Zhang_Deep-learning-protein"'
         in (issues[0].hint or "")
     )
 
@@ -669,7 +669,7 @@ def test_placeholder_id_never_proposes_a_rename_to_itself(vault: Path) -> None:
     hint = check_placeholder_id(vault, [paper])[0].hint or ""
     # The last token is `lit rename`'s second argument — the id being proposed.
     # Matching on the whole hint would pass on the OLD id, which is in there too.
-    target = hint.split()[-1].strip("`")
+    target = hint.split()[-1].strip('`"')
     assert target == "2024_<Family>_<Keyword>"
 
 
@@ -772,7 +772,7 @@ def test_weak_id_keyword_reported(vault: Path) -> None:
     assert "'A'" in issue.message
     # `lit rename` is the only command that moves an id without stranding the
     # wiki-links and project symlinks aimed at it.
-    assert "lit rename 2018_Zhang_A 2018_Zhang_<Keyword>" in (issue.hint or "")
+    assert 'lit rename "2018_Zhang_A" "2018_Zhang_<Keyword>"' in (issue.hint or "")
 
 
 def test_weak_id_keyword_hint_names_a_concrete_id_when_one_exists(
@@ -784,7 +784,7 @@ def test_weak_id_keyword_hint_names_a_concrete_id_when_one_exists(
     )
     issues = check_weak_id_keyword(vault, [paper])
     assert len(issues) == 1
-    assert "lit rename 2018_Zhang_A 2018_Zhang_PROTAC" in (issues[0].hint or "")
+    assert 'lit rename "2018_Zhang_A" "2018_Zhang_PROTAC"' in (issues[0].hint or "")
 
 
 def test_a_deliberately_short_id_on_a_normal_title_is_not_reported(
@@ -904,7 +904,7 @@ def test_dirty_metadata_suggests_a_rename_when_the_id_came_from_the_dirty_title(
     hint = _dirty_findings(paper)["title"].hint or ""
     assert hint.startswith(f"`lit health-check --fix` writes {_CLEAN_A!r}")
     assert (
-        f"`lit rename {pid} {derive_id(2026, 'Zhang', _CLEAN_A)}`" in hint
+        f'`lit rename "{pid}" "{derive_id(2026, "Zhang", _CLEAN_A)}"`' in hint
     )
 
 
@@ -923,7 +923,7 @@ def test_dirty_metadata_suggests_a_rename_for_an_id_from_before_transliteration(
     )
     hint = _dirty_findings(paper)["title"].hint or ""
     assert (
-        f"`lit rename {pid} 2021_Muller_Nostoc-lanthipeptides-promote`" in hint
+        f'`lit rename "{pid}" "2021_Muller_Nostoc-lanthipeptides-promote"`' in hint
     )
 
 
@@ -934,7 +934,7 @@ def test_dirty_metadata_suggests_a_rename_for_an_id_from_the_current_rule() -> N
     )
     hint = _dirty_findings(paper)["title"].hint or ""
     assert (
-        f"`lit rename {pid} 2021_Muller_Nostoc-lanthipeptides-promote`" in hint
+        f'`lit rename "{pid}" "2021_Muller_Nostoc-lanthipeptides-promote"`' in hint
     )
 
 
@@ -965,7 +965,7 @@ def test_dirty_metadata_judges_an_id_by_the_clean_author_name() -> None:
     )
     hint = _dirty_findings(paper)["title"].hint or ""
     assert (
-        f"`lit rename {pid} 2021_Muller_Nostoc-lanthipeptides-promote`" in hint
+        f'`lit rename "{pid}" "2021_Muller_Nostoc-lanthipeptides-promote"`' in hint
     )
 
 

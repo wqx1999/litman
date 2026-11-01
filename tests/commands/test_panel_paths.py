@@ -127,7 +127,7 @@ def test_link_prints_its_paths_and_tips_outside_the_panel(
     _assert_whole_and_outside(result.output, str(reflib / "REFERENCES.md"))
     _assert_whole_and_outside(
         result.output,
-        "`lit modify 2024_Zeta_Paths --set priority-pepforge=A`",
+        '`lit modify "2024_Zeta_Paths" --set priority-pepforge=A`',
     )
 
 

@@ -47,7 +47,8 @@ own entry. Read those before you upgrade, whatever the number says.
   whichever folder you run `lit` from.
 - **Agents quote what they pass to `lit`.** The skills now write paper ids, DOIs,
   file paths, page ranges and `FIELD=VALUE` in single quotes. Without them, an id
-  starting with a digit could send the whole command into the agent's sandbox.
+  starting with a digit could send the whole command into the agent's sandbox. The
+  commands `lit` prints for you to copy put quotes around such values too.
 - **A folder link refused with access denied is no longer blamed on the drive.**
   Inside an agent's sandbox, for example, `lit` said the filesystem could not hold
   folder links and to move the library. It now says access was denied and to run

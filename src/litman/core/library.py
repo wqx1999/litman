@@ -151,7 +151,7 @@ def find_vault(explicit: Path | None = None) -> Path:
         if not (candidate / "lit-config.yaml").is_file():
             raise LibraryNotFoundError(
                 f"No lit-config.yaml at {candidate}. "
-                "Pass --library <vault-path> or run `lit init` first."
+                'Pass --library "<vault-path>" or run `lit init` first.'
             )
         ensure_vault_recovered(candidate)
         return candidate
@@ -183,7 +183,7 @@ def find_vault(explicit: Path | None = None) -> Path:
                 f"Active vault {active.name!r} points at {active_path} "
                 "but that directory no longer holds a lit-config.yaml. "
                 "Fix the path (move the vault back, or `lit vault remove` "
-                "and re-add), or `lit vault use <other-name>` to switch."
+                'and re-add), or `lit vault use "<other-name>"` to switch.'
             )
 
     here = Path.cwd().resolve()
@@ -194,9 +194,9 @@ def find_vault(explicit: Path | None = None) -> Path:
 
     raise LibraryNotFoundError(
         "No vault found. New to litman? Run `lit setup`. Or create a vault "
-        "directly with `lit init <parent-dir>` (it registers automatically), "
-        "or `lit vault add <name> <path>` to register an existing vault. "
-        "Advanced: set $LIT_LIBRARY or pass --library <vault-path>."
+        'directly with `lit init "<parent-dir>"` (it registers automatically), '
+        'or `lit vault add "<name>" "<path>"` to register an existing vault. '
+        'Advanced: set $LIT_LIBRARY or pass --library "<vault-path>".'
     )
 
 

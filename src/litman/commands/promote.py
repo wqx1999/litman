@@ -46,11 +46,11 @@ def promote_cmd(
 ) -> None:
     """Promote a paper to status=deep-read.
 
-    Equivalent to lit modify <id> --set status=deep-read.
+    Equivalent to lit modify "<id>" --set status=deep-read.
 
     The paper id accepts a full id, a unique case-insensitive substring,
     or omit it and pass --paper-doi <DOI> instead. Does NOT modify
-    read-date — run lit read <id> separately if you also want to
+    read-date — run lit read "<id>" separately if you also want to
     record that you read it today.
     """
     vault = find_vault(resolve_library_or_vault(library, vault_name))

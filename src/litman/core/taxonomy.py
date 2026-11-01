@@ -34,6 +34,7 @@ from typing import Any
 
 from litman.core.atomic import staged_write
 from litman.core.dates import now_iso
+from litman.core.shell import shell_arg
 from litman.core.taxonomy_similarity import similar_values
 from litman.core.views import (
     papers_for_index,
@@ -278,9 +279,9 @@ def reject_projects_write(dict_name: str) -> None:
         raise TaxonomyError(
             "'projects' has path binding requirements; use `lit project` "
             "instead.\n"
-            "  add:    lit project add <name> --path <abs-path>\n"
-            "  rename: lit project rename <old> <new>\n"
-            "  rm:     lit project rm <name>"
+            '  add:    lit project add "<name>" --path "<abs-path>"\n'
+            '  rename: lit project rename "<old>" "<new>"\n'
+            '  rm:     lit project rm "<name>"'
         )
 
 
@@ -518,7 +519,8 @@ def rename_taxonomy_value(
     if new in current:
         raise TaxonomyError(
             f"{new!r} is already in {dict_name}. "
-            f"Use `lit taxonomy merge {dict_name} {old} --into {new}` to fold them."
+            f"Use `lit taxonomy merge {dict_name} {shell_arg(old)} --into {shell_arg(new)}` "
+            "to fold them."
         )
 
     # Same INDEX-first + snapshot pattern as remove_taxonomy_value above

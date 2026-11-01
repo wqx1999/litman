@@ -238,7 +238,7 @@ def test_rm_has_relations_reports_total_and_pointer(
     assert result.exit_code == 0, result.output
     # 2 ref opposites, total = 2.
     assert "is linked with 2 entries" in result.output
-    assert "lit show 2024_Target" in result.output
+    assert 'lit show "2024_Target"' in result.output
     # Refused (default N) → nothing changed.
     assert (vault / "papers" / "2024_Target").is_dir()
     assert _read_meta(vault, "2024_B")["related"] == ["2024_Target"]

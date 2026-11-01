@@ -24,6 +24,7 @@ from litman.core.relations import (
     dangling_relation_edges,
     relation_refs,
 )
+from litman.core.shell import shell_arg
 from litman.core.trash import list_trash
 from litman.exceptions import VaultRegistryError
 
@@ -82,7 +83,7 @@ def check_dangling_refs(
             if ref in trashed:
                 message = f"{field!r} references {ref!r}, which is in the trash"
                 hint = (
-                    f"`lit trash restore {ref}` to keep the link, or "
+                    f"`lit trash restore {shell_arg(ref)}` to keep the link, or "
                     "`lit health-check --fix` to drop it"
                 )
             else:
@@ -161,8 +162,9 @@ def check_bidirectional_refs(
                             f"{ref!r}.{reverse} does not contain {pid!r}"
                         ),
                         hint=(
-                            f"`lit modify {owner} --rm-tag {fwd}={tgt}` then "
-                            f"`--add-tag {fwd}={tgt}` to re-sync the pairing"
+                            f"`lit modify {shell_arg(owner)} "
+                            f"--rm-tag {shell_arg(f'{fwd}={tgt}')}` then "
+                            f"`--add-tag {shell_arg(f'{fwd}={tgt}')}` to re-sync the pairing"
                         ),
                     )
                 )
@@ -394,7 +396,7 @@ def check_dangling_wikilinks(
                         ),
                         hint=(
                             "register the vault with "
-                            f"`lit vault add {vault_prefix} <path>` "
+                            f'`lit vault add {shell_arg(vault_prefix)} "<path>"` '
                             "or correct the vault prefix"
                         ),
                     )
@@ -418,7 +420,7 @@ def check_dangling_wikilinks(
                             f"(no INDEX.json at {entry.path})"
                         ),
                         hint=(
-                            f"`lit vault info {vault_prefix}` to inspect; "
+                            f"`lit vault info {shell_arg(vault_prefix)}` to inspect; "
                             "restore the vault directory or remove this link"
                         ),
                     )
@@ -435,7 +437,7 @@ def check_dangling_wikilinks(
                             f"{vault_prefix!r} has no paper id {paper_id!r}"
                         ),
                         hint=(
-                            f"`lit list --vault {vault_prefix}` to find the "
+                            f"`lit list --vault {shell_arg(vault_prefix)}` to find the "
                             "right id, or correct the link"
                         ),
                     )

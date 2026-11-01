@@ -40,7 +40,7 @@ def skim_cmd(
 ) -> None:
     """Mark a paper as skimmed by setting status=skim.
 
-    Equivalent to lit modify <id> --set status=skim.
+    Equivalent to lit modify "<id>" --set status=skim.
 
     The paper id accepts a full id, a unique case-insensitive substring,
     or omit it and pass --paper-doi <DOI> instead.

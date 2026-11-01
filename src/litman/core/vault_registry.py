@@ -75,6 +75,7 @@ from pydantic import (
 )
 
 from litman.core.id import find_case_fold_collision
+from litman.core.shell import shell_arg
 from litman.core.undecodable import config_refusal, printable, refusal
 from litman.core.yaml_pool import ThreadLocalYAML
 from litman.exceptions import VaultRegistryError as VaultRegistryError
@@ -394,8 +395,8 @@ def ensure_name_registrable(reg: VaultRegistry, name: str) -> None:
         if not (Path(existing.path).expanduser() / "lit-config.yaml").is_file():
             message += (
                 f"\nIts folder is no longer at {existing.path} — did it move? "
-                f"Re-point it in place with `lit vault set-path {name} "
-                f"<new-path>` (or `lit vault remove {name}` first to free the "
+                f"Re-point it in place with `lit vault set-path {shell_arg(name)} "
+                f'"<new-path>"` (or `lit vault remove {shell_arg(name)}` first to free the '
                 "name)."
             )
         raise VaultRegistryError(message)
@@ -497,7 +498,7 @@ def ensure_path_registrable(
         if same:
             raise VaultRegistryError(
                 f"That folder is already registered as {entry.name!r}. "
-                f"Switch to it with: lit vault use {entry.name}"
+                f"Switch to it with: lit vault use {shell_arg(entry.name)}"
             )
 
 

@@ -110,6 +110,7 @@ from litman.core.project_refs import (
     write_references_md,
 )
 from litman.core.relations import ALL_REF_FIELDS, RELATION_PAIRS
+from litman.core.shell import shell_arg
 from litman.core.trash import TRASH_MAX_ENTRIES, enforce_cap, move_to_trash
 from litman.core.views import (
     papers_for_index,
@@ -561,7 +562,7 @@ def _rm_si(
         f"[bold yellow]About to delete from[/] {escape(paper_id)}:",
         *listing,
         "This can't be undone — to get a file back, add it again:",
-        f"  [bold]lit add --si {escape(paper_id)}[/]",
+        f"  [bold]lit add --si {escape(shell_arg(paper_id))}[/]",
     ]
     if not _confirm_destructive(warning_lines, yes=skip_confirm):
         console.print("[dim]Aborted. No changes made.[/]")
@@ -592,7 +593,7 @@ def _rm_si(
         console.print(line, soft_wrap=True)
     it = "it" if len(result.records) == 1 else "them"
     console.print(
-        f"To add {it} again: [bold]lit add --si {escape(paper_id)}[/]",
+        f"To add {it} again: [bold]lit add --si {escape(shell_arg(paper_id))}[/]",
         soft_wrap=True,
     )
     for message in result.warnings:
@@ -895,7 +896,7 @@ def execute_rm(plan: RmPlan, *, purge: bool = False) -> RmResult:
     metavar="NAME",
     help=(
         "Delete one of the paper's SI files (si-02, or si-02.xlsx) instead of "
-        "the paper. Repeatable. There is no trash for SI: lit add --si <paper> "
+        'the paper. Repeatable. There is no trash for SI: lit add --si "<paper>" '
         "adds a file again. Not with --purge."
     ),
 )
@@ -917,7 +918,7 @@ def rm_cmd(
     or omit it and pass --paper-doi <DOI> instead.
 
     By default moves papers/<id>/ to <vault>/.trash/ (recoverable via
-    lit trash restore <id>). Pass --purge to permanently delete. INDEX.json
+    lit trash restore "<id>"). Pass --purge to permanently delete. INDEX.json
     and views/by-*/ are refreshed either way.
 
     All external links to the paper (other papers' relation fields, repo
@@ -971,7 +972,7 @@ def rm_cmd(
                 f"{escape(str(vault))}."
             )
             warning_lines.append(
-                f"  [dim](run 'lit show {escape(paper_id)}' to inspect them)[/]"
+                f"  [dim](run `lit show {escape(shell_arg(paper_id))}` to inspect them)[/]"
             )
         warning_lines.append(f"[bold yellow]About to {action}:[/]")
         warning_lines.append(f"  id     : {escape(paper_id)}")
@@ -1062,7 +1063,7 @@ def rm_cmd(
     else:
         console.print(
             f"[bold green]✓ Trashed[/] {escape(paper_id)} "
-            f"[dim](recover via `lit trash restore {escape(paper_id)}`)[/]"
+            f"[dim](recover via `lit trash restore {escape(shell_arg(paper_id))}`)[/]"
         )
         # Ring eviction: surface what we permanently dropped (never silent).
         if result.evicted:

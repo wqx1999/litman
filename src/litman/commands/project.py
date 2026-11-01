@@ -264,7 +264,7 @@ def project_list_cmd(
         console.print("[dim](no projects registered)[/]")
         console.print(
             "[dim]Register one with "
-            "`lit project add <name> --path <abs-path>`.[/]"
+            '`lit project add "<name>" --path "<abs-path>"`.[/]'
         )
         return
 
