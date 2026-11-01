@@ -22,8 +22,8 @@ a compatibility read of the Claude dir).
 How an agent starts follows from its row (:func:`launch_modes`): ``launch`` is
 a command run in a terminal at the vault, and ``open_url`` is a desktop app
 that litman opens itself through :mod:`litman.core.app_launch`, with no
-terminal in between. Claude Code has both, ZCode and DeepSeek Harness only the
-app, and the other four only the CLI. Consumers branch on the mode, the same
+terminal in between. Claude Code and Codex have both, ZCode and DeepSeek Harness
+only the app, and the other three only the CLI. Consumers branch on the mode, the same
 data-driven way they branch on ``supported``. A terminal launch runs in
 :func:`launch_env`, which leaves out the row's ``launch_env_unset``.
 
@@ -132,6 +132,9 @@ class AgentSpec:
     # Variables a terminal launch leaves out of the agent's environment: its own
     # markers, inherited when lit itself runs inside one of its sessions.
     launch_env_unset: tuple[str, ...] = ()
+    # On a row with both ways: the platforms (``sys.platform`` values) where the
+    # app is offered. Elsewhere the row is only its CLI. None is every platform.
+    app_platforms: tuple[str, ...] | None = None
 
 
 # Every supported agent's skill adapter reuses core.skill verbatim:
@@ -246,6 +249,12 @@ AGENTS: tuple[AgentSpec, ...] = (
             lambda: agent_permissions.install_codex_lit_permission()
         ),
         skills_dir=lambda: skill.standard_skills_parent_dir(),
+        url_scheme="codex",
+        open_url="codex://threads/new?path={vault}",
+        default_mode="app",
+        app_install_url="https://chatgpt.com/codex/",
+        # Its app has only been tried on Windows.
+        app_platforms=("win32",),
     ),
     AgentSpec(
         name="dsh",
@@ -533,12 +542,15 @@ def launch_modes(spec: AgentSpec) -> list[LaunchMode]:
 def machine_modes(spec: AgentSpec) -> list[LaunchMode]:
     """The ways ``spec`` could start on this machine, installed or not.
 
-    A row with both ways loses the app where it would not reach the user. A
-    row that is only an app keeps it: :func:`litman.core.app_launch.open_app`
-    decides what happens there, as it always has.
+    A row with both ways loses the app where it would not reach the user or
+    the row does not offer it. A row that is only an app keeps it:
+    :func:`litman.core.app_launch.open_app` decides what happens there, as it
+    always has.
     """
     modes = launch_modes(spec)
-    if len(modes) > 1 and not app_launch.app_reaches_user():
+    if len(modes) > 1 and not (
+        app_launch.app_offered_here(spec) and app_launch.app_reaches_user()
+    ):
         return [mode for mode in modes if mode != "app"]
     return modes
 
