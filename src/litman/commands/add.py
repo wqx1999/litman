@@ -175,7 +175,8 @@ def _refuse_doi_duplicate(doi: str, existing_id: str, meta: dict[str, Any]) -> N
         f"\n"
         f"Next steps:\n"
         f"  lit show {shell_arg(existing_id)}                       # inspect\n"
-        f'  lit rm {shell_arg(existing_id)} && lit add "<pdf>" --doi {shell_arg(doi)}   # replace'
+        f"  lit rm {shell_arg(existing_id)}                         # replace, step 1\n"
+        f'  lit add "<pdf>" --doi {shell_arg(doi)}   # replace, step 2'
     )
 
 

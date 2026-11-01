@@ -347,7 +347,15 @@ def test_add_duplicate_doi_refused(
     # DuplicateDOIError is a subclass of AddError, so legacy catches still work.
     assert isinstance(second.exception, AddError)
     # The error message should name the existing id so the user can jump to it.
-    assert _PAPER_ID in str(second.exception)
+    message = str(second.exception)
+    assert _PAPER_ID in message
+    # One command per line: PowerShell 5.1 cannot parse `&&`.
+    lines = message.splitlines()
+    assert [ln.split("#")[0].strip() for ln in lines[lines.index("Next steps:") + 1 :]] == [
+        f'lit show "{_PAPER_ID}"',
+        f'lit rm "{_PAPER_ID}"',
+        'lit add "<pdf>" --doi "10.1093/bioinformatics/btae364"',
+    ]
 
 
 def test_add_duplicate_doi_case_insensitive(
