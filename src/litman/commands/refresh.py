@@ -50,13 +50,13 @@ def refresh_views_cmd(
     papers = list_papers(vault)
     config = load_config(vault)
 
+    # The repair command: whatever holds INDEX.json, the views and project links
+    # still get repaired, and only then does it say so and exit 1.
+    index_error: OSError | None = None
     try:
         write_index(vault, papers)
     except OSError as err:
-        raise IndexWriteError(
-            f"Could not update INDEX.json ({_os_error_reason(err)}). "
-            "Run `lit refresh-views` again."
-        ) from err
+        index_error = err
     view_errors: list[tuple[str, OSError]] = []
     counts = rebuild_views(vault, papers, view_errors=view_errors)
     # review F16: rebuild the litman_reflib/<id> symlinks too, not just
@@ -66,10 +66,11 @@ def refresh_views_cmd(
     link_results = rebuild_all_project_links(vault, config.projects)
     project_results = rebuild_all_project_refs(vault, config.projects)
 
-    n = len(papers)
-    console.print(
-        f"[green]✓[/] INDEX.json updated ({n} paper{'s' if n != 1 else ''})"
-    )
+    if index_error is None:
+        n = len(papers)
+        console.print(
+            f"[green]✓[/] INDEX.json updated ({n} paper{'s' if n != 1 else ''})"
+        )
     for view_name, k in counts.items():
         console.print(f"  views/{view_name}: {k} link{'s' if k != 1 else ''}")
     if view_errors:
@@ -120,3 +121,8 @@ def refresh_views_cmd(
     ]
     if link_errors:
         console.print(project_folder_not_updated(link_errors[0]), soft_wrap=True)
+    if index_error is not None:
+        raise IndexWriteError(
+            f"Could not update INDEX.json ({_os_error_reason(index_error)}). "
+            "Run `lit refresh-views` again."
+        ) from index_error

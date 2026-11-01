@@ -19,6 +19,7 @@ from rich.console import Console
 
 from litman.cli import cli
 from litman.commands import health as health_cmd
+from litman.commands._hub_report import refreshed_line
 from litman.core import correctors, views
 from litman.core.checks import run_all_checks
 from litman.core.document import list_papers
@@ -149,7 +150,121 @@ def test_refresh_views_gives_one_clear_error(
     assert str(result.exception) == (
         "Could not update INDEX.json (Access is denied). Run `lit refresh-views` again."
     )
+    assert "INDEX.json updated" not in result.output
     assert not (vault / "INDEX.json.tmp").exists()
+
+
+def test_refresh_views_still_repairs_views_and_project_links_first(
+    vault: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    before = (vault / "INDEX.json").read_text(encoding="utf-8")
+    project = tmp_path / "proj"
+    project.mkdir()
+    _write_config_with_project(vault, "proj", project)
+    _make_paper(vault, "2024_Member_x", projects=["proj"])
+    stale = vault / "views" / "by-status" / "inbox" / PAPER
+    assert is_portable_link(stale)
+    (vault / "views" / "by-status" / "skim").mkdir(parents=True, exist_ok=True)
+    os.replace(stale, vault / "views" / "by-status" / "skim" / PAPER)
+
+    with monkeypatch.context() as held:
+        _refuse_index(held)
+        result = CliRunner().invoke(cli, ["refresh-views", "--library", str(vault)])
+
+    assert result.exit_code == 1
+    assert isinstance(result.exception, IndexWriteError)
+    # The views and the project side were done before it said so.
+    assert is_portable_link(stale)
+    assert not os.path.lexists(vault / "views" / "by-status" / "skim" / PAPER)
+    assert is_portable_link(vault / "views" / "by-status" / "inbox" / "2024_Member_x")
+    assert is_portable_link(project / "litman_reflib" / "2024_Member_x")
+    assert "2024_Member_x" in (project / "litman_reflib" / "REFERENCES.md").read_text(
+        encoding="utf-8"
+    )
+    assert (vault / "INDEX.json").read_text(encoding="utf-8") == before
+
+
+_WRITES = {
+    "modify": (["modify", PAPER, "--set", "status=skim"], None),
+    "rm": (["rm", PAPER, "--yes"], None),
+    "restore": (["trash", "restore", PAPER], ["rm", PAPER, "--yes"]),
+    "rename": (["rename", PAPER, "2024_Foo_Baz"], None),
+}
+
+
+def _prepare(vault: Path, write: str) -> list[str]:
+    args, first = _WRITES[write]
+    if first is not None:
+        prepared = CliRunner().invoke(cli, [*first, "--library", str(vault)])
+        assert prepared.exit_code == 0, prepared.output
+    return [*args, "--library", str(vault)]
+
+
+@pytest.mark.parametrize("write", list(_WRITES))
+def test_the_closing_line_claims_both_when_both_were_refreshed(
+    vault: Path, write: str
+) -> None:
+    result = CliRunner().invoke(cli, _prepare(vault, write))
+
+    assert result.exit_code == 0, result.output
+    assert "INDEX.json + views/" in result.output
+    assert " refreshed." in result.output
+
+
+@pytest.mark.parametrize("write", list(_WRITES))
+def test_the_closing_line_does_not_claim_an_index_it_could_not_write(
+    vault: Path, monkeypatch: pytest.MonkeyPatch, write: str
+) -> None:
+    args = _prepare(vault, write)
+    with monkeypatch.context() as held:
+        _refuse_index(held)
+        result = CliRunner().invoke(cli, args)
+
+    assert result.exit_code == 0, result.output
+    assert "could not update INDEX.json" in result.output
+    assert "INDEX.json + " not in result.output
+    assert "INDEX.json refreshed" not in result.output
+    assert "views/ refreshed." in result.output
+
+
+@pytest.mark.parametrize("write", list(_WRITES))
+def test_the_closing_line_goes_when_nothing_was_refreshed(
+    vault: Path, monkeypatch: pytest.MonkeyPatch, write: str
+) -> None:
+    args = _prepare(vault, write)
+
+    def left(*_a: Any, view_errors: list[Any], **_k: Any) -> dict[str, int]:
+        view_errors.append(("by-status", OSError(errno.EACCES, "Access is denied")))
+        return {}
+
+    with monkeypatch.context() as held:
+        _refuse_index(held)
+        held.setattr(views, "update_views_for_paper", left)
+        held.setattr(views, "rebuild_views", left)
+        result = CliRunner().invoke(cli, args)
+
+    assert result.exit_code == 0, result.output
+    assert "could not update INDEX.json" in result.output
+    assert " refreshed." not in result.output
+
+
+@pytest.mark.parametrize(
+    ("derived", "also", "line"),
+    [
+        ({"index": 1, "view_errors": []}, (), "[dim]INDEX.json + views/ refreshed.[/]"),
+        ({"index": 1, "view_errors": ["x"]}, (), "[dim]INDEX.json refreshed.[/]"),
+        ({"index": 0, "view_errors": []}, (), "[dim]views/ refreshed.[/]"),
+        ({"index": 0, "view_errors": ["x"]}, (), None),
+        (
+            {"index": 0, "view_errors": ["x"]},
+            ("notes.md heading",),
+            "[dim]notes.md heading refreshed.[/]",
+        ),
+    ],
+    ids=["both", "views-left", "index-left", "both-left", "only-the-rest"],
+)
+def test_refreshed_line(derived: dict[str, Any], also: tuple[str, ...], line: str | None) -> None:
+    assert refreshed_line(derived, *also) == line
 
 
 def test_a_new_vault_gives_one_clear_error_and_is_rolled_back(

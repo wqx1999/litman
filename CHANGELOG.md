@@ -54,6 +54,12 @@ own entry. Read those before you upgrade, whatever the number says.
   traceback after your change was saved, and could leave links missing. It now waits
   and tries again. If `INDEX.json` still cannot be written, the rest of the command
   finishes, your change stays saved, and `lit` tells you to run `lit refresh-views`.
+  If a file stays locked for longer, `lit` says which one in a single line instead of
+  a traceback.
+- **Deleting a paper while its PDF is open no longer guts its folder.** On Windows,
+  `lit rm` copied the paper into the trash and then deleted the original up to the
+  file that was open, leaving the folder missing files. The folder now stays whole,
+  nothing lands in the trash, and you can run the command again after closing the file.
 - **A folder link refused with access denied is no longer blamed on the drive.**
   Inside an agent's sandbox, for example, `lit` said the filesystem could not hold
   folder links and to move the library. It now says access was denied and to run

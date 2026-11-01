@@ -39,6 +39,7 @@ from litman.commands._hub_report import (
     PROJECTS_NOT_UPDATED,
     hub_settlement_lines,
     project_folder_not_updated,
+    refreshed_line,
 )
 from litman.commands._options import library_option, vault_option
 from litman.core.atomic import staged_write
@@ -985,12 +986,13 @@ def _apply_modify(
     for line in hub_settlement_lines(0, moved_aside_from(derived)):
         console.print(f"  {line}", soft_wrap=True)
     # A views/ folder it could not change was said by the rebuild itself.
-    refreshed = "INDEX.json" if derived["view_errors"] else "INDEX.json + views/"
+    also = []
     if retitled_notes is not None:
-        refreshed += " + notes.md heading"
+        also.append("notes.md heading")
     if projects_changed and not project_side_skipped and not link_errors:
-        refreshed += " + project litman_reflib/REFERENCES.md"
-    console.print(f"[dim]{refreshed} refreshed.[/]")
+        also.append("project litman_reflib/REFERENCES.md")
+    if refreshed := refreshed_line(derived, *also):
+        console.print(refreshed)
     if project_side_skipped:
         console.print(PROJECTS_NOT_UPDATED, soft_wrap=True)
     elif link_errors:

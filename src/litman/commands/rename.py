@@ -51,6 +51,7 @@ from litman.commands._hub_report import (
     PROJECTS_NOT_UPDATED,
     hub_settlement_lines,
     project_folder_not_updated,
+    refreshed_line,
 )
 from litman.commands._options import library_option, vault_option
 from litman.core.atomic import DirMoveError, op_moving_folders, staged_write
@@ -430,10 +431,8 @@ def rename_cmd(
     for line in hub_settlement_lines(0, moved_aside_from(derived)):
         console.print(f"  {line}", soft_wrap=True)
     # A views/ folder it could not change was said by the rebuild itself.
-    console.print(
-        f"[dim]INDEX.json{'' if derived['view_errors'] else ' + views/'} "
-        "refreshed.[/]"
-    )
+    if refreshed := refreshed_line(derived):
+        console.print(refreshed)
     if derived["config_unreadable"]:
         console.print(PROJECTS_NOT_UPDATED, soft_wrap=True)
     elif link_errors := link_errors_from(derived):

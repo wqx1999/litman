@@ -26,6 +26,7 @@ from rich.markup import escape
 
 from litman import __version__
 from litman.core.confirm import is_interactive
+from litman.core.replace import refusal_message, refused_by_windows
 from litman.core.undecodable import text_refusal
 from litman.exceptions import LitmanError
 
@@ -887,6 +888,13 @@ def main() -> None:
         cli()
     except LitmanError as e:
         console.print(f"[bold red]error:[/] {escape(str(e))}", soft_wrap=True)
+        sys.exit(1)
+    except PermissionError as e:
+        # Still refused after the wait in core/replace. Any part of a staged
+        # write already committed is finished by the next `lit`.
+        if not refused_by_windows(e):
+            raise
+        console.print(f"[bold red]error:[/] {escape(refusal_message(e))}", soft_wrap=True)
         sys.exit(1)
     except UnicodeEncodeError as e:
         # Text holding a byte that is not UTF-8 (a value typed on the command

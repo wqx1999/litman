@@ -38,6 +38,7 @@ of a project folder it re-links cannot be.
 from __future__ import annotations
 
 from collections.abc import Sequence
+from typing import Any
 
 from rich.markup import escape
 
@@ -47,6 +48,20 @@ PROJECTS_NOT_UPDATED = (
     "[yellow]warning:[/] lit-config.yaml cannot be read, so the project "
     "folders were not updated. Fix it, then run `lit health-check --fix`."
 )
+
+
+def refreshed_line(derived: dict[str, Any], *also: str) -> str | None:
+    """What the closing line of a write says it refreshed, or ``None`` for nothing.
+
+    Only what really was: ``reconcile_derived`` has already said what it could
+    not do, and a line claiming it anyway would contradict that.
+    """
+    parts = [
+        *([] if derived["index"] == 0 else ["INDEX.json"]),
+        *([] if derived["view_errors"] else ["views/"]),
+        *also,
+    ]
+    return f"[dim]{' + '.join(parts)} refreshed.[/]" if parts else None
 
 
 def code_links_not_updated(err: OSError) -> str:

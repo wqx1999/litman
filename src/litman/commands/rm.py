@@ -76,7 +76,7 @@ import click
 from rich.console import Console
 from rich.markup import escape
 
-from litman.commands._hub_report import project_folder_not_updated
+from litman.commands._hub_report import project_folder_not_updated, refreshed_line
 from litman.commands._options import library_option, vault_option
 from litman.core.atomic import staged_write
 from litman.core.code import (
@@ -490,7 +490,9 @@ class RmResult:
     # A project folder the teardown could not change: the CLI ends with the
     # one line every write command uses for it.
     link_errors: list[OSError]
-    # A views/ folder the rebuild could not change (it said which itself).
+    # INDEX.json or a views/ folder the rebuild could not change (it said so
+    # itself): what the closing line may not claim.
+    index_left: bool
     views_left: bool
 
 
@@ -846,6 +848,7 @@ def execute_rm(plan: RmPlan, *, purge: bool = False) -> RmResult:
         evicted=evicted,
         warnings=warnings,
         link_errors=link_errors,
+        index_left=derived["index"] == 0,
         views_left=bool(derived["view_errors"]),
     )
 
@@ -1126,9 +1129,11 @@ def rm_cmd(
             f"  Tagged [bold]{n}[/] referencing note{'s' if n != 1 else ''} "
             f"[dim](`[[{escape(paper_id)}]] (deleted)`)[/]"
         )
-    console.print(
-        f"[dim]INDEX.json{'' if result.views_left else ' + views/'} refreshed.[/]"
+    refreshed = refreshed_line(
+        {"index": 0 if result.index_left else 1, "view_errors": result.views_left}
     )
+    if refreshed:
+        console.print(refreshed)
     if result.link_errors:
         console.print(
             project_folder_not_updated(result.link_errors[0]), soft_wrap=True

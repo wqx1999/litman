@@ -725,7 +725,7 @@ def test_settle_reports_failure_instead_of_raising(
     def boom(*_a: object, **_k: object) -> None:
         raise OSError(32, "The process cannot access the file (mocked)")
 
-    monkeypatch.setattr(Path, "rename", boom)
+    monkeypatch.setattr(os, "rename", boom)
     monkeypatch.setattr(shutil, "copytree", boom)
     said = _record_link_warnings(monkeypatch)
 
@@ -923,7 +923,7 @@ def test_a_cross_device_rename_falls_back_to_copying(
     def exdev(*_a: object, **_k: object) -> None:
         raise OSError(errno.EXDEV, "Invalid cross-device link (mocked)")
 
-    monkeypatch.setattr(Path, "rename", exdev)
+    monkeypatch.setattr(os, "rename", exdev)
 
     out = settle_hub_entry(
         copy, target, vault=vault, project="pepforge", hub="litman_reflib"
@@ -956,7 +956,7 @@ def test_any_other_rename_failure_never_copies_the_folder(
     def denied(*_a: object, **_k: object) -> None:
         raise OSError(errno.EACCES, "Permission denied (mocked)")
 
-    monkeypatch.setattr(Path, "rename", denied)
+    monkeypatch.setattr(os, "rename", denied)
     monkeypatch.setattr(shutil, "copytree", spy_copytree)
     said = _record_link_warnings(monkeypatch)
 
@@ -983,7 +983,7 @@ def test_repeated_failed_settles_do_not_pile_up_copies(
     def denied(*_a: object, **_k: object) -> None:
         raise OSError(errno.EACCES, "Permission denied (mocked)")
 
-    monkeypatch.setattr(Path, "rename", denied)
+    monkeypatch.setattr(os, "rename", denied)
     _record_link_warnings(monkeypatch)
 
     for _ in range(3):

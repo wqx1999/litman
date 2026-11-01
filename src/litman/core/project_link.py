@@ -26,11 +26,9 @@ the convenience links may be skipped (ADR-005).
 
 from __future__ import annotations
 
-import errno
 import filecmp
 import io
 import os
-import shutil
 import uuid
 from collections.abc import Callable, Iterable
 from pathlib import Path
@@ -58,6 +56,7 @@ from litman.core.project_refs import (
     load_project_member_metas,
     write_references_md,
 )
+from litman.core.replace import move_dir
 from litman.core.schema import PROJECT_PRIORITY_PREFIX, PROJECT_PRIORITY_VALUES
 from litman.core.shell import shell_arg
 from litman.core.taxonomy import (
@@ -298,24 +297,12 @@ def _move_aside(src: Path, dest_parent: Path, name: str) -> Path:
     # retry once — a four-hex suffix can collide too.
     while os.path.lexists(dest):
         dest = dest_parent / f"{name}-{uuid.uuid4().hex[:4]}"
-    try:
-        src.rename(dest)
-    except OSError as err:
-        # ONLY a cross-device move earns the copy fallback (Windows maps
-        # ERROR_NOT_SAME_DEVICE to EXDEV too). Any other refusal — a locked
-        # child, a read-only parent — must stay a failure: copying first would
-        # leave a full copy in .trash/ AND the folder still in the hub, and the
-        # next run, which our own message asks for, would copy it again under a
-        # new timestamp. For a code hub that is a whole checkout each time.
-        if err.errno != errno.EXDEV:
-            raise
-        # NOT shutil.move for the copy: its own cross-device path finishes
-        # with a bare shutil.rmtree, which trips over the read-only
-        # metadata.yaml the copy inherited from the vault (ADR-005) — and
-        # "project on a different drive from the vault" is precisely the
-        # situation this whole code path exists for.
-        shutil.copytree(src, dest, symlinks=True)
-        rmtree(src)
+    # A locked child must stay a failure: copying first would leave a full copy
+    # in .trash/ AND the folder still in the hub, and the next run, which our
+    # own message asks for, would copy it again under a new timestamp. For a
+    # code hub that is a whole checkout each time. "Project on a different drive
+    # from the vault" is precisely the situation this whole code path exists for.
+    move_dir(src, dest)
     return dest
 
 

@@ -8,6 +8,7 @@ and trash-dir exclusion from active views.
 from __future__ import annotations
 
 import json
+import shutil
 import sys
 import time
 from pathlib import Path
@@ -581,14 +582,14 @@ def test_enforce_cap_best_effort_on_delete_failure(
 ) -> None:
     ids = _make_entries(vault, 5)  # cap=2 → evict oldest 3: ids[2], ids[1], ids[0]
     failing_id = ids[1]
-    real_rmtree = trash_mod.shutil.rmtree
+    real_rmtree = shutil.rmtree
 
     def flaky_rmtree(path, *args, **kwargs):  # type: ignore[no-untyped-def]
         if Path(path).name.startswith(failing_id):
             raise OSError("simulated delete failure")
         return real_rmtree(path, *args, **kwargs)
 
-    monkeypatch.setattr(trash_mod.shutil, "rmtree", flaky_rmtree)
+    monkeypatch.setattr(shutil, "rmtree", flaky_rmtree)
 
     # Does not raise; the failed entry is skipped, others still evicted.
     evicted = enforce_cap(vault, cap=2)

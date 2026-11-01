@@ -27,6 +27,7 @@ from rich.table import Table
 from litman.commands._hub_report import (
     hub_settlement_lines,
     project_folder_not_updated,
+    refreshed_line,
 )
 from litman.commands._options import format_option, library_option, vault_option
 from litman.core import confirm as confirm_mod
@@ -382,10 +383,8 @@ def trash_restore_cmd(
     # done inside restore_from_trash's transaction (M24).
 
     # A views/ folder it could not change was said by the rebuild itself.
-    console.print(
-        f"[dim]INDEX.json{'' if derived['view_errors'] else ' + views/'} "
-        "refreshed.[/]"
-    )
+    if refreshed := refreshed_line(derived):
+        console.print(refreshed)
     # One line however many project folders refused, from either step.
     if link_errors:
         console.print(project_folder_not_updated(link_errors[0]), soft_wrap=True)
