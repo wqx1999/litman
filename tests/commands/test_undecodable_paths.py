@@ -107,7 +107,8 @@ def test_project_drift_prompt_refuses_a_folder_whose_name_is_not_utf8(
     config_before = (vault / "lit-config.yaml").read_bytes()
     folder = _undecodable_dir(tmp_path, "moved_caf")
     monkeypatch.setattr(_drift, "_default_tty_probe", lambda: True)
-    monkeypatch.setattr(click, "prompt", lambda *a, **kw: str(folder))
+    answers = iter([str(folder), ""])
+    monkeypatch.setattr(click, "prompt", lambda *a, **kw: next(answers))
 
     _drift.check_and_prompt_project_drift()
 

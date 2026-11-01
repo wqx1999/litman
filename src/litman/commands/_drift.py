@@ -21,7 +21,8 @@ the registry entries / project map the mutation needs). The single 0.5s budget
 
 Behavior contract — **both external drifts offer the same three answers**, one
 entry at a time: enter a new path / ``rm`` / blank to skip. Blank is the default
-everywhere, so pressing Enter is always the conservative answer.
+everywhere, so pressing Enter is always the conservative answer. A new path that
+is refused asks the same question again, until an answer settles that entry.
 
 * Registry drift — a new path re-points the registration (``lit vault
   set-path``'s backend, which validates the target is a real vault); ``rm``
@@ -54,6 +55,7 @@ from __future__ import annotations
 import sys
 import threading
 from collections.abc import Callable
+from functools import partial
 from pathlib import Path
 from typing import TYPE_CHECKING, cast
 
@@ -197,6 +199,32 @@ def _ask_drift_answer(question: str) -> tuple[str, str]:
     return ("relocate", reply)
 
 
+def _ask_until_settled[T](
+    question: str,
+    relocate: Callable[[str], T],
+    refusal: type[Exception],
+    console: Console,
+) -> tuple[str, T | None]:
+    """Ask the drift question until an answer settles this entry.
+
+    A new path that ``relocate`` refuses prints why and asks again, so a typo is
+    fixed on the spot; ``rm`` and blank still work after one. Ctrl+C or EOF leave
+    the loop the way they leave ``click.prompt`` anywhere.
+
+    Returns:
+        ``("skip", None)``, ``("remove", None)`` or ``("relocate", <what
+        relocate returned>)``.
+    """
+    while True:
+        kind, reply = _ask_drift_answer(question)
+        if kind != "relocate":
+            return (kind, None)
+        try:
+            return (kind, relocate(reply))
+        except refusal as exc:
+            console.print(f"[red]error:[/] {escape(str(exc))}", soft_wrap=True)
+
+
 def _route_removal(run: Callable[[], None], console: Console) -> None:
     """Hand off to a real ``lit ... rm`` command; absorb a declined confirmation.
 
@@ -318,39 +346,33 @@ def check_and_prompt_registry_drift(
             f"(was {entry.path}).",
             soft_wrap=True,
         )
-        kind, reply = _ask_drift_answer(
+        # Re-point. The whole validated write path already exists as
+        # ``lit vault set-path``'s backend: it requires an existing directory
+        # holding a lit-config.yaml, and touches only that entry's path
+        # (is_active / provenance / last_health_check_at are preserved).
+        kind, updated = _ask_until_settled(
             "    Moved? Enter the new path, 'rm' to unregister, "
-            "or blank to skip"
+            "or blank to skip",
+            partial(apply_vault_set_path, entry.name),
+            VaultRegistryError,
+            console,
         )
-        if kind == "skip":
+        if updated is not None:
+            console.print(
+                f"[green]✓ Updated[/] {entry.name} → {updated.path}",
+                soft_wrap=True,
+            )
+        elif kind == "skip":
             console.print(
                 "[dim]Skipped. You'll be reminded again next time.[/]"
             )
-            continue
-        if kind == "remove":
+        else:
             _route_removal(
                 lambda name=entry.name: vault_remove_cmd.callback(  # type: ignore[misc]
                     name=name, yes=False
                 ),
                 console,
             )
-            continue
-        # Re-point. The whole validated write path already exists as
-        # ``lit vault set-path``'s backend: it requires an existing directory
-        # holding a lit-config.yaml, and touches only that entry's path
-        # (is_active / provenance / last_health_check_at are preserved).
-        try:
-            updated = apply_vault_set_path(entry.name, reply)
-        except VaultRegistryError as exc:
-            console.print(f"[red]error:[/] {exc}", soft_wrap=True)
-            console.print(
-                "[dim]Left as-is. You'll be reminded again next time.[/]"
-            )
-            continue
-        console.print(
-            f"[green]✓ Updated[/] {entry.name} → {updated.path}",
-            soft_wrap=True,
-        )
     console.print()
 
 
@@ -476,14 +498,18 @@ def check_and_prompt_project_drift(
             f"(was {old}).",
             soft_wrap=True,
         )
-        kind, reply = _ask_drift_answer(
+        kind, new_path = _ask_until_settled(
             "    Moved? Enter the new path, 'rm' to delete the project, "
-            "or blank to skip"
+            "or blank to skip",
+            _checked_new_project_path,
+            TaxonomyError,
+            console,
         )
-        if kind == "skip":
+        if new_path is not None:
+            healed[name] = new_path
+        elif kind == "skip":
             console.print("[dim]Skipped. You'll be reminded again next time.[/]")
-            continue
-        if kind == "remove":
+        else:
             # Routed, never reimplemented: `lit project rm` owns the warning
             # block listing what the cascade destroys (papers untagged, plus
             # litman_reflib/ + REFERENCES.md, which live OUTSIDE the vault where
@@ -496,14 +522,6 @@ def check_and_prompt_project_drift(
                     name=n, yes=False, library=None, vault_name=None
                 ),
                 console,
-            )
-            continue
-        try:
-            healed[name] = _checked_new_project_path(reply)
-        except TaxonomyError as exc:
-            console.print(f"[red]error:[/] {escape(str(exc))}", soft_wrap=True)
-            console.print(
-                "[dim]Left as-is. You'll be reminded again next time.[/]"
             )
 
     if not healed:

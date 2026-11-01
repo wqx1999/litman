@@ -34,9 +34,10 @@ own entry. Read those before you upgrade, whatever the number says.
   usual.
 - **A mistyped project path is no longer saved.** When `lit` asks where a missing
   project folder has moved, the answer must now be the full path of an existing
-  folder. Anything else is refused, the project stays as it was, and you are asked
-  again next time. A project path already saved that is not a full path now counts
-  as missing, whichever folder you run `lit` from.
+  folder. Anything else is refused and the same question comes back at once, here
+  and for a moved vault, so a typo no longer waits for your next command. Press
+  Enter to leave it for later. A project path already saved that is not a full path
+  now counts as missing, whichever folder you run `lit` from.
 
 ## 1.3.10 — 2026-10-30
 
