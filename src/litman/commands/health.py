@@ -126,6 +126,7 @@ _CATEGORY_HEADERS: dict[str, str] = {
         "Project bridge links (litman_reflib / litman_code) resolve to a live target"
     ),
     "links_unsupported": "Folder links (views/ + project shortcuts)",
+    "links_denied": "Folder links refused here (views/ + project shortcuts)",
     "dangling_refs": "Dangling references (related/contradicts/extends + reverse)",
     "dangling_wikilinks": "Dangling [[id]] wikilinks in notes",
     "relevance_orphan": "Orphan relevance-<project> annotations",

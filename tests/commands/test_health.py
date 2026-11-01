@@ -3901,6 +3901,49 @@ def test_linkless_drive_reports_one_info_and_nothing_else(
     ]
 
 
+def test_links_refused_with_access_denied_are_reported_and_a_retry_makes_them(
+    vault: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Inside a sandbox: the links are missing and health-check says so, says
+    why, and does not call it the drive. Outside it, refresh-views makes them."""
+    from rich.console import Console
+
+    from litman.commands import health as health_cmd
+    from litman.core import portable_link
+    from litman.core.checks import run_all_checks
+
+    def denied(*_a: Any, **_k: Any) -> None:
+        raise PermissionError(13, "Access is denied")
+
+    monkeypatch.setattr(health_cmd, "console", Console(width=300))
+
+    with monkeypatch.context() as sandbox:
+        _linkless_vault(vault, tmp_path, sandbox)
+        sandbox.setattr(Path, "symlink_to", denied)
+        sandbox.setattr(portable_link, "_create_junction", denied)
+        portable_link.reset_link_probe_cache()
+
+        issues = run_all_checks(vault, list_papers(vault))
+        result = CliRunner().invoke(cli, ["health-check", "--library", str(vault)])
+
+    categories = [i.category for i in issues]
+    assert categories.count("links_denied") == 1
+    assert "links_unsupported" not in categories
+    assert "views_vs_metadata" in categories
+    assert result.exit_code == 1
+    said = " ".join(result.output.split())
+    assert "access denied" in said
+    assert "lit refresh-views" in said
+    assert "cannot be created here" not in said
+
+    portable_link.reset_link_probe_cache()
+    retried = CliRunner().invoke(cli, ["refresh-views", "--library", str(vault)])
+    assert retried.exit_code == 0, retried.output
+    after = [i.category for i in run_all_checks(vault, list_papers(vault))]
+    assert "links_denied" not in after
+    assert "views_vs_metadata" not in after
+
+
 def test_linkless_drive_health_check_cli_is_green(
     vault: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

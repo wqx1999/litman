@@ -46,6 +46,7 @@ from litman.core.portable_link import (
     entry_refusal,
     is_portable_link,
     link_points_at,
+    links_denied,
     links_supported,
     make_portable_link,
     remove_link_if_present,
@@ -840,6 +841,7 @@ def link_paper_to_project(
     code_links_created: list[str] = []
     code_links_missing_repo: list[str] = []
     code_links_unsupported: list[str] = []
+    code_links_denied: list[str] = []
     for repo_name, link_path in zip(code_clones, code_link_paths, strict=True):
         repo_target = (vault / "codes" / repo_name / "repo").resolve()
         if not repo_target.exists():
@@ -876,6 +878,9 @@ def link_paper_to_project(
             continue
         if created:
             code_links_created.append(repo_name)
+        elif links_denied(project_dir):
+            # The drive can hold links: "this drive cannot" would be false.
+            code_links_denied.append(repo_name)
         else:
             # review F31: the repo IS present; the filesystem refused the link
             # (FAT32/exFAT, network shares). This is NOT a missing repo —
@@ -902,6 +907,7 @@ def link_paper_to_project(
         "code_links": code_links_created,
         "code_links_skipped_missing_repo": code_links_missing_repo,
         "code_links_skipped_links_unsupported": code_links_unsupported,
+        "code_links_skipped_denied": code_links_denied,
         "hub_moved_aside": hub_moved_aside,
         "references_md": refs_path,
         "link_errors": link_errors,

@@ -135,7 +135,7 @@ When the discussion implies one ("this is Pandi's follow-up" → `extends`; "its
 
 ## B12 — Vault health-check
 
-At a natural moment, or when the user asks ("我的库还干净吗"), **run `lit health-check`** — a read: just do it — translate the report's categories and propose a remedy per finding. A bare `lit health-check` never writes, and no fix runs without the user's go. **Before you propose `lit health-check --fix`, or act on any finding, read `health-check.md` (next to this SKILL.md).** `--fix` loses three things; name them before proposing it: the grade of a paper linked to no project (`retired_priority`), an edge to a paper in the trash (`dangling_refs`), and project folder copies that don't match the vault (moved to `.trash/replaced-folders/`). The `env` class (`links_unsupported`) has no remedy: relay the CLI's hint, and never suggest Developer Mode, an administrator shell, WSL or any Windows setting.
+At a natural moment, or when the user asks ("我的库还干净吗"), **run `lit health-check`** — a read: just do it — translate the report's categories and propose a remedy per finding. A bare `lit health-check` never writes, and no fix runs without the user's go. **Before you propose `lit health-check --fix`, or act on any finding, read `health-check.md` (next to this SKILL.md).** `--fix` loses three things; name them before proposing it: the grade of a paper linked to no project (`retired_priority`), an edge to a paper in the trash (`dangling_refs`), and project folder copies that don't match the vault (moved to `.trash/replaced-folders/`). The `env` class (`links_unsupported`, `links_denied`) has no remedy beyond the CLI's own hint: relay it, and never suggest Developer Mode, an administrator shell, WSL or any Windows setting.
 
 ## B11 — Inbox triage
 

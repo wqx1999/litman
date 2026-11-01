@@ -7,13 +7,16 @@ priority- grades still match membership.
 from __future__ import annotations
 
 import re
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
 from litman.core.checks._base import Issue
 from litman.core.portable_link import (
+    LINKS_DENIED_HINT,
     _os_error_reason,
     is_portable_link,
+    links_denied,
     links_supported,
     links_unsupported_hint,
 )
@@ -523,7 +526,8 @@ def check_link_support(
     junctions both need a filesystem that stores links, which FAT32 / exFAT and
     most network shares do not. It is a property of the drive, not of the
     user's privileges — no setting, elevation or mode change would alter the
-    verdict, so the hint recommends none.
+    verdict, so the hint recommends none. Access denied is not that, and is
+    :func:`check_link_access`'s.
 
     Severity is ``info`` on purpose, and ``health-check`` does not gate its
     exit code on info: a library on such a drive is perfectly healthy, and must
@@ -536,26 +540,7 @@ def check_link_support(
     collapse into a single finding: a vault on such a drive fails all of them
     at once and deserves one line, not N.
     """
-    from litman.core.config import load_config, stored_project_dir
-
-    scopes: list[str] = []
-
-    if vault.is_dir() and not links_supported(vault):
-        scopes.append("the library (views/)")
-
-    try:
-        config = load_config(vault)
-    except ConfigError:
-        config = None
-    if config is not None:
-        for name in sorted(config.projects):
-            project_dir = stored_project_dir(config.projects[name])
-            if project_dir is None or not project_dir.is_dir():
-                # Unreachable / missing — project_path_exists owns that case.
-                continue
-            if not links_supported(project_dir):
-                scopes.append(f"project {name!r} (litman_reflib / litman_code)")
-
+    scopes = _link_scopes(vault, lambda folder: not links_supported(folder))
     if not scopes:
         return []
 
@@ -574,6 +559,62 @@ def check_link_support(
             hint=links_unsupported_hint(),
         )
     ]
+
+
+def check_link_access(
+    vault: Path,
+    papers: list[dict[str, Any]],
+) -> list[Issue]:
+    """Report — once — that folder links are being refused with access denied.
+
+    A fact about this run, not the drive: a sandbox around the process, say.
+    Unlike ``links_unsupported`` the links can exist, so ``views_vs_metadata``
+    and ``project_references`` keep reporting the ones that are missing, and
+    this says why they could not be made. Severity ``info`` for the same reason
+    as that finding: it is the host's state, and those two gate the exit code.
+    """
+    scopes = _link_scopes(vault, links_denied)
+    if not scopes:
+        return []
+
+    return [
+        Issue(
+            category="links_denied",
+            severity="info",
+            paper_id=None,
+            message=(
+                "could not create folder links (access denied) — "
+                + ", ".join(scopes)
+                + "."
+            ),
+            hint=LINKS_DENIED_HINT,
+        )
+    ]
+
+
+def _link_scopes(vault: Path, applies: Callable[[Path], bool]) -> list[str]:
+    """Name the folders holding links, the vault and each project, that
+    ``applies`` holds for. They can live on different filesystems."""
+    from litman.core.config import load_config, stored_project_dir
+
+    scopes: list[str] = []
+
+    if vault.is_dir() and applies(vault):
+        scopes.append("the library (views/)")
+
+    try:
+        config = load_config(vault)
+    except ConfigError:
+        config = None
+    if config is not None:
+        for name in sorted(config.projects):
+            project_dir = stored_project_dir(config.projects[name])
+            if project_dir is None or not project_dir.is_dir():
+                # Unreachable / missing — project_path_exists owns that case.
+                continue
+            if applies(project_dir):
+                scopes.append(f"project {name!r} (litman_reflib / litman_code)")
+    return scopes
 
 
 def _references_banner_timestamp(text: str) -> str:

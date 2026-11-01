@@ -244,6 +244,12 @@ def link_cmd(
             "[dim](binding kept; keep the library and project on an internal "
             "drive)[/]"
         )
+    if result.get("code_links_skipped_denied"):
+        body_lines.append(
+            f"[yellow]Code links skipped (access denied):[/] "
+            f"{', '.join(escape(r) for r in result['code_links_skipped_denied'])} "
+            "[dim](binding kept; run `lit refresh-views` to retry)[/]"
+        )
     tips: list[str] = []
     if result["added_to_projects"] and not result["set_relevance"]:
         tips.append(

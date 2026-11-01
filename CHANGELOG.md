@@ -45,6 +45,11 @@ own entry. Read those before you upgrade, whatever the number says.
   Enter to leave it for later, or Ctrl+C to end the command, which used to carry on.
   A project path already saved that is not a full path now counts as missing,
   whichever folder you run `lit` from.
+- **A folder link refused with access denied is no longer blamed on the drive.**
+  Inside an agent's sandbox, for example, `lit` said the filesystem could not hold
+  folder links and to move the library. It now says access was denied and to run
+  `lit refresh-views` to retry, `lit health-check` reports it as `links_denied`, and
+  on Windows the failed attempt no longer leaves an empty folder behind.
 
 ## 1.3.10 — 2026-10-30
 
