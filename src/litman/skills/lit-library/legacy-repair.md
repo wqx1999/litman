@@ -9,11 +9,11 @@ Trigger: `lit health-check` reports `placeholder_metadata`, `placeholder_id`, `w
 **Fix the fields before the id, always.** The two are separate commands and the order is not cosmetic:
 
 ```bash
-lit modify <id> --set title="…" --set-author "Family, Given" --set-author "…"
-lit rename <old-id> <new-id>
+lit modify '<id>' --set 'title=…' --set-author 'Family, Given' --set-author '…'
+lit rename '<old-id>' '<new-id>'
 ```
 
-Repairing the fields is the half that needs the PDF reopened. Once they are right, **re-run `lit health-check`** — `placeholder_id`'s hint is now a complete, filled-in `lit rename <old> <new>` computed from the corrected metadata, so the second half costs no thinking at all.
+Repairing the fields is the half that needs the PDF reopened. Once they are right, **re-run `lit health-check`** — `placeholder_id`'s hint is now a complete, filled-in `lit rename '<old>' '<new>'` computed from the corrected metadata, so the second half costs no thinking at all.
 
 🔴 **`--set-author`, one flag per author, the whole list in order.** `--add-tag` appends, which puts a corrected first author last — and the first author's family name is what the id is built from.
 
