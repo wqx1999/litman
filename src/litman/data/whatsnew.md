@@ -19,6 +19,12 @@ until this file has a matching `## X.Y.Z` section (tests/core/test_whatsnew.py),
 and release.sh refuses to publish without one.
 -->
 
+## 1.3.11
+
+- Open Claude Code in its desktop app, and Codex too on Windows.
+- The agent panel is redesigned and always fits the window.
+- Fixed a number of bugs.
+
 ## 1.3.10
 
 - Open DeepSeek Harness straight from litman.
