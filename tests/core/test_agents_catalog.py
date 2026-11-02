@@ -5,8 +5,9 @@ The catalog is the code-level source of truth for which agents litman can
 launch/onboard. These tests pin the seven-agent shape and order (claude,
 zcode, agy, codex, dsh, cursor, opencode — the order wangq set), that every
 catalog entry is supported, generic (per-agent-branch-free) detection — by
-``kind``: a terminal CLI is probed on PATH, a desktop app through
-``core.app_launch`` — the skill adapters' delegation to ``core.skill`` (claude
+launch mode: a terminal CLI is probed on PATH, a desktop app through
+``core.app_launch`` — which mode a button or ``lit agent`` picks for a row with
+both, the skill adapters' delegation to ``core.skill`` (claude
 → the Claude Code dir; zcode, dsh, codex, cursor, and opencode → the shared
 open-standard dir; agy → the Antigravity CLI app-data dir), the per-agent
 skills-dir resolvers, and the
@@ -18,6 +19,7 @@ monkeypatched ``shutil.which`` — no real binary is probed.
 
 from __future__ import annotations
 
+import dataclasses
 import os
 import sys
 from pathlib import Path
@@ -97,7 +99,7 @@ def test_beginner_facing_brands_identify_the_major_agent_families() -> None:
 
 def test_zcode_is_a_desktop_app_row() -> None:
     zcode = get_agent("zcode")
-    assert zcode.kind == "app"
+    assert agents.launch_modes(zcode) == ["app"]
     assert zcode.install_url == "https://zcode.z.ai"
     assert zcode.app_args == ("--open-workspace", "{vault}")
     assert zcode.open_url == "zcode://workspace/open?path={vault}"
@@ -112,7 +114,7 @@ def test_dsh_is_a_desktop_app_row_opened_by_its_bare_link() -> None:
     there is no hint to show either."""
     dsh = get_agent("dsh")
     assert dsh.display == "DeepSeek Harness"
-    assert dsh.kind == "app"
+    assert agents.launch_modes(dsh) == ["app"]
     assert dsh.install_url == "https://www.deepseek.com/harness/"
     assert dsh.url_scheme == "dsh"
     assert dsh.app_args == ("dsh://open",)
@@ -126,14 +128,19 @@ def test_only_app_rows_carry_app_fields_and_no_launch_command() -> None:
     ships its own `zcode` CLI, so a launch / detect_bin of "zcode" would exec
     that instead of opening the app."""
     for spec in AGENTS:
-        if spec.kind == "app":
+        modes = agents.launch_modes(spec)
+        if modes == ["app"]:
             assert spec.url_scheme and spec.open_url
             assert spec.launch == ""
             assert spec.detect_bin == ""
-        else:
-            assert spec.kind == "terminal"
+        elif modes == ["terminal"]:
             assert spec.launch
             assert spec.url_scheme is None
+        else:
+            assert modes == ["terminal", "app"]
+            assert spec.url_scheme and spec.open_url
+            assert spec.app_install_url
+        if modes == ["terminal"]:
             assert spec.open_url is None
             assert spec.app_args == ()
             assert spec.mac_bundle is None
@@ -180,7 +187,7 @@ def test_detect_is_data_driven_no_per_agent_branch(
     assert detect(get_agent("codex")) is False
     assert detect(get_agent("cursor")) is False
 
-    terminal = [spec for spec in AGENTS if spec.kind == "terminal"]
+    terminal = [spec for spec in AGENTS if "terminal" in agents.launch_modes(spec)]
     monkeypatch.setattr(agents.shutil, "which", lambda name: f"/usr/bin/{name}")
     for spec in terminal:
         assert detect(spec) is True
@@ -197,7 +204,7 @@ def test_detect_app_asks_app_launch_never_path(
     probed: list[str] = []
     monkeypatch.setattr(agents.shutil, "which", lambda name: probed.append(name))
     monkeypatch.setattr(
-        agents.app_launch, "app_installed", lambda spec: installed and spec.kind == "app"
+        agents.app_launch, "app_installed", lambda spec: installed
     )
     assert detect(get_agent("zcode")) is installed
     assert probed == []
@@ -667,3 +674,321 @@ def test_antigravity_skills_parent_dir_respects_home(
     assert antigravity_skills_parent_dir() == (
         tmp_path / "elsewhere" / ".gemini" / "antigravity-cli" / "skills"
     )
+
+
+# ---------------------------------------------------------------------------
+# A row with both a CLI and an app (task-agent-launch-modes)
+# ---------------------------------------------------------------------------
+
+
+def _both(default_mode: agents.LaunchMode = "terminal") -> AgentSpec:
+    """A row with both ways, with either catalog default."""
+    return dataclasses.replace(get_agent("claude"), default_mode=default_mode)
+
+
+def _not_over_ssh(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("SSH_CONNECTION", raising=False)
+    monkeypatch.delenv("SSH_CLIENT", raising=False)
+
+
+def _installed(
+    monkeypatch: pytest.MonkeyPatch, *, terminal: bool, app: bool
+) -> None:
+    """A desktop machine with the CLI and the app installed or not."""
+    _not_over_ssh(monkeypatch)
+    monkeypatch.setattr(agents.app_launch, "_platform", lambda: "win32")
+    monkeypatch.setattr(
+        agents.shutil, "which", lambda name: f"/usr/bin/{name}" if terminal else None
+    )
+    monkeypatch.setattr(agents.app_launch, "app_installed", lambda _spec: app)
+
+
+def test_claude_row_has_both_ways_and_defaults_to_the_cli() -> None:
+    claude = get_agent("claude")
+    assert agents.launch_modes(claude) == ["terminal", "app"]
+    assert claude.default_mode == "terminal"
+    assert claude.launch == "claude"
+    assert claude.url_scheme == "claude"
+    assert claude.open_url == "claude://code/new?folder={vault}"
+    assert claude.mac_bundle == "Claude.app"
+    assert claude.app_args == ()
+    assert claude.install_url == "https://docs.claude.com/en/docs/claude-code/overview"
+    assert claude.app_install_url == "https://claude.com/download"
+
+
+def test_codex_row_has_both_ways_and_defaults_to_the_app() -> None:
+    codex = get_agent("codex")
+    assert agents.launch_modes(codex) == ["terminal", "app"]
+    assert codex.default_mode == "app"
+    assert codex.launch == "codex"
+    assert codex.url_scheme == "codex"
+    assert codex.open_url == "codex://threads/new?path={vault}"
+    assert codex.mac_bundle is None
+    assert codex.app_args == ()
+    assert codex.launch_env_unset == ()
+    assert codex.install_url == "https://developers.openai.com/codex/cli/"
+    assert codex.app_install_url == "https://chatgpt.com/codex/"
+    assert codex.app_platforms == ("win32",)
+
+
+def test_only_a_row_with_both_ways_carries_the_app_download() -> None:
+    for spec in AGENTS:
+        if spec.name not in ("claude", "codex"):
+            assert spec.app_install_url is None
+            assert spec.default_mode == "terminal"
+
+
+def test_only_codex_limits_where_its_app_is_offered() -> None:
+    assert {a.name: a.app_platforms for a in AGENTS if a.app_platforms is not None} == {
+        "codex": ("win32",)
+    }
+
+
+def _on_desktop(monkeypatch: pytest.MonkeyPatch, platform: str) -> None:
+    _not_over_ssh(monkeypatch)
+    monkeypatch.setenv("DISPLAY", ":0")
+    monkeypatch.setattr(agents.app_launch, "_platform", lambda: platform)
+
+
+@pytest.mark.parametrize(
+    ("name", "modes"),
+    [
+        ("claude", ["terminal", "app"]),
+        ("zcode", ["app"]),
+        ("dsh", ["app"]),
+    ],
+)
+@pytest.mark.parametrize("platform", ["win32", "darwin", "linux"])
+def test_a_row_offering_its_app_everywhere_keeps_its_ways_on_every_platform(
+    monkeypatch: pytest.MonkeyPatch, platform: str, name: str, modes: list[str]
+) -> None:
+    _on_desktop(monkeypatch, platform)
+    assert agents.machine_modes(get_agent(name)) == modes
+
+
+@pytest.mark.parametrize(
+    ("terminal", "app", "saved", "expected"),
+    [
+        (True, False, None, "terminal"),
+        (True, True, None, "app"),
+        (True, True, "terminal", "terminal"),
+        (True, True, "app", "app"),
+        (False, True, None, "app"),
+        (False, False, None, "app"),
+    ],
+)
+def test_codex_on_windows_goes_by_the_saved_choice_then_the_app(
+    monkeypatch: pytest.MonkeyPatch,
+    terminal: bool,
+    app: bool,
+    saved: agents.LaunchMode | None,
+    expected: str,
+) -> None:
+    _installed(monkeypatch, terminal=terminal, app=app)
+    codex = get_agent("codex")
+    assert agents.machine_modes(codex) == ["terminal", "app"]
+    assert agents.choose_mode(codex, saved) == expected
+
+
+@pytest.mark.parametrize("platform", ["darwin", "linux"])
+@pytest.mark.parametrize("terminal", [True, False])
+@pytest.mark.parametrize("saved", [None, "terminal", "app"])
+def test_codex_off_windows_is_only_its_cli_even_with_an_app_found(
+    monkeypatch: pytest.MonkeyPatch,
+    platform: str,
+    terminal: bool,
+    saved: agents.LaunchMode | None,
+) -> None:
+    _installed(monkeypatch, terminal=terminal, app=True)
+    _on_desktop(monkeypatch, platform)
+    codex = get_agent("codex")
+    assert agents.machine_modes(codex) == ["terminal"]
+    assert agents.mode_usable(codex, "app") is False
+    assert agents.choose_mode(codex, saved) == "terminal"
+    assert agents.cli_mode(codex) == "terminal"
+    assert detect(codex) is terminal
+
+
+def test_codex_over_ssh_is_only_its_cli(monkeypatch: pytest.MonkeyPatch) -> None:
+    _installed(monkeypatch, terminal=True, app=True)
+    monkeypatch.setenv("SSH_CONNECTION", "1.2.3.4 5 6.7.8.9 22")
+    codex = get_agent("codex")
+    assert agents.machine_modes(codex) == ["terminal"]
+    assert agents.choose_mode(codex, "app") == "terminal"
+
+
+def test_every_other_row_keeps_its_one_way() -> None:
+    assert {spec.name: agents.launch_modes(spec) for spec in AGENTS} == {
+        "claude": ["terminal", "app"],
+        "zcode": ["app"],
+        "agy": ["terminal"],
+        "codex": ["terminal", "app"],
+        "dsh": ["app"],
+        "cursor": ["terminal"],
+        "opencode": ["terminal"],
+    }
+
+
+@pytest.mark.parametrize("default", ["terminal", "app"])
+@pytest.mark.parametrize("saved", [None, "terminal", "app"])
+def test_both_usable_goes_to_the_saved_choice_else_the_default(
+    monkeypatch: pytest.MonkeyPatch,
+    default: agents.LaunchMode,
+    saved: agents.LaunchMode | None,
+) -> None:
+    _installed(monkeypatch, terminal=True, app=True)
+    assert agents.choose_mode(_both(default), saved) == (saved or default)
+
+
+@pytest.mark.parametrize("default", ["terminal", "app"])
+@pytest.mark.parametrize("saved", [None, "terminal", "app"])
+@pytest.mark.parametrize("usable", ["terminal", "app"])
+def test_one_usable_goes_to_it_whatever_was_saved_or_defaulted(
+    monkeypatch: pytest.MonkeyPatch,
+    default: agents.LaunchMode,
+    saved: agents.LaunchMode | None,
+    usable: str,
+) -> None:
+    _installed(monkeypatch, terminal=usable == "terminal", app=usable == "app")
+    assert agents.choose_mode(_both(default), saved) == usable
+
+
+@pytest.mark.parametrize("default", ["terminal", "app"])
+@pytest.mark.parametrize("saved", [None, "terminal", "app"])
+def test_none_usable_points_at_the_default_never_the_saved_choice(
+    monkeypatch: pytest.MonkeyPatch,
+    default: agents.LaunchMode,
+    saved: agents.LaunchMode | None,
+) -> None:
+    _installed(monkeypatch, terminal=False, app=False)
+    assert agents.choose_mode(_both(default), saved) == default
+    assert detect(_both(default)) is False
+
+
+@pytest.mark.parametrize("name", ["zcode", "dsh", "agy", "cursor", "opencode"])
+def test_a_row_with_one_way_ignores_a_saved_choice_and_probes_nothing(
+    monkeypatch: pytest.MonkeyPatch, name: str
+) -> None:
+    def no_probe(*_args: object) -> None:
+        pytest.fail("one way needs no probe to choose")
+
+    monkeypatch.setattr(agents.shutil, "which", no_probe)
+    monkeypatch.setattr(agents.app_launch, "app_installed", no_probe)
+    spec = get_agent(name)
+    [only] = agents.launch_modes(spec)
+    assert agents.choose_mode(spec) == only
+    assert agents.cli_mode(spec) == only
+
+
+@pytest.mark.parametrize(
+    ("variable", "platform"),
+    [("SSH_CONNECTION", "win32"), ("SSH_CLIENT", "darwin"), ("SSH_CONNECTION", "linux")],
+)
+def test_over_ssh_a_row_with_both_ways_has_no_app(
+    monkeypatch: pytest.MonkeyPatch, variable: str, platform: str
+) -> None:
+    _installed(monkeypatch, terminal=True, app=True)
+    monkeypatch.setattr(agents.app_launch, "_platform", lambda: platform)
+    monkeypatch.setenv("DISPLAY", ":0")
+    monkeypatch.setenv(variable, "1.2.3.4 5 6.7.8.9 22")
+    monkeypatch.setattr(
+        agents.app_launch,
+        "app_installed",
+        lambda _spec: pytest.fail("no app is asked about where none can show"),
+    )
+    claude = get_agent("claude")
+    assert agents.machine_modes(claude) == ["terminal"]
+    assert agents.mode_usable(claude, "app") is False
+    assert agents.choose_mode(claude, "app") == "terminal"
+    assert agents.cli_mode(claude) == "terminal"
+    assert detect(claude) is True
+
+
+def test_linux_without_a_display_has_no_app(monkeypatch: pytest.MonkeyPatch) -> None:
+    _installed(monkeypatch, terminal=True, app=True)
+    monkeypatch.setattr(agents.app_launch, "_platform", lambda: "linux")
+    monkeypatch.delenv("DISPLAY", raising=False)
+    monkeypatch.delenv("WAYLAND_DISPLAY", raising=False)
+    claude = get_agent("claude")
+    assert agents.machine_modes(claude) == ["terminal"]
+    assert agents.choose_mode(claude, "app") == "terminal"
+
+    monkeypatch.setenv("WAYLAND_DISPLAY", "wayland-0")
+    assert agents.machine_modes(claude) == ["terminal", "app"]
+    assert agents.choose_mode(claude, "app") == "app"
+
+
+def test_where_the_app_cannot_show_nothing_installed_points_at_the_cli(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A row defaulting to the app, over SSH: the download to offer is the one
+    that could work here, which is also the only one the panel lists."""
+    _installed(monkeypatch, terminal=False, app=True)
+    monkeypatch.setenv("SSH_CONNECTION", "1.2.3.4 5 6.7.8.9 22")
+    assert agents.choose_mode(_both("app")) == "terminal"
+    assert detect(_both("app")) is False
+
+
+@pytest.mark.parametrize("name", ["zcode", "dsh"])
+def test_a_row_that_is_only_an_app_is_not_gated_by_the_session(
+    monkeypatch: pytest.MonkeyPatch, name: str
+) -> None:
+    """What happens over SSH for these rows stays open_app's business."""
+    monkeypatch.setenv("SSH_CONNECTION", "1.2.3.4 5 6.7.8.9 22")
+    monkeypatch.delenv("DISPLAY", raising=False)
+    monkeypatch.delenv("WAYLAND_DISPLAY", raising=False)
+    monkeypatch.setattr(agents.app_launch, "_platform", lambda: "linux")
+    monkeypatch.setattr(agents.app_launch, "app_installed", lambda _spec: True)
+    spec = get_agent(name)
+    assert agents.machine_modes(spec) == ["app"]
+    assert agents.mode_usable(spec, "app") is True
+    assert detect(spec) is True
+
+
+@pytest.mark.parametrize("default", ["terminal", "app"])
+@pytest.mark.parametrize(
+    ("terminal", "app", "expected"),
+    [
+        (True, True, "terminal"),
+        (True, False, "terminal"),
+        (False, True, "app"),
+        (False, False, "terminal"),
+    ],
+)
+def test_lit_agent_prefers_the_terminal_whatever_the_catalog_default(
+    monkeypatch: pytest.MonkeyPatch,
+    default: agents.LaunchMode,
+    terminal: bool,
+    app: bool,
+    expected: str,
+) -> None:
+    _installed(monkeypatch, terminal=terminal, app=app)
+    assert agents.cli_mode(_both(default)) == expected
+
+
+def test_mode_install_url_goes_by_the_way_of_starting() -> None:
+    claude = get_agent("claude")
+    assert agents.mode_install_url(claude, "terminal") == claude.install_url
+    assert agents.mode_install_url(claude, "app") == "https://claude.com/download"
+    # A row with one way has one link, whichever that way is.
+    zcode = get_agent("zcode")
+    assert agents.mode_install_url(zcode, "app") == zcode.install_url
+
+
+def test_only_claude_drops_a_variable_from_its_launch() -> None:
+    assert {a.name: a.launch_env_unset for a in AGENTS if a.launch_env_unset} == {
+        "claude": ("CLAUDE_CODE_CHILD_SESSION",)
+    }
+
+
+def test_launch_env_leaves_out_only_the_rows_variables(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("CLAUDE_CODE_CHILD_SESSION", "1")
+    monkeypatch.setenv("CLAUDECODE", "1")
+    monkeypatch.setenv("NO_COLOR", "1")
+    before = dict(os.environ)
+    env = agents.launch_env(get_agent("claude"))
+    assert env == {k: v for k, v in before.items() if k != "CLAUDE_CODE_CHILD_SESSION"}
+    assert dict(os.environ) == before  # a copy: this process keeps its own
+    assert agents.launch_env(get_agent("codex")) == before

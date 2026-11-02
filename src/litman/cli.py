@@ -26,6 +26,7 @@ from rich.markup import escape
 
 from litman import __version__
 from litman.core.confirm import is_interactive
+from litman.core.replace import refusal_message, refused_by_windows
 from litman.core.undecodable import text_refusal
 from litman.exceptions import LitmanError
 
@@ -275,6 +276,8 @@ class LitGroup(click.Group):
         The whole hook is wrapped so a failure (hung mount, FS error inside a
         heal) never crashes the user's actual command — it degrades to a silent
         skip and the cold-path ``lit health-check`` catches the drift later.
+        ``click.Abort`` alone gets through: Ctrl+C or EOF at one of its prompts
+        ends the command, as Ctrl+C anywhere else does.
         """
         try:
             from litman.core.checks import cheap_checks
@@ -347,6 +350,8 @@ class LitGroup(click.Group):
 
                 try:
                     check_and_prompt_project_drift()
+                except click.Abort:
+                    raise
                 except Exception:
                     pass
 
@@ -364,6 +369,8 @@ class LitGroup(click.Group):
 
                 try:
                     check_and_prompt_bridge_drift()
+                except click.Abort:
+                    raise
                 except Exception:
                     pass
 
@@ -374,6 +381,10 @@ class LitGroup(click.Group):
             # report-only, no mutate.
             if vault is not None and "index_vs_disk" in categories:
                 self._repair_index_vs_disk(vault, issues)
+        except click.Abort:
+            # The prompt left the cursor on its own line, ahead of Click's Aborted!.
+            click.echo(err=True)
+            raise
         except Exception:
             pass
 
@@ -480,12 +491,9 @@ class LitGroup(click.Group):
 
         if vault is not None:
             try:
-                from litman.core.config import load_config
+                from litman.core.config import load_config, project_probe_paths
 
-                config = load_config(vault)
-                paths.update(
-                    str(Path(p).expanduser()) for p in config.projects.values()
-                )
+                paths.update(project_probe_paths(load_config(vault).projects))
             except Exception:
                 pass
 
@@ -880,6 +888,13 @@ def main() -> None:
         cli()
     except LitmanError as e:
         console.print(f"[bold red]error:[/] {escape(str(e))}", soft_wrap=True)
+        sys.exit(1)
+    except PermissionError as e:
+        # Still refused after the wait in core/replace. Any part of a staged
+        # write already committed is finished by the next `lit`.
+        if not refused_by_windows(e):
+            raise
+        console.print(f"[bold red]error:[/] {escape(refusal_message(e))}", soft_wrap=True)
         sys.exit(1)
     except UnicodeEncodeError as e:
         # Text holding a byte that is not UTF-8 (a value typed on the command

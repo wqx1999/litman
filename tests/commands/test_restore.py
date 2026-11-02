@@ -21,7 +21,6 @@ Covers the four M23.2 acceptance criteria plus the M24 de-annotation:
 
 from __future__ import annotations
 
-import contextlib
 import json
 import os
 import subprocess
@@ -37,6 +36,7 @@ from ruamel.yaml import YAML
 from litman.cli import cli
 from litman.core import project_link as project_link_mod
 from litman.core import trash as trash_mod
+from litman.core.atomic import StagedWrite
 from litman.core.checks import check_project_references
 from litman.core.document import list_papers
 from litman.core.library import create_vault
@@ -646,18 +646,11 @@ def test_restore_staged_write_failure_rolls_back(
     )
     assert trash_entry.is_dir()
 
-    class _BoomStage:
-        def write_text(self, *_a: Any, **_k: Any) -> Path:
-            raise RuntimeError("staged write boom")
+    def boom(*_a: Any, **_k: Any) -> Path:
+        raise RuntimeError("staged write boom")
 
-        def write_bytes(self, *_a: Any, **_k: Any) -> Path:
-            raise RuntimeError("staged write boom")
-
-    @contextlib.contextmanager
-    def _boom_staged_write(_vault: Path, op_id: str | None = None):  # type: ignore[no-untyped-def]
-        yield _BoomStage()
-
-    monkeypatch.setattr("litman.core.trash.staged_write", _boom_staged_write)
+    monkeypatch.setattr(StagedWrite, "write_text", boom)
+    monkeypatch.setattr(StagedWrite, "write_bytes", boom)
 
     result = runner.invoke(
         cli, ["trash", "restore", "2024_Target", "--library", str(vault)]

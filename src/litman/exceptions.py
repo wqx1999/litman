@@ -224,6 +224,10 @@ class CodeError(LitmanError):
     """
 
 
+class RepoBindPendingError(CodeError):
+    """A re-clone's bind failed past its decision point: it lands on the next `lit`."""
+
+
 class ConfigError(LitmanError):
     """`lit-config.yaml` could not be parsed or failed schema validation.
 
@@ -257,6 +261,10 @@ class VaultRegistryError(LitmanError):
     vault not being discoverable in a single command run): registry errors
     surface from the user-level registry layer, not from any single vault.
     """
+
+
+class IndexWriteError(LitmanError):
+    """INDEX.json could not be written, where nothing can go on without it."""
 
 
 class SelfUpdateError(LitmanError):

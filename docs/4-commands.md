@@ -56,12 +56,12 @@ with its own answer:
 
 | Answer | What happens |
 |---|---|
-| the new path | The registration is re-pointed there, the same as `lit vault set-path` / `lit project set-path`. A vault path must hold a `lit-config.yaml`; a wrong path is refused and nothing changes. |
+| the new path | The registration is re-pointed there, the same as `lit vault set-path` / `lit project set-path`. A vault path must hold a `lit-config.yaml`; a project path must be the full path of an existing folder. A wrong path is refused, nothing changes, and the same question comes back. |
 | `rm` | Hands you to `lit vault remove` / `lit project rm`, which show their own warning and ask `y/N` before anything goes. |
 | Enter | Skip. Nothing changes and you are asked again next time. |
 
 Enter never removes anything, so holding Enter through the questions is always
-safe. Off a terminal — a script, a CI job, an agent — nothing is asked: a
+safe. Ctrl+C at a question ends the command you typed. Off a terminal — a script, a CI job, an agent — nothing is asked: a
 warning names the folder and the command that fixes it, and the command you
 typed carries on.
 
@@ -1095,6 +1095,13 @@ agent panel, or `lit agent --set-default`. Claude Code, ZCode, Antigravity CLI
 (`agy`), Codex, DeepSeek Harness (`dsh`), Cursor, and OpenCode are the
 supported agents.
 
+Claude Code and Codex start as their CLI or as their desktop app; Codex's desktop
+app can be used on Windows only, and on macOS and Linux Codex is CLI only.
+`lit agent claude` and `lit agent codex` run the CLI in this terminal when the CLI
+is on PATH. When only the app is installed, they open the app at the vault and
+return at once. Claude Code's app then asks you to confirm the folder, every time
+it is opened this way. Codex's app asks the first time it opens a folder.
+
 ZCode is a desktop app, not a terminal agent: `lit agent zcode` opens ZCode at
 the vault and returns at once. If ZCode is already open, it switches to the
 vault. Open ZCode once after installing it, so litman can find it.
@@ -1113,6 +1120,15 @@ installed, or never opened). The Web UI's agent button launches the same default
 agent: on a machine with a display it opens the agent in a new terminal window,
 or opens the desktop app; when the server runs on a remote box (HPC) it shows
 the `lit agent` line to copy into your own terminal.
+
+When an agent has both a CLI and a desktop app, its entry in the agent panel has
+a **Launch with** switch, `App` or `CLI`. The button uses the one you pick and
+remembers it for this machine, in `preferences.yaml`. Until you pick, Claude Code
+uses the CLI and Codex uses the app. If the one the button would use is not installed, it uses the other.
+Picking one that is not installed offers its download and is not remembered.
+`lit agent` does not read this choice. An SSH session, or Linux without a display,
+has no switch: the desktop app is not an option there. Nor does Codex on macOS or
+Linux.
 
 ### `lit self-update`
 

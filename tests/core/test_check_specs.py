@@ -42,6 +42,7 @@ _EXPECTED_CATEGORIES = (
     "project_references",
     "project_bridge_dangling",
     "links_unsupported",
+    "links_denied",
     "dangling_refs",
     "dangling_wikilinks",
     "relevance_orphan",
@@ -68,7 +69,7 @@ _EXPECTED_CATEGORIES = (
 
 
 def test_registry_has_all_checks() -> None:
-    assert len(_CHECK_REGISTRY) == 35
+    assert len(_CHECK_REGISTRY) == 36
     assert tuple(spec.category for spec in _CHECK_REGISTRY) == _EXPECTED_CATEGORIES
 
 

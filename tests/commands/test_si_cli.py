@@ -522,7 +522,7 @@ def test_rm_si_deletes_and_says_how_to_add_it_again(
     assert removed.exit_code == 0, removed.output
     assert removed.stdout.splitlines() == [
         "✓ Deleted si-02.xlsx (ci9b00237_si_002.xlsx)",
-        f"To add it again: lit add --si {A_ID}",
+        f'To add it again: lit add --si "{A_ID}"',
         "metadata.yaml + INDEX.json updated.",
     ]
     assert not (_si_dir(vault) / "si-02.xlsx").exists()
@@ -554,7 +554,7 @@ def test_rm_si_with_yes_still_says_where_the_notes_cite_it(
         "  still cited 1× in notes.md and 2× in discussion.md — lit health-check "
         "lists the lines",
         "✓ Deleted si-01.csv (ci9b00237_si_001.csv)",
-        f"To add them again: lit add --si {A_ID}",
+        f'To add them again: lit add --si "{A_ID}"',
         "metadata.yaml + INDEX.json updated.",
     ]
     assert "supplementary" not in find_paper(vault, A_ID)
@@ -594,7 +594,7 @@ def test_rm_si_with_yes_says_when_a_notes_file_went_unchecked(
     assert removed.stdout.splitlines() == [
         "✓ Deleted si-02.xlsx (ci9b00237_si_002.xlsx)",
         "  couldn't check notes.md for citations (UnicodeDecodeError)",
-        f"To add it again: lit add --si {A_ID}",
+        f'To add it again: lit add --si "{A_ID}"',
         "metadata.yaml + INDEX.json updated.",
     ]
 
@@ -662,7 +662,7 @@ def test_rm_si_confirm_lists_the_citations(
         "  si-02.xlsx (ci9b00237_si_002.xlsx)",
         "  si-02.xlsx is cited 1× in notes.md and 2× in discussion.md",
         "This can't be undone — to get a file back, add it again:",
-        f"  lit add --si {A_ID}",
+        f'  lit add --si "{A_ID}"',
     ]
     assert "Continue? [y/N]" in declined.stdout
     assert "Aborted. No changes made." in declined.stdout

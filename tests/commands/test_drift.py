@@ -9,8 +9,13 @@ clears ``LITMAN_REGISTRY_DIR`` / ``XDG_CONFIG_HOME`` to a tmp dir.
 
 from __future__ import annotations
 
+import dataclasses
+import io
+import threading
 import time
+from collections.abc import Callable
 from pathlib import Path
+from typing import Any
 
 import click
 import pytest
@@ -201,13 +206,14 @@ def test_registry_drift_relocate_to_non_vault_keeps_the_drift(
 ) -> None:
     """A path that is not a vault must not be written into the registry.
 
-    Nothing is removed either: the drift stays, so the next command asks again.
+    Nothing is removed either: given up on with Enter, the drift stays, so the
+    next command asks again.
     """
     _seed_two_entries_one_dangling(tmp_path)
     not_a_vault = tmp_path / "empty"
     not_a_vault.mkdir()
     monkeypatch.setattr(_drift, "_default_tty_probe", lambda: True)
-    _answer(monkeypatch, str(not_a_vault))
+    _answer(monkeypatch, str(not_a_vault), "")
 
     _drift.check_and_prompt_registry_drift()
 
@@ -1182,21 +1188,10 @@ def test_project_drift_tty_heal_preserves_code_symlink(
     assert code_link.resolve() == (vault / "codes" / repo_name / "repo").resolve()
 
 
-def test_project_drift_tty_heal_nonexistent_new_path_no_false_rebuild_claim(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    capsys: pytest.CaptureFixture[str],
-) -> None:
-    """Healing to a path that is not a directory here updates the config but
-    must NOT claim litman_reflib was rebuilt.
-
-    A new path that does not exist on this machine (typo, or a legitimately
-    not-yet-mounted / other-machine location per ADR-014) is "skipped" by
-    rebuild_all_*; the config is updated but litman_reflib is not recreated,
-    so the success message must reflect "config only", not a false rebuild.
-    """
-    from litman.core.config import load_config
-
+def _vault_with_gone_project(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *names: str
+) -> Path:
+    """An active vault whose projects' directories are gone, on a TTY."""
     parent = tmp_path / "vault_parent"
     parent.mkdir()
     vault = create_vault(parent)
@@ -1205,30 +1200,597 @@ def test_project_drift_tty_heal_nonexistent_new_path_no_false_rebuild_claim(
             vaults=[VaultEntry(name="v", path=str(vault), is_active=True)]
         )
     )
-
-    old_dir = tmp_path / "proj_old"
-    old_dir.mkdir()
-    _write_config_with_project(vault, "pepforge", old_dir)
-    _make_paper(vault, "p1", projects=["pepforge"])
-
-    # Config still points at old_dir, which is now gone.
-    old_dir.rename(tmp_path / "proj_gone")
-
-    # The new path the user types does not exist here.
-    new_path = tmp_path / "elsewhere_not_mounted"
-    assert not new_path.exists()
-
+    _write_config_with_projects(
+        vault, {name: tmp_path / f"{name}_gone" for name in names}
+    )
     monkeypatch.setattr(_drift, "_default_tty_probe", lambda: True)
-    monkeypatch.setattr(click, "prompt", lambda *a, **kw: str(new_path))
+    return vault
+
+
+def test_project_drift_folder_gone_before_rebuild_claims_no_rebuild(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """The one way left to a skipped rebuild: the folder passes the check and
+    goes before the rebuild. The answer is recorded, no rebuild is claimed."""
+    from litman.core import project_link
+    from litman.core.config import load_config
+
+    vault = _vault_with_gone_project(tmp_path, monkeypatch, "pepforge")
+    new_dir = tmp_path / "gone_in_a_moment"
+    new_dir.mkdir()
+    expected = str(new_dir.resolve())
+    real_rebuild = project_link.rebuild_all_project_links
+
+    def remove_then_rebuild(
+        vault: Path, registry: dict[str, str]
+    ) -> dict[str, dict[str, object]]:
+        new_dir.rmdir()
+        return real_rebuild(vault, registry)
+
+    monkeypatch.setattr(
+        project_link, "rebuild_all_project_links", remove_then_rebuild
+    )
+    monkeypatch.setattr(click, "prompt", lambda *a, **kw: str(new_dir))
 
     _drift.check_and_prompt_project_drift()
 
-    # Config updated to the new path...
-    assert load_config(vault).projects["pepforge"] == str(new_path)
-    # ...but no litman_reflib materialized there (the dir doesn't exist).
-    assert not (new_path / "litman_reflib").exists()
-    # ...and the message did NOT falsely claim a rebuild. "rebuilt" appears
-    # only in the success branch; the skip branch says "rebuild" + "refresh".
+    assert load_config(vault).projects["pepforge"] == expected
     out = capsys.readouterr().out
+    assert "✓ Updated" in out
     assert "rebuilt" not in out
-    assert "refresh" in out
+
+
+def _not_a_usable_folder(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> dict[str, str]:
+    """Answers the prompt must refuse, with a word of the refusal for each."""
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "relative_but_there").mkdir()
+    (tmp_path / "a_file").write_text("x", encoding="utf-8")
+    return {
+        "xcxcxc": "not absolute",
+        "relative_but_there": "not absolute",
+        str(tmp_path / "nowhere"): "does not exist",
+        str(tmp_path / "a_file"): "not a directory",
+        # POSIX cannot expand it; Windows guesses a home folder that is not there.
+        "~no_such_user_here/x": "no_such_user_here",
+        # Its brackets are Rich markup unless escaped, and a closing tag with no
+        # opening one raises.
+        str(tmp_path / "[/nowhere]"): "does not exist",
+    }
+
+
+def test_project_drift_refuses_a_path_set_path_would_refuse(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """A wrong answer writes nothing and says why."""
+    vault = _vault_with_gone_project(tmp_path, monkeypatch, "pepforge")
+    config_file = vault / "lit-config.yaml"
+    before = config_file.read_bytes()
+
+    for reply, refusal in _not_a_usable_folder(tmp_path, monkeypatch).items():
+        _answer(monkeypatch, reply, "")
+
+        _drift.check_and_prompt_project_drift()
+
+        out = capsys.readouterr().out
+        assert "error:" in out, reply
+        assert refusal in out, reply
+        assert "✓ Updated" not in out, reply
+        assert config_file.read_bytes() == before, reply
+
+
+def test_project_drift_expands_home_in_a_new_path(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    fake_home: Path,
+) -> None:
+    from litman.core.config import load_config
+
+    monkeypatch.setenv("USERPROFILE", str(fake_home))
+    vault = _vault_with_gone_project(tmp_path, monkeypatch, "pepforge")
+    moved = fake_home / "moved"
+    moved.mkdir()
+    monkeypatch.setattr(click, "prompt", lambda *a, **kw: "~/moved")
+
+    _drift.check_and_prompt_project_drift()
+
+    assert load_config(vault).projects["pepforge"] == str(moved.resolve())
+
+
+def test_project_drift_normalizes_a_new_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from litman.core.config import load_config
+
+    vault = _vault_with_gone_project(tmp_path, monkeypatch, "pepforge")
+    moved = tmp_path / "moved"
+    moved.mkdir()
+    (tmp_path / "other").mkdir()
+    reply = str(tmp_path / "other" / ".." / "moved")
+    monkeypatch.setattr(click, "prompt", lambda *a, **kw: reply)
+
+    _drift.check_and_prompt_project_drift()
+
+    assert load_config(vault).projects["pepforge"] == str(moved.resolve())
+
+
+def test_project_drift_unreadable_new_path_is_refused_not_raised(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    vault = _vault_with_gone_project(tmp_path, monkeypatch, "pepforge")
+    before = (vault / "lit-config.yaml").read_bytes()
+    locked = tmp_path / "locked"
+    locked.mkdir()
+    real_is_dir = Path.is_dir
+
+    def no_access(self: Path) -> bool:
+        if self.name == locked.name:
+            raise PermissionError(13, "Permission denied")
+        return real_is_dir(self)
+
+    monkeypatch.setattr(Path, "is_dir", no_access)
+    _answer(monkeypatch, str(locked), "")
+
+    _drift.check_and_prompt_project_drift()
+
+    out = capsys.readouterr().out
+    assert "Could not check" in out
+    assert (vault / "lit-config.yaml").read_bytes() == before
+
+
+@pytest.mark.parametrize("stat_call", ["resolve", "exists", "is_dir"])
+def test_project_drift_dead_mount_counts_as_refused(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    stat_call: str,
+) -> None:
+    """Whichever stat of the check never returns, the prompt carries on. The
+    folder is really there, so only the budget can refuse it."""
+    vault = _vault_with_gone_project(tmp_path, monkeypatch, "pepforge")
+    config_file = vault / "lit-config.yaml"
+    before = config_file.read_bytes()
+    dead = tmp_path / "dead_mount"
+    dead.mkdir()
+    release = threading.Event()
+    real = getattr(Path, stat_call)
+
+    def hang_on_dead(self: Path, *args: object, **kwargs: object) -> object:
+        if self.name == dead.name:
+            release.wait(timeout=20)
+        return real(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, stat_call, hang_on_dead)
+    asked = _answer(monkeypatch, str(dead), "")
+
+    started = time.monotonic()
+    try:
+        _drift.check_and_prompt_project_drift()
+        elapsed = time.monotonic() - started
+    finally:
+        release.set()
+
+    assert elapsed < 10
+    assert len(asked) == 2
+    out = capsys.readouterr().out
+    assert "Could not reach" in out
+    assert config_file.read_bytes() == before
+
+
+@pytest.mark.parametrize("wrong_first", [True, False])
+def test_project_drift_one_right_one_given_up_writes_only_the_right_one(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    wrong_first: bool,
+) -> None:
+    from litman.core.config import load_config
+
+    vault = _vault_with_gone_project(tmp_path, monkeypatch, "alpha", "beta")
+    _make_paper(vault, "p1", projects=["alpha", "beta"])
+    before = load_config(vault).projects
+    new_dir = tmp_path / "really_here"
+    new_dir.mkdir()
+    wrong, right = ("alpha", "beta") if wrong_first else ("beta", "alpha")
+    replies = (
+        ["xcxcxc", "", str(new_dir)] if wrong_first else [str(new_dir), "xcxcxc", ""]
+    )
+    answers = iter(replies)
+    monkeypatch.setattr(click, "prompt", lambda *a, **kw: next(answers))
+
+    _drift.check_and_prompt_project_drift()
+
+    assert next(answers, None) is None
+    after = load_config(vault).projects
+    assert after[right] == str(new_dir.resolve())
+    assert after[wrong] == before[wrong]
+    assert is_portable_link(new_dir / "litman_reflib" / "p1")
+    out = capsys.readouterr().out
+    assert out.count("error:") == 1
+    assert out.count("✓ Updated") == 1
+
+
+# ---------------------------------------------------------------------------
+# A refused path asks again, at both prompts
+# ---------------------------------------------------------------------------
+
+
+@dataclasses.dataclass
+class _GoneFolders:
+    """Two-prompt harness: the same scenarios run against either one."""
+
+    ask: Callable[[], None]
+    paths: Callable[[], dict[str, str]]
+    moved_here: Path
+
+
+def _gone_folders(
+    branch: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *names: str
+) -> _GoneFolders:
+    moved_parent = tmp_path / "moved_parent"
+    moved_parent.mkdir()
+    if branch == "vault":
+        (tmp_path / "real").mkdir()
+        save_registry(
+            VaultRegistry(
+                vaults=[
+                    VaultEntry(name="real", path=str(tmp_path / "real"), is_active=True),
+                    *(
+                        VaultEntry(
+                            name=name, path=str(tmp_path / f"{name}_gone"), is_active=False
+                        )
+                        for name in names
+                    ),
+                ]
+            )
+        )
+        monkeypatch.setattr(_drift, "_default_tty_probe", lambda: True)
+        return _GoneFolders(
+            ask=_drift.check_and_prompt_registry_drift,
+            paths=lambda: {v.name: v.path for v in load_registry().vaults},
+            moved_here=create_vault(moved_parent),
+        )
+
+    from litman.core.config import load_config
+
+    vault = _vault_with_gone_project(tmp_path, monkeypatch, *names)
+    return _GoneFolders(
+        ask=_drift.check_and_prompt_project_drift,
+        paths=lambda: dict(load_config(vault).projects),
+        moved_here=moved_parent,
+    )
+
+
+both_prompts = pytest.mark.parametrize("branch", ["vault", "project"])
+
+
+def _error_lines(out: str) -> list[str]:
+    return [line for line in out.splitlines() if line.startswith("error:")]
+
+
+def _assert_asked_about_one_folder(out: str) -> None:
+    assert out.count("directory not found") == 1
+    assert "Left as-is" not in out
+
+
+@both_prompts
+def test_a_refused_path_asks_again_and_takes_the_next_answer(
+    branch: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    gone = _gone_folders(branch, tmp_path, monkeypatch, "gone_one")
+    asked = _answer(monkeypatch, str(tmp_path / "typo"), str(gone.moved_here))
+
+    gone.ask()
+
+    assert len(asked) == 2
+    assert asked[0] == asked[1]
+    assert Path(gone.paths()["gone_one"]) == gone.moved_here.resolve()
+    out = capsys.readouterr().out
+    _assert_asked_about_one_folder(out)
+    assert len(_error_lines(out)) == 1
+    assert "typo" in _error_lines(out)[0]
+    assert out.count("Updated") == 1
+    assert "Skipped" not in out
+
+
+@both_prompts
+def test_a_refused_path_then_enter_skips_and_changes_nothing(
+    branch: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    gone = _gone_folders(branch, tmp_path, monkeypatch, "gone_one")
+    before = gone.paths()
+    asked = _answer(monkeypatch, str(tmp_path / "typo"), "")
+
+    gone.ask()
+
+    assert len(asked) == 2
+    assert gone.paths() == before
+    out = capsys.readouterr().out
+    _assert_asked_about_one_folder(out)
+    assert len(_error_lines(out)) == 1
+    assert "Skipped. You'll be reminded again next time." in out
+    assert "Updated" not in out
+
+
+@both_prompts
+def test_a_refused_path_then_rm_goes_through_the_removal_command(
+    branch: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    gone = _gone_folders(branch, tmp_path, monkeypatch, "gone_one")
+    asked = _answer(monkeypatch, str(tmp_path / "typo"), "rm")
+    monkeypatch.setattr("litman.core.confirm._stdin_is_tty", lambda: True)
+    confirmed: list[str] = []
+    monkeypatch.setattr(
+        click, "confirm", lambda text, **kw: confirmed.append(text) or True
+    )
+
+    gone.ask()
+
+    assert len(asked) == 2
+    assert len(confirmed) == 1
+    assert "gone_one" not in gone.paths()
+    out = capsys.readouterr().out
+    _assert_asked_about_one_folder(out)
+    assert len(_error_lines(out)) == 1
+
+
+@both_prompts
+def test_every_refused_path_says_why_and_only_the_last_answer_is_kept(
+    branch: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    gone = _gone_folders(branch, tmp_path, monkeypatch, "gone_one")
+    (tmp_path / "typo_file").write_text("x", encoding="utf-8")
+    asked = _answer(
+        monkeypatch,
+        str(tmp_path / "typo_missing"),
+        str(tmp_path / "typo_file"),
+        str(gone.moved_here),
+    )
+
+    gone.ask()
+
+    assert len(asked) == 3
+    assert len(set(asked)) == 1
+    assert Path(gone.paths()["gone_one"]) == gone.moved_here.resolve()
+    out = capsys.readouterr().out
+    _assert_asked_about_one_folder(out)
+    errors = _error_lines(out)
+    assert len(errors) == 2
+    assert "typo_missing" in errors[0]
+    assert "typo_file" in errors[1]
+
+
+@both_prompts
+def test_a_refused_path_with_brackets_in_it_still_asks_again(
+    branch: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Its brackets are Rich markup unless escaped, and a closing tag with no
+    opening one raises."""
+    gone = _gone_folders(branch, tmp_path, monkeypatch, "gone_one")
+    before = gone.paths()
+    asked = _answer(monkeypatch, str(tmp_path / "[/typo]"), "")
+
+    gone.ask()
+
+    assert len(asked) == 2
+    assert gone.paths() == before
+    assert "typo]" in _error_lines(capsys.readouterr().out)[0]
+
+
+@both_prompts
+def test_the_next_folder_is_asked_about_only_once_this_one_is_settled(
+    branch: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    gone = _gone_folders(branch, tmp_path, monkeypatch, "gone_one", "gone_two")
+    before = gone.paths()
+    answers = iter([str(tmp_path / "typo"), str(gone.moved_here), ""])
+    printed = ""
+    folders_shown: list[int] = []
+
+    def prompt(*_a: object, **_kw: object) -> str:
+        nonlocal printed
+        printed += capsys.readouterr().out
+        folders_shown.append(printed.count("directory not found"))
+        return next(answers)
+
+    monkeypatch.setattr(click, "prompt", prompt)
+
+    gone.ask()
+
+    assert folders_shown == [1, 1, 2]
+    after = gone.paths()
+    assert Path(after["gone_one"]) == gone.moved_here.resolve()
+    assert after["gone_two"] == before["gone_two"]
+
+
+@both_prompts
+def test_running_out_of_input_after_a_refused_path_ends_the_loop(
+    branch: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """The real ``click.prompt`` at end of input. The count keeps a loop that
+    swallowed its ``Abort`` from hanging the suite."""
+    gone = _gone_folders(branch, tmp_path, monkeypatch, "gone_one")
+    before = gone.paths()
+    monkeypatch.setattr("sys.stdin", io.StringIO(f"{tmp_path / 'typo'}\n"))
+    real_prompt = click.prompt
+    asked = 0
+
+    def counted_prompt(*a: Any, **kw: Any) -> Any:
+        nonlocal asked
+        asked += 1
+        assert asked <= 5, "still asking after the input ran out"
+        return real_prompt(*a, **kw)
+
+    monkeypatch.setattr(click, "prompt", counted_prompt)
+
+    with pytest.raises(click.Abort):
+        gone.ask()
+
+    assert asked == 2
+    assert gone.paths() == before
+    # Nobody pressed Enter, so the error starts on the prompt's own line.
+    assert capsys.readouterr().out.count("error:") == 1
+
+
+# ---------------------------------------------------------------------------
+# The vault prompt's new path: a bounded probe ahead of the backend
+# ---------------------------------------------------------------------------
+
+
+def _vault_prompt_with_a_real_vault_at(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> tuple[_GoneFolders, Path]:
+    """Without the probe's say-so, the path would be accepted."""
+    gone = _gone_folders("vault", tmp_path, monkeypatch, "gone_one")
+    return gone, gone.moved_here
+
+
+def test_vault_prompt_asks_again_when_the_new_path_does_not_answer_in_time(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    gone, slow = _vault_prompt_with_a_real_vault_at(tmp_path, monkeypatch)
+    before = gone.paths()
+    real_exists = _drift._exists_bounded
+
+    def slow_there(paths: list[str], budget_s: float = 0.5) -> dict[str, bool | None]:
+        return {
+            p: None if Path(p) == slow else real_exists([p], budget_s)[p] for p in paths
+        }
+
+    monkeypatch.setattr(_drift, "_exists_bounded", slow_there)
+    asked = _answer(monkeypatch, str(slow), "")
+
+    gone.ask()
+
+    assert len(asked) == 2
+    assert gone.paths() == before
+    out = capsys.readouterr().out
+    assert "Could not reach" in out
+    assert out.count("directory not found") == 1
+
+
+def test_vault_prompt_new_path_on_a_hung_mount_cannot_hang_the_prompt(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """The real probe and its real budget, with a stat that never returns."""
+    gone, dead = _vault_prompt_with_a_real_vault_at(tmp_path, monkeypatch)
+    before = gone.paths()
+    release = threading.Event()
+    real_exists = Path.exists
+
+    def hang_on_dead(self: Path, *args: Any, **kwargs: Any) -> bool:
+        if self == dead:
+            release.wait(timeout=20)
+        return real_exists(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "exists", hang_on_dead)
+    asked = _answer(monkeypatch, str(dead), "")
+
+    started = time.monotonic()
+    try:
+        gone.ask()
+        elapsed = time.monotonic() - started
+    finally:
+        release.set()
+
+    assert elapsed < 10
+    assert len(asked) == 2
+    assert gone.paths() == before
+    assert "Could not reach" in capsys.readouterr().out
+
+
+def test_vault_prompt_probes_the_expanded_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fake_home: Path
+) -> None:
+    monkeypatch.setenv("USERPROFILE", str(fake_home))
+    gone = _gone_folders("vault", tmp_path, monkeypatch, "gone_one")
+    moved = create_vault(fake_home)
+    probed: list[str] = []
+    real_exists = _drift._exists_bounded
+
+    def recording(paths: list[str], budget_s: float = 0.5) -> dict[str, bool | None]:
+        probed.extend(paths)
+        return real_exists(paths, budget_s)
+
+    monkeypatch.setattr(_drift, "_exists_bounded", recording)
+    asked = _answer(monkeypatch, f"~/{moved.name}")
+
+    gone.ask()
+
+    assert len(asked) == 1
+    assert str(fake_home / moved.name) in probed
+    assert not [p for p in probed if p.startswith("~")]
+    assert Path(gone.paths()["gone_one"]) == moved.resolve()
+
+
+def test_vault_prompt_asks_again_after_a_path_it_cannot_even_read(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    gone, locked = _vault_prompt_with_a_real_vault_at(tmp_path, monkeypatch)
+    before = gone.paths()
+    real_resolve = Path.resolve
+
+    def no_access(self: Path, *args: Any, **kwargs: Any) -> Path:
+        if self == locked:
+            raise PermissionError(13, "Permission denied")
+        return real_resolve(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "resolve", no_access)
+    asked = _answer(monkeypatch, str(locked), "")
+
+    gone.ask()
+
+    assert len(asked) == 2
+    assert gone.paths() == before
+    assert "Could not check" in capsys.readouterr().out
+
+
+def test_vault_prompt_asks_again_after_a_home_folder_it_cannot_expand(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """POSIX cannot expand it; Windows guesses a home folder that is not there."""
+    gone = _gone_folders("vault", tmp_path, monkeypatch, "gone_one")
+    before = gone.paths()
+    asked = _answer(monkeypatch, "~no_such_user_here/x", "")
+
+    gone.ask()
+
+    assert len(asked) == 2
+    assert gone.paths() == before
+    assert "no_such_user_here" in capsys.readouterr().out

@@ -28,7 +28,7 @@ from litman.commands.init import apply_init
 from litman.commands.modify import ORDERED_LIST_FIELDS, _apply_modify
 from litman.commands.read import apply_read, apply_unread
 from litman.commands.revisit import apply_revisit
-from litman.commands.rm import RmPlan, discover_rm_impact, execute_rm
+from litman.commands.rm import RmPlan, discover_rm_impact, execute_rm, folder_left_message
 from litman.core.config import load_config
 from litman.core.dates import today_iso, validate_iso_date
 from litman.core.id import is_valid_id
@@ -430,7 +430,9 @@ async def delete_paper(request: Request, paper_id: str) -> dict[str, object]:
     confirmation, mirroring ``delete_project``.
 
     An unknown paper surfaces as PaperNotFoundError → 404, an invalid id /
-    missing metadata as RmError → 400.
+    missing metadata as RmError → 400, a folder that did not go → 409: the
+    records moved on but the paper is not in the trash, and deleting it again
+    finishes the job.
     """
     _require_valid_id(paper_id)
     vault = request.app.state.vault
@@ -441,6 +443,10 @@ async def delete_paper(request: Request, paper_id: str) -> dict[str, object]:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except RmError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+    if result.folder_left is not None:
+        raise HTTPException(
+            status_code=409, detail=folder_left_message(result, retry="delete it again")
+        )
     return {
         "ok": True,
         "id": result.paper_id,
@@ -874,7 +880,7 @@ async def put_active_vault(request: Request) -> dict[str, object]:
     # links a healthy project got from elsewhere (blind review W1).
     try:
         from litman.commands._drift import _exists_bounded
-        from litman.core.config import load_config
+        from litman.core.config import load_config, project_probe_paths
         from litman.core.project_link import (
             find_dangling_bridges,
             rebuild_all_project_links,
@@ -883,9 +889,7 @@ async def put_active_vault(request: Request) -> dict[str, object]:
 
         projects = dict(load_config(target).projects)
         if projects:
-            dir_status = _exists_bounded(
-                [str(Path(p).expanduser()) for p in projects.values()]
-            )
+            dir_status = _exists_bounded(project_probe_paths(projects))
             dangling = find_dangling_bridges(projects, dir_status, _exists_bounded)
             if dangling:
                 affected = {proj: projects[proj] for proj in dangling}
@@ -1000,7 +1004,7 @@ async def put_vault_path(request: Request, name: str) -> dict[str, object]:
     # the fallback.
     try:
         from litman.commands._drift import _exists_bounded
-        from litman.core.config import load_config
+        from litman.core.config import load_config, project_probe_paths
         from litman.core.project_link import (
             find_dangling_bridges,
             rebuild_all_project_links,
@@ -1009,9 +1013,7 @@ async def put_vault_path(request: Request, name: str) -> dict[str, object]:
 
         projects = dict(load_config(target).projects)
         if projects:
-            dir_status = _exists_bounded(
-                [str(Path(p).expanduser()) for p in projects.values()]
-            )
+            dir_status = _exists_bounded(project_probe_paths(projects))
             dangling = find_dangling_bridges(projects, dir_status, _exists_bounded)
             if dangling:
                 affected = {proj: projects[proj] for proj in dangling}

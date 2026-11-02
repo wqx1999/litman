@@ -26,11 +26,15 @@ from pathlib import Path
 from typing import Any
 
 from rich.console import Console
+from rich.markup import escape
 
 from litman.core import views
 from litman.core.checks import Issue
 from litman.core.notes import annotate_deleted_wikilinks, enumerate_markdown_files
-from litman.core.portable_link import warn_views_not_updated
+from litman.core.portable_link import _os_error_reason, warn_views_not_updated
+
+# Stderr, so a warning does not end up in a pipe reading the command's output.
+_console = Console(stderr=True)
 
 __all__ = [
     "annotate",
@@ -98,6 +102,11 @@ def reconcile_derived(
             ``None`` (default, and always for the corrector / ``--fix`` path)
             → wholesale ``rebuild_views``.
 
+    A failed INDEX.json write does not stop the rest: by now the TRUTH is on disk,
+    so the command's change has happened, and views and project links can still
+    catch up. One line on stderr says so and ``"index"`` comes back ``0``. The next
+    full rebuild repairs INDEX.
+
     Returns ``{"index": 1, "views": <n_symlinks>, "project_refs": <n_projects>,
     "hub_replaced_copies": <n>, "hub_moved_aside": [<path>, ...],
     "config_unreadable": <bool>, "link_errors": [<OSError>, ...]}`` — the two
@@ -124,7 +133,12 @@ def reconcile_derived(
 
         papers = list_papers(vault)
 
-    views.write_index(vault, papers)
+    index_written = 1
+    try:
+        views.write_index(vault, papers)
+    except OSError as err:
+        index_written = 0
+        _warn_index_not_updated(err)
     view_errors: list[tuple[str, OSError]] = []
     if views_delta is None:
         view_counts = views.rebuild_views(vault, papers, view_errors=view_errors)
@@ -196,7 +210,7 @@ def reconcile_derived(
                 n_projects = len(projects)
 
     return {
-        "index": 1,
+        "index": index_written,
         "views": sum(view_counts.values()),
         "project_refs": n_projects,
         "hub_replaced_copies": hub_replaced,
@@ -205,6 +219,15 @@ def reconcile_derived(
         "link_errors": link_errors,
         "view_errors": view_errors,
     }
+
+
+def _warn_index_not_updated(err: OSError) -> None:
+    """One verdict plus one way out, with the OS's reason cut to fit."""
+    _console.print(
+        f"[yellow]warning:[/] could not update INDEX.json ({escape(_os_error_reason(err))}). "
+        "Your change is saved. Run `lit refresh-views` to update it.",
+        soft_wrap=True,
+    )
 
 
 def moved_aside_from(derived: dict[str, Any]) -> list[str]:

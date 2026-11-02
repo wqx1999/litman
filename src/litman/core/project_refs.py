@@ -28,6 +28,7 @@ from typing import Any
 
 from ruamel.yaml.error import YAMLError
 
+from litman.core.config import stored_project_dir
 from litman.core.dates import now_iso
 from litman.core.document import list_papers, read_metadata
 from litman.core.portable_link import _os_error_reason
@@ -339,14 +340,14 @@ def rebuild_all_project_refs(
         papers = list_papers(vault)
     out: dict[str, dict[str, Any]] = {}
     for project, project_dir_str in sorted(project_registry.items()):
-        project_dir = Path(project_dir_str).expanduser()
+        project_dir = stored_project_dir(project_dir_str)
         n_papers = len(_papers_for_project(papers, project))
-        if not project_dir.is_dir():
+        if project_dir is None or not project_dir.is_dir():
             out[project] = {
                 "status": "skipped",
                 "path": None,
                 "n_papers": n_papers,
-                "detail": f"project dir not found: {project_dir}",
+                "detail": f"project dir not found: {project_dir or project_dir_str}",
             }
             continue
         try:

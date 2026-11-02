@@ -58,6 +58,7 @@ from litman.core.locking import (
     lock_truth_file,
     unlock_truth_file,
 )
+from litman.core.shell import shell_arg
 from litman.core.textclean import clean_metadata_text
 from litman.core.undecodable import has_undecodable, printable
 from litman.core.views import (
@@ -429,7 +430,7 @@ def shell_path(path: Path | str) -> str:
     text = str(path)
     if has_undecodable(text):
         return "$'" + "".join(_ansi_c(c) for c in text) + "'"
-    return f'"{text}"' if any(c.isspace() for c in text) else text
+    return shell_arg(text)
 
 
 def _ansi_c(char: str) -> str:
@@ -732,7 +733,7 @@ def resolve_si_records(
         if match is None:
             raise SupplementaryError(
                 f"{paper_id} has no SI file {raw!r}. "
-                f"`lit show {paper_id}` lists its SI files."
+                f"`lit show {shell_arg(paper_id)}` lists its SI files."
             )
         if match not in chosen:
             chosen.append(match)
@@ -1124,7 +1125,7 @@ def recorded_si_file(
     if record is None:
         raise SupplementaryError(
             f"{paper_id} has no SI file {name!r}. "
-            f"`lit show {paper_id}` lists its SI files."
+            f"`lit show {shell_arg(paper_id)}` lists its SI files."
         )
     _refuse_bad_folder(vault, paper_id)
     path = vault / "papers" / paper_id / SI_DIRNAME / name

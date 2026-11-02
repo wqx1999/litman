@@ -250,7 +250,7 @@ def most_recent_paper_id(vault: Path) -> str:
     if not papers:
         raise PaperNotFoundError(
             "No paper given, and this vault has no papers yet. "
-            "Run `lit add <pdf> --doi <doi>` to add one."
+            'Run `lit add "<pdf>" --doi "<doi>"` to add one.'
         )
 
     ranked = sorted(papers, key=lambda p: recency_key(vault, p), reverse=True)

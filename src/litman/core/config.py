@@ -21,6 +21,7 @@ Design constraints honored here (see design doc §4.2):
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
@@ -185,6 +186,30 @@ class LitConfig(BaseModel):
             "`lit sync push/pull/status` operate against it."
         ),
     )
+
+
+def stored_project_dir(stored: str) -> Path | None:
+    """The folder a ``projects:`` value names, or ``None`` when it names none.
+
+    Every reader of that map decides here. A value that is not a full path (an earlier
+    drift prompt could write one, and so can a hand edit) would name a
+    different folder in each working directory, so it counts as missing: a command
+    must not report on, or write into, whatever happens to carry that name in the
+    current directory. No stat happens here, so this cannot hang on a dead mount;
+    the probe of the result stays the caller's (ADR-014).
+    """
+    try:
+        path = Path(stored).expanduser()
+    except RuntimeError:
+        # A ``~user`` this machine has no home folder for.
+        return None
+    return path if path.is_absolute() else None
+
+
+def project_probe_paths(projects: Mapping[str, str]) -> list[str]:
+    """The ``projects:`` values worth a stat, as the keys a bounded probe returns."""
+    dirs = (stored_project_dir(stored) for stored in projects.values())
+    return [str(project_dir) for project_dir in dirs if project_dir is not None]
 
 
 def load_config(vault: Path) -> LitConfig:

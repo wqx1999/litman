@@ -256,6 +256,39 @@ def test_link_links_unsupported_not_reported_as_missing_repo(
     assert result["code_links_skipped_links_unsupported"] == ["PresentRepo"]
 
 
+def test_link_says_access_denied_rather_than_blaming_the_drive(
+    vault: Path, project_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from rich.console import Console
+
+    from litman.commands import link as link_cmd
+    from litman.core import portable_link
+
+    def denied(*_a: object, **_k: object) -> None:
+        raise PermissionError(13, "Access is denied")
+
+    # The panel's borders land inside a wrapped line.
+    monkeypatch.setattr(link_cmd, "console", Console(width=300))
+
+    _make_fake_repo(vault, "PresentRepo")
+    _make_paper(vault, "p1", code_clones=["PresentRepo"])
+    _write_config_with_project(vault, "pepforge", project_dir)
+    monkeypatch.setattr(Path, "symlink_to", denied)
+    monkeypatch.setattr(portable_link, "_create_junction", denied)
+    portable_link.reset_link_probe_cache()
+
+    result = CliRunner().invoke(
+        cli, ["link", "p1", "--project", "pepforge", "--library", str(vault)]
+    )
+    portable_link.reset_link_probe_cache()
+
+    assert result.exit_code == 0, result.output
+    said = " ".join(result.output.split())
+    assert "Code links skipped (access denied): PresentRepo" in said
+    assert "lit refresh-views" in said
+    assert "cannot hold" not in said
+
+
 # ---------------------------------------------------------------------------
 # link_paper_to_project — error paths
 # ---------------------------------------------------------------------------

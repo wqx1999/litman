@@ -9,6 +9,63 @@ before, and everything else is a patch — however large it was to build.
 Anything that takes something out of your library is marked **Breaking** in its
 own entry. Read those before you upgrade, whatever the number says.
 
+## Unreleased
+
+### Added
+
+- **Claude Code and Codex can start as the CLI or the desktop app.** Install either
+  one, or both. With both, pick one under **Launch with** in the agent panel and the
+  button remembers it; until you pick, Claude Code uses the CLI and Codex uses the
+  app. `lit agent` still runs the CLI in your terminal, and opens the app only when
+  the CLI is not there. Claude Code's app asks you to confirm the folder each time
+  litman opens it; Codex's asks the first time it opens a folder. Codex's desktop
+  app can be used on Windows only; on macOS and Linux, Codex stays CLI only.
+
+### Changed
+
+- **The agent button opens Codex's desktop app if you have both.** On Windows, with
+  the Codex CLI and desktop app both installed and no choice made, the button used to
+  open a terminal and now opens the app. To go back, pick `CLI` under **Launch with**
+  in the agent panel. `lit agent codex` still runs the CLI.
+- **The agent panel is redesigned.** Agents are listed on the left with a status
+  dot, and the one you select shows its details on the right. The panel stays the
+  same size however many agents there are, so its title and **Done** no longer run
+  off the window.
+
+### Fixed
+
+- **Claude Code started from litman saves its conversations.** Started by
+  `lit agent` or the web UI's button from inside a Claude Code session, the new
+  session said `Transcript saving is off` and kept no transcript. It now saves as
+  usual.
+- **A mistyped project path is no longer saved.** When `lit` asks where a missing
+  project folder has moved, the answer must now be the full path of an existing
+  folder. Anything else is refused and the same question comes back at once, here
+  and for a moved vault, so a typo no longer waits for your next command. Press
+  Enter to leave it for later, or Ctrl+C to end the command, which used to carry on.
+  A project path already saved that is not a full path now counts as missing,
+  whichever folder you run `lit` from.
+- **Agents quote what they pass to `lit`.** The skills now write paper ids, DOIs,
+  file paths, page ranges and `FIELD=VALUE` in single quotes. Without them, an id
+  starting with a digit could send the whole command into the agent's sandbox. The
+  commands `lit` prints for you to copy put quotes around such values too.
+- **A brief "access denied" while writing on Windows no longer stops the command.**
+  When another program had a library file open for a moment, `lit` crashed with a
+  traceback after your change was saved, and could leave links missing. It now waits
+  and tries again. If `INDEX.json` still cannot be written, the rest of the command
+  finishes, your change stays saved, and `lit` tells you to run `lit refresh-views`.
+  If a file stays locked for longer, `lit` says which one in a single line instead of
+  a traceback.
+- **Deleting a paper while its PDF is open no longer guts its folder.** On Windows,
+  `lit rm` copied the paper into the trash and then deleted the original up to the
+  file that was open, leaving the folder missing files. The folder now stays whole,
+  nothing lands in the trash, and you can run the command again after closing the file.
+- **A folder link refused with access denied is no longer blamed on the drive.**
+  Inside an agent's sandbox, for example, `lit` said the filesystem could not hold
+  folder links and to move the library. It now says access was denied and to run
+  `lit refresh-views` to retry, `lit health-check` reports it as `links_denied`, and
+  on Windows the failed attempt no longer leaves an empty folder behind.
+
 ## 1.3.10 — 2026-10-30
 
 ### Added

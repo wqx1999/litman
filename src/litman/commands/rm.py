@@ -76,7 +76,7 @@ import click
 from rich.console import Console
 from rich.markup import escape
 
-from litman.commands._hub_report import project_folder_not_updated
+from litman.commands._hub_report import project_folder_not_updated, refreshed_line
 from litman.commands._options import library_option, vault_option
 from litman.core.atomic import staged_write
 from litman.core.code import (
@@ -86,7 +86,7 @@ from litman.core.code import (
     can_fetch_again,
     repo_changes,
 )
-from litman.core.config import load_config
+from litman.core.config import load_config, stored_project_dir
 from litman.core.confirm import _confirm_destructive
 from litman.core.correctors import reconcile_derived
 from litman.core.dates import now_iso
@@ -99,7 +99,11 @@ from litman.core.notes import (
     enumerate_markdown_files,
 )
 from litman.core.paper_lookup import complete_paper_id, resolve_paper_input
-from litman.core.portable_link import is_portable_link, remove_link_if_present
+from litman.core.portable_link import (
+    _os_error_reason,
+    is_portable_link,
+    remove_link_if_present,
+)
 from litman.core.project_link import (
     CODE_SUBDIR,
     _papers_using_repo_in_project,
@@ -110,6 +114,7 @@ from litman.core.project_refs import (
     write_references_md,
 )
 from litman.core.relations import ALL_REF_FIELDS, RELATION_PAIRS
+from litman.core.shell import shell_arg
 from litman.core.trash import TRASH_MAX_ENTRIES, enforce_cap, move_to_trash
 from litman.core.views import (
     papers_for_index,
@@ -373,8 +378,8 @@ def _teardown_project_links(
         project_dir_str = registry.get(project)
         if not project_dir_str:
             continue
-        project_dir = Path(project_dir_str).expanduser()
-        if not project_dir.is_dir():
+        project_dir = stored_project_dir(project_dir_str)
+        if project_dir is None or not project_dir.is_dir():
             continue
 
         paper_link = project_dir / LITERATURE_SUBDIR / target_id
@@ -489,8 +494,27 @@ class RmResult:
     # A project folder the teardown could not change: the CLI ends with the
     # one line every write command uses for it.
     link_errors: list[OSError]
-    # A views/ folder the rebuild could not change (it said which itself).
+    # INDEX.json or a views/ folder the rebuild could not change (it said so
+    # itself): what the closing line may not claim.
+    index_left: bool
     views_left: bool
+    # The OS's reason the paper's folder did not go, or None when it went. The
+    # library's records already moved on (the staged write committed first).
+    folder_left: str | None
+
+
+def folder_left_message(result: RmResult, *, retry: str) -> str:
+    """The one line for a folder that is still there, ending on ``retry``."""
+    assert result.folder_left is not None
+    if result.purged:
+        return (
+            f"Part of {result.paper_id} may remain in papers/ ({result.folder_left}). "
+            "Close any program using it and delete what is left."
+        )
+    return (
+        f"{result.paper_id} stayed in papers/, not the trash ({result.folder_left}). "
+        f"Close any program using it and {retry}."
+    )
 
 
 def _si_name(record: dict[str, Any]) -> str:
@@ -561,7 +585,7 @@ def _rm_si(
         f"[bold yellow]About to delete from[/] {escape(paper_id)}:",
         *listing,
         "This can't be undone — to get a file back, add it again:",
-        f"  [bold]lit add --si {escape(paper_id)}[/]",
+        f"  [bold]lit add --si {escape(shell_arg(paper_id))}[/]",
     ]
     if not _confirm_destructive(warning_lines, yes=skip_confirm):
         console.print("[dim]Aborted. No changes made.[/]")
@@ -592,7 +616,7 @@ def _rm_si(
         console.print(line, soft_wrap=True)
     it = "it" if len(result.records) == 1 else "them"
     console.print(
-        f"To add {it} again: [bold]lit add --si {escape(paper_id)}[/]",
+        f"To add {it} again: [bold]lit add --si {escape(shell_arg(paper_id))}[/]",
         soft_wrap=True,
     )
     for message in result.warnings:
@@ -727,7 +751,9 @@ def execute_rm(plan: RmPlan, *, purge: bool = False) -> RmResult:
     paper folder to ``.trash/`` (or hard-deletes it when ``purge``), hard-deletes
     orphan repos, tears down project symlinks, and rebuilds derived artifacts.
     Returns the counts the caller reports. Post-commit filesystem failures are
-    collected into ``RmResult.warnings`` rather than printed. NO console output,
+    collected into ``RmResult.warnings`` rather than printed, and a folder that
+    did not go into ``RmResult.folder_left``, which the caller must not report
+    as a success. NO console output,
     NO confirmation — the caller gates the destruction (the CLI prompt or the
     GUI dialog), mirroring how ``delete_project`` treats the dialog as the
     confirmation (invariant #16).
@@ -749,7 +775,7 @@ def execute_rm(plan: RmPlan, *, purge: bool = False) -> RmResult:
     # ----- Phase 2: paper-folder removal (purge or trash) -----
     # If this fails partway, INDEX has already been updated; health-check
     # will flag the orphan dir.
-    moved_ok = True
+    folder_left: str | None = None
     try:
         if purge:
             rmtree(plan.paper_dir)
@@ -761,16 +787,12 @@ def execute_rm(plan: RmPlan, *, purge: bool = False) -> RmResult:
                 orphan_repo_files=plan.orphan_repo_files,
             )
     except OSError as e:
-        moved_ok = False
         # The staged metadata + INDEX write already committed: the library now
         # considers the paper gone. A filesystem failure here leaves the folder
         # on disk as an orphan — no data loss, brief inconsistency. Record it
-        # (invariant #1: never silent) instead of crashing.
-        warnings.append(
-            f"could not remove {plan.paper_dir}: {e}. "
-            "Metadata + INDEX are already updated; run "
-            "`lit health-check --fix` to clear the orphan folder."
-        )
+        # (invariant #1: never silent) instead of crashing; running the delete
+        # again finds the folder and finishes.
+        folder_left = _os_error_reason(e)
 
     # ----- Phase 3a: orphan-repo hard-delete (1:1 case) -----
     # Gated on Phase 2 succeeding: when a move-to-trash failed, the paper's
@@ -780,7 +802,7 @@ def execute_rm(plan: RmPlan, *, purge: bool = False) -> RmResult:
     # next `lit rm` retry cleanly: repo-meta is still on disk, so discover
     # re-captures the URL into a fresh sidecar. (On a clean move / purge,
     # moved_ok is True and the 1:1 orphans are removed as before.)
-    if moved_ok:
+    if folder_left is None:
         for repo_name in plan.orphan_repos:
             repo_root = vault / CODES_DIRNAME / repo_name
             if repo_root.is_dir():
@@ -828,7 +850,7 @@ def execute_rm(plan: RmPlan, *, purge: bool = False) -> RmResult:
 
     # ----- Ring eviction (trash only): keep at most TRASH_MAX_ENTRIES -----
     evicted: list[str] = []
-    if not purge:
+    if not purge and folder_left is None:
         evicted = enforce_cap(vault)
 
     return RmResult(
@@ -845,7 +867,9 @@ def execute_rm(plan: RmPlan, *, purge: bool = False) -> RmResult:
         evicted=evicted,
         warnings=warnings,
         link_errors=link_errors,
+        index_left=derived["index"] == 0,
         views_left=bool(derived["view_errors"]),
+        folder_left=folder_left,
     )
 
 
@@ -895,7 +919,7 @@ def execute_rm(plan: RmPlan, *, purge: bool = False) -> RmResult:
     metavar="NAME",
     help=(
         "Delete one of the paper's SI files (si-02, or si-02.xlsx) instead of "
-        "the paper. Repeatable. There is no trash for SI: lit add --si <paper> "
+        'the paper. Repeatable. There is no trash for SI: lit add --si "<paper>" '
         "adds a file again. Not with --purge."
     ),
 )
@@ -917,7 +941,7 @@ def rm_cmd(
     or omit it and pass --paper-doi <DOI> instead.
 
     By default moves papers/<id>/ to <vault>/.trash/ (recoverable via
-    lit trash restore <id>). Pass --purge to permanently delete. INDEX.json
+    lit trash restore "<id>"). Pass --purge to permanently delete. INDEX.json
     and views/by-*/ are refreshed either way.
 
     All external links to the paper (other papers' relation fields, repo
@@ -971,7 +995,7 @@ def rm_cmd(
                 f"{escape(str(vault))}."
             )
             warning_lines.append(
-                f"  [dim](run 'lit show {escape(paper_id)}' to inspect them)[/]"
+                f"  [dim](run `lit show {escape(shell_arg(paper_id))}` to inspect them)[/]"
             )
         warning_lines.append(f"[bold yellow]About to {action}:[/]")
         warning_lines.append(f"  id     : {escape(paper_id)}")
@@ -1055,14 +1079,16 @@ def rm_cmd(
     # ----- Output -----
     for warning in result.warnings:
         console.print(f"[yellow]warning:[/] {escape(warning)}")
-    if result.purged:
+    if result.folder_left is not None:
+        pass  # Said last, as the error this command exits with.
+    elif result.purged:
         console.print(
             f"[bold green]✓ Purged[/] {escape(paper_id)} [dim](permanent)[/]"
         )
     else:
         console.print(
             f"[bold green]✓ Trashed[/] {escape(paper_id)} "
-            f"[dim](recover via `lit trash restore {escape(paper_id)}`)[/]"
+            f"[dim](recover via `lit trash restore {escape(shell_arg(paper_id))}`)[/]"
         )
         # Ring eviction: surface what we permanently dropped (never silent).
         if result.evicted:
@@ -1125,10 +1151,14 @@ def rm_cmd(
             f"  Tagged [bold]{n}[/] referencing note{'s' if n != 1 else ''} "
             f"[dim](`[[{escape(paper_id)}]] (deleted)`)[/]"
         )
-    console.print(
-        f"[dim]INDEX.json{'' if result.views_left else ' + views/'} refreshed.[/]"
+    refreshed = refreshed_line(
+        {"index": 0 if result.index_left else 1, "view_errors": result.views_left}
     )
+    if refreshed:
+        console.print(refreshed)
     if result.link_errors:
         console.print(
             project_folder_not_updated(result.link_errors[0]), soft_wrap=True
         )
+    if result.folder_left is not None:
+        raise RmError(folder_left_message(result, retry="run `lit rm` again"))

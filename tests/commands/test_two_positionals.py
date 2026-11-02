@@ -30,23 +30,23 @@ def vault(tmp_path: Path) -> Path:
 _MISUSES = [
     (
         ["link", "2024_Foo", "pepforge"],
-        "lit link 2024_Foo --project pepforge",
+        'lit link "2024_Foo" --project pepforge',
     ),
     (
         ["unlink", "2024_Foo", "pepforge"],
-        "lit unlink 2024_Foo --project pepforge",
+        'lit unlink "2024_Foo" --project pepforge',
     ),
     (
         ["code", "add", "https://github.com/x/y", "2024_Foo"],
-        "lit code add https://github.com/x/y --paper 2024_Foo",
+        'lit code add https://github.com/x/y --paper "2024_Foo"',
     ),
     (
         ["code", "link", "myrepo", "2024_Foo"],
-        "lit code link myrepo --paper 2024_Foo",
+        'lit code link myrepo --paper "2024_Foo"',
     ),
     (
         ["code", "unlink", "myrepo", "2024_Foo"],
-        "lit code unlink myrepo --paper 2024_Foo",
+        'lit code unlink myrepo --paper "2024_Foo"',
     ),
 ]
 
@@ -77,7 +77,7 @@ def test_code_add_names_the_source_even_when_the_two_are_swapped(
          "--library", str(vault)],
     )
     assert result.exit_code != 0
-    assert "lit code add https://github.com/x/y --paper 2024_Foo" in result.output
+    assert 'lit code add https://github.com/x/y --paper "2024_Foo"' in result.output
 
 
 def test_code_add_keeps_the_given_order_when_neither_looks_like_a_source(

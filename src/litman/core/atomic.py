@@ -66,6 +66,7 @@ from litman.core.locking import (
     lock_truth_file,
     unlock_truth_file,
 )
+from litman.core.replace import rename_path, replace_file
 
 _STAGING_DIRNAME = ".litman-staging"
 _MANIFEST_FILENAME = "MANIFEST.json"
@@ -75,6 +76,9 @@ _SENTINEL_FILENAME = "COMMITTED"
 # DIRS_UNCLEAR: the folders were found in a state the op cannot settle; it
 # holds the line reported then, and no later pass moves any folder for it.
 _DIRS_DONE_FILENAME = "DIRS_DONE"
+# Ops with more than derived data left after their commit: `lit rm` moves the
+# folder to the trash and `lit code rm` deletes the clone. Both can be rerun.
+_REAL_WORK_AFTER_COMMIT = ("rm-", "code-unbind-")
 _DIRS_UNCLEAR_FILENAME = "DIRS_UNCLEAR"
 
 # Stderr console so recovery / degrade notices don't contaminate stdout
@@ -188,7 +192,7 @@ def _rename_dir(src: Path, dst: Path) -> None:
     The one place a staged write moves a folder, forward or back, so a test
     can make the move fail without patching ``os`` for the whole process.
     """
-    os.rename(src, dst)
+    rename_path(src, dst)
 
 
 class DirMoveError(OSError):
@@ -568,7 +572,7 @@ def _drop_dir_moves(op_dir: Path) -> None:
     tmp = op_dir / (_MANIFEST_FILENAME + ".tmp")
     tmp.write_text(json.dumps(record, ensure_ascii=False), encoding="utf-8")
     _fsync_file(tmp)
-    os.replace(tmp, manifest_path)
+    replace_file(tmp, manifest_path)
     _fsync_dir(op_dir)
 
 
@@ -707,6 +711,11 @@ class StagedWrite:
         # actually done this commit (so _cleanup can undo exactly those).
         self._moves: list[tuple[str, str]] = []
         self._moved: list[tuple[str, str]] = []
+
+    @property
+    def committed(self) -> bool:
+        """Past the decision point: this write lands, now or in the next recovery."""
+        return self._committed
 
     def __enter__(self) -> StagedWrite:
         # exist_ok=False: a collision means another op already grabbed this
@@ -968,7 +977,7 @@ class StagedWrite:
             lockable = is_truth_lockable(self.vault, target_path)
             if lockable:
                 unlock_truth_file(target_path)
-            os.replace(staging_path, target_path)
+            replace_file(staging_path, target_path)
             _fsync_dir(target_path.parent)
             if lockable:
                 lock_truth_file(target_path)
@@ -1005,6 +1014,15 @@ class StagedWrite:
                 return
         if self.staging_root.exists():
             _tear_down(self.staging_root, moved_folders=bool(self._moves))
+
+
+def op_is_decided(vault: Path, op_id: str) -> bool:
+    """Is ``op_id`` past its decision point and waiting for the next recovery?
+
+    For a caller with no :class:`StagedWrite` in hand whose rollback would pull
+    something out from under a write that is going to land anyway.
+    """
+    return (vault.resolve() / _STAGING_DIRNAME / op_id / _SENTINEL_FILENAME).is_file()
 
 
 def staged_write(vault: Path, op_id: str | None = None) -> StagedWrite:
@@ -1122,7 +1140,7 @@ def _recover_one_op(op_dir: Path, vault: Path) -> RecoveryResult | None:
                 if lockable:
                     # See _promote: Windows os.replace refuses a read-only dest.
                     unlock_truth_file(target_path)
-                os.replace(staging_path, target_path)
+                replace_file(staging_path, target_path)
                 _fsync_dir(target_path.parent)
                 if lockable:
                     lock_truth_file(target_path)
@@ -1170,10 +1188,21 @@ def _recover_one_op(op_dir: Path, vault: Path) -> RecoveryResult | None:
         op_id=op_id,
         kind="rolled_forward",
         n_files=promoted,
-        message=(
-            f"auto-completed torn commit {op_id} "
-            f"({promoted} file(s) rolled forward)"
-        ),
+        message=_rolled_forward_message(op_id),
+    )
+
+
+def _rolled_forward_message(op_id: str) -> str:
+    """What the user does next, now the last command's staged write has landed.
+
+    The steps after a commit never ran. For most commands those only derive
+    views and links, and a rerun would refuse: the old name is gone already.
+    """
+    if op_id.startswith(_REAL_WORK_AFTER_COMMIT):
+        return f"the last command ({op_id}) was saved but did not finish. Run it again."
+    return (
+        "the last command's change is saved, no need to run it again. "
+        "Run `lit refresh-views` to update the links."
     )
 
 
@@ -1292,7 +1321,7 @@ def ensure_vault_recovered(vault: Path) -> list[RecoveryResult]:
             if result.kind == "unrecoverable":
                 _console.print(f"[red]error:[/] {result.message}")
             else:
-                _console.print(f"[yellow]recovered:[/] {result.message}")
+                _console.print(f"[yellow]recovered:[/] {result.message}", soft_wrap=True)
     return results
 
 

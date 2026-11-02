@@ -26,18 +26,16 @@ the convenience links may be skipped (ADR-005).
 
 from __future__ import annotations
 
-import errno
 import filecmp
 import io
 import os
-import shutil
 import uuid
 from collections.abc import Callable, Iterable
 from pathlib import Path
 from typing import Any, Literal, NamedTuple
 
 from litman.core.atomic import staged_write
-from litman.core.config import config_to_yaml_dict, load_config
+from litman.core.config import config_to_yaml_dict, load_config, stored_project_dir
 from litman.core.dates import now_iso
 from litman.core.document import list_papers, read_metadata_or_raise
 from litman.core.locking import rmtree
@@ -46,6 +44,7 @@ from litman.core.portable_link import (
     entry_refusal,
     is_portable_link,
     link_points_at,
+    links_denied,
     links_supported,
     make_portable_link,
     remove_link_if_present,
@@ -57,7 +56,9 @@ from litman.core.project_refs import (
     load_project_member_metas,
     write_references_md,
 )
+from litman.core.replace import move_dir
 from litman.core.schema import PROJECT_PRIORITY_PREFIX, PROJECT_PRIORITY_VALUES
+from litman.core.shell import shell_arg
 from litman.core.taxonomy import (
     find_referencing_papers,
     parse_taxonomy,
@@ -122,10 +123,10 @@ def _resolve_project_dir(
             f"  projects:\n    {project}: /path/to/{project}\n"
             f"Registered: {sorted(registry) or '(none)'}"
         )
-    project_dir = Path(registry[project]).expanduser()
-    if not project_dir.is_dir():
+    project_dir = stored_project_dir(registry[project])
+    if project_dir is None or not project_dir.is_dir():
         raise LinkError(
-            f"Project {project!r} resolves to {project_dir}, "
+            f"Project {project!r} resolves to {project_dir or registry[project]}, "
             "but that directory does not exist on this machine. "
             "Either create / sync the project, or fix the path in "
             "lit-config.yaml's `projects:` map."
@@ -296,24 +297,12 @@ def _move_aside(src: Path, dest_parent: Path, name: str) -> Path:
     # retry once — a four-hex suffix can collide too.
     while os.path.lexists(dest):
         dest = dest_parent / f"{name}-{uuid.uuid4().hex[:4]}"
-    try:
-        src.rename(dest)
-    except OSError as err:
-        # ONLY a cross-device move earns the copy fallback (Windows maps
-        # ERROR_NOT_SAME_DEVICE to EXDEV too). Any other refusal — a locked
-        # child, a read-only parent — must stay a failure: copying first would
-        # leave a full copy in .trash/ AND the folder still in the hub, and the
-        # next run, which our own message asks for, would copy it again under a
-        # new timestamp. For a code hub that is a whole checkout each time.
-        if err.errno != errno.EXDEV:
-            raise
-        # NOT shutil.move for the copy: its own cross-device path finishes
-        # with a bare shutil.rmtree, which trips over the read-only
-        # metadata.yaml the copy inherited from the vault (ADR-005) — and
-        # "project on a different drive from the vault" is precisely the
-        # situation this whole code path exists for.
-        shutil.copytree(src, dest, symlinks=True)
-        rmtree(src)
+    # A locked child must stay a failure: copying first would leave a full copy
+    # in .trash/ AND the folder still in the hub, and the next run, which our
+    # own message asks for, would copy it again under a new timestamp. For a
+    # code hub that is a whole checkout each time. "Project on a different drive
+    # from the vault" is precisely the situation this whole code path exists for.
+    move_dir(src, dest)
     return dest
 
 
@@ -558,8 +547,8 @@ def find_dangling_bridges(
     """
     links: dict[str, list[Path]] = {}
     for name in sorted(projects):
-        project_dir = Path(projects[name]).expanduser()
-        if dir_status.get(str(project_dir)) is not True:
+        project_dir = stored_project_dir(projects[name])
+        if project_dir is None or dir_status.get(str(project_dir)) is not True:
             continue
         if not project_dir.is_dir():
             continue
@@ -656,8 +645,8 @@ def refresh_project_code_links(
         project_dir_str = registry.get(project)
         if not project_dir_str:
             continue
-        project_dir = Path(project_dir_str).expanduser()
-        if not project_dir.is_dir():
+        project_dir = stored_project_dir(project_dir_str)
+        if project_dir is None or not project_dir.is_dir():
             continue
         try:
             out[project] = reconcile_project_code_links(
@@ -840,6 +829,7 @@ def link_paper_to_project(
     code_links_created: list[str] = []
     code_links_missing_repo: list[str] = []
     code_links_unsupported: list[str] = []
+    code_links_denied: list[str] = []
     for repo_name, link_path in zip(code_clones, code_link_paths, strict=True):
         repo_target = (vault / "codes" / repo_name / "repo").resolve()
         if not repo_target.exists():
@@ -876,6 +866,9 @@ def link_paper_to_project(
             continue
         if created:
             code_links_created.append(repo_name)
+        elif links_denied(project_dir):
+            # The drive can hold links: "this drive cannot" would be false.
+            code_links_denied.append(repo_name)
         else:
             # review F31: the repo IS present; the filesystem refused the link
             # (FAT32/exFAT, network shares). This is NOT a missing repo —
@@ -902,6 +895,7 @@ def link_paper_to_project(
         "code_links": code_links_created,
         "code_links_skipped_missing_repo": code_links_missing_repo,
         "code_links_skipped_links_unsupported": code_links_unsupported,
+        "code_links_skipped_denied": code_links_denied,
         "hub_moved_aside": hub_moved_aside,
         "references_md": refs_path,
         "link_errors": link_errors,
@@ -1106,7 +1100,7 @@ def add_project(vault: Path, name: str, path: Path) -> dict[str, Any]:
     if not path.is_absolute():
         raise TaxonomyError(
             f"Path {str(path)!r} is not absolute. "
-            "Give the full path to the folder, starting from '/'."
+            "Give the full path to the folder."
         )
     path = path.resolve()
     message = refusal(path)
@@ -1131,8 +1125,8 @@ def add_project(vault: Path, name: str, path: Path) -> dict[str, Any]:
             f"Project {name!r} is already registered"
             + (f" → {existing_path}" if existing_path else "")
             + ". Use `lit project set-path "
-            f"{name} <new-path>` to change its path, or "
-            f"`lit project rename {name} <new-name>` to rename it."
+            f'{shell_arg(name)} "<new-path>"` to change its path, or '
+            f'`lit project rename {shell_arg(name)} "<new-name>"` to rename it.'
         )
 
     new_taxonomy_text = update_user_dict_section(
@@ -1212,9 +1206,7 @@ def remove_project(
     referencing = find_referencing_papers(papers, _PROJECTS_DICT, name)
 
     project_dir_str = config.projects.get(name)
-    project_dir = (
-        Path(project_dir_str).expanduser() if project_dir_str else None
-    )
+    project_dir = stored_project_dir(project_dir_str) if project_dir_str else None
 
     # Build the post-removal truth sources.
     new_taxonomy_values = [
@@ -1396,6 +1388,35 @@ def rename_project(
     return n_changed, referencing, moved_aside_from(derived)
 
 
+def checked_project_path(new_path: Path) -> Path:
+    """The ``resolve()``-normalized form of a path a project may be re-pointed at.
+
+    The rules every re-point goes through (invariant #16): ``new_path`` must be
+    absolute (the server cwd is opaque, so a relative path is rejected rather than
+    resolved — mirrors ``add_project``), already exist, and be a directory.
+
+    Raises:
+        TaxonomyError: ``new_path`` is not absolute / missing / not a directory.
+    """
+    if not new_path.is_absolute():
+        raise TaxonomyError(
+            f"Path {str(new_path)!r} is not absolute. "
+            "Give the full path to the folder."
+        )
+    new_path = new_path.resolve()
+    # First: the messages below show the path, and the config cannot hold it.
+    message = refusal(new_path)
+    if message is not None:
+        raise TaxonomyError(message)
+    if not new_path.exists():
+        raise TaxonomyError(
+            f"Path {str(new_path)!r} does not exist. Create it first."
+        )
+    if not new_path.is_dir():
+        raise TaxonomyError(f"Path {str(new_path)!r} is not a directory.")
+    return new_path
+
+
 def set_project_path(vault: Path, name: str, new_path: Path) -> dict[str, Any]:
     """Change a project's on-disk path (config-only — papers store names).
 
@@ -1408,9 +1429,7 @@ def set_project_path(vault: Path, name: str, new_path: Path) -> dict[str, Any]:
     ``lit link --rebuild-all`` / the GUI's rebuild-views action), matching the CLI
     exactly so both paths behave identically.
 
-    ``new_path`` must be absolute (the server cwd is opaque, so a relative path is
-    rejected rather than resolved — mirrors ``add_project``), already exist, and
-    be a directory; it is then ``resolve()``-normalized.
+    ``new_path`` has to pass :func:`checked_project_path`.
 
     Returns:
         ``{"name": ..., "path": str(new_path), "changed": bool}`` — ``changed``
@@ -1427,27 +1446,9 @@ def set_project_path(vault: Path, name: str, new_path: Path) -> dict[str, Any]:
         raise TaxonomyError(
             f"Project {name!r} is not registered in lit-config.yaml. "
             "Run `lit project list` to inspect, or "
-            f"`lit project add {name} --path <abs-path>` to register it."
+            f'`lit project add {shell_arg(name)} --path "<abs-path>"` to register it.'
         )
-    if not new_path.is_absolute():
-        raise TaxonomyError(
-            f"Path {str(new_path)!r} is not absolute. "
-            "Give the full path to the folder, starting from '/'."
-        )
-    new_path = new_path.resolve()
-    # First: the messages below show the path, and the config cannot hold it.
-    message = refusal(new_path)
-    if message is not None:
-        raise TaxonomyError(message)
-    if not new_path.exists():
-        raise TaxonomyError(
-            f"Path {str(new_path)!r} does not exist. "
-            f"Create it first (e.g. `mkdir -p {new_path}`)."
-        )
-    if not new_path.is_dir():
-        raise TaxonomyError(f"Path {str(new_path)!r} is not a directory.")
-
-    new_path_str = str(new_path)
+    new_path_str = str(checked_project_path(new_path))
     if config.projects[name] == new_path_str:
         return {"name": name, "path": new_path_str, "changed": False}
 
@@ -1494,12 +1495,12 @@ def rebuild_all_project_links(
     out: dict[str, dict[str, Any]] = {}
 
     for project, project_dir_str in sorted(registry.items()):
-        project_dir = Path(project_dir_str).expanduser()
+        project_dir = stored_project_dir(project_dir_str)
         tagged_papers = [
             p for p in papers if project in (p.get("projects") or [])
         ]
         n_tagged = len(tagged_papers)
-        if not project_dir.is_dir():
+        if project_dir is None or not project_dir.is_dir():
             out[project] = {
                 "status": "skipped",
                 "n_tagged": n_tagged,
@@ -1508,7 +1509,7 @@ def rebuild_all_project_links(
                 "n_replaced_copies": 0,
                 "n_moved_aside": 0,
                 "aside_paths": [],
-                "detail": f"project dir not found: {project_dir}",
+                "detail": f"project dir not found: {project_dir or project_dir_str}",
             }
             continue
 

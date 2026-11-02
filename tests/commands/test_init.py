@@ -436,7 +436,7 @@ def test_init_no_register_quotes_a_spaced_path_for_a_posix_shell(
     assert result.exit_code == 0, result.output
 
     vault = (parent / "literature_vault").resolve()
-    for marker in ("export LIT_LIBRARY=", "--library ", "lit vault add <name> "):
+    for marker in ("export LIT_LIBRARY=", "--library ", 'lit vault add "<name>" '):
         assert shlex.split(_hint_line(result.output, marker)) == [str(vault)]
     assert "$env:" not in result.output
 
@@ -454,7 +454,7 @@ def test_init_no_register_speaks_powershell_on_windows(
     assert result.exit_code == 0, result.output
 
     vault = (parent / "literature_vault").resolve()
-    for marker in ("$env:LIT_LIBRARY = ", "--library ", "lit vault add <name> "):
+    for marker in ("$env:LIT_LIBRARY = ", "--library ", 'lit vault add "<name>" '):
         assert _hint_line(result.output, marker) == f'"{vault}"'
     assert "export LIT_LIBRARY" not in result.output
 

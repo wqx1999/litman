@@ -57,7 +57,7 @@ NO_PAGE = "No litman GUI page is open for this library"
 STILL_WAITING = "Still waiting in the GUI — run the same command again to keep waiting"
 WAITING = "Waiting for the SI to be added in the litman GUI…"
 A_LINK = "Download the SI from the article page: https://doi.org/10.1021/acs.jcim.9b00237"
-A_FORM = f"Then add the files: lit add --si {A_ID} <file>..."
+A_FORM = f'Then add the files: lit add --si "{A_ID}" "<file>"...'
 
 _REAL_NEW_CLIENT = si_gui._new_client
 
@@ -560,7 +560,7 @@ def test_no_gui_is_12_with_the_link_and_the_file_form(
     assert result.stdout.splitlines() == [
         NO_PAGE,
         where,
-        f"Then add the files: lit add --si {paper_id} <file>...",
+        f'Then add the files: lit add --si "{paper_id}" "<file>"...',
     ]
 
 
@@ -1232,7 +1232,7 @@ def test_an_added_answer_naming_no_file_is_an_error(
     assert isinstance(result.exception, SupplementaryError)
     assert str(result.exception) == (
         "The litman GUI answered that SI was added but named no file. "
-        f"`lit show {A_ID}` lists the paper's SI."
+        f'`lit show "{A_ID}"` lists the paper\'s SI.'
     )
     assert "SI ready" not in result.stdout
 

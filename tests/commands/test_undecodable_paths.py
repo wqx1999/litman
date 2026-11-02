@@ -15,15 +15,23 @@ import subprocess
 import sys
 from pathlib import Path
 
+import click
 import pytest
 from click.testing import CliRunner
 from ruamel.yaml import YAML
 
 import litman
 from litman.cli import cli
+from litman.commands import _drift
 from litman.core.document import list_papers
 from litman.core.library import create_vault
-from litman.core.vault_registry import load_registry, registry_path
+from litman.core.vault_registry import (
+    VaultEntry,
+    VaultRegistry,
+    load_registry,
+    registry_path,
+    save_registry,
+)
 from litman.core.views import write_index
 from litman.exceptions import TaxonomyError, UndecodablePathError, VaultRegistryError
 
@@ -79,6 +87,32 @@ def test_project_set_path_refuses_a_folder_whose_name_is_not_utf8(tmp_path: Path
 
     assert isinstance(result.exception, TaxonomyError), result.output
     assert str(result.exception) == f"Folder name “moved_caf\ufffd” {_REFUSED}"
+    assert (vault / "lit-config.yaml").read_bytes() == config_before
+
+
+def test_project_drift_prompt_refuses_a_folder_whose_name_is_not_utf8(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    parent = tmp_path / "vault_parent"
+    parent.mkdir()
+    vault = create_vault(parent)
+    save_registry(
+        VaultRegistry(vaults=[VaultEntry(name="v", path=str(vault), is_active=True)])
+    )
+    (vault / "lit-config.yaml").write_text(
+        f"library_name: v\nprojects:\n  p: {tmp_path / 'gone'}\n", encoding="utf-8"
+    )
+    config_before = (vault / "lit-config.yaml").read_bytes()
+    folder = _undecodable_dir(tmp_path, "moved_caf")
+    monkeypatch.setattr(_drift, "_default_tty_probe", lambda: True)
+    answers = iter([str(folder), ""])
+    monkeypatch.setattr(click, "prompt", lambda *a, **kw: next(answers))
+
+    _drift.check_and_prompt_project_drift()
+
+    assert f"Folder name “moved_caf\ufffd” {_REFUSED}" in capsys.readouterr().out
     assert (vault / "lit-config.yaml").read_bytes() == config_before
 
 

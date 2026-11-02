@@ -18,7 +18,10 @@ junction syscalls can only run on a Windows host (see the skipif tests there).
 
 from __future__ import annotations
 
+import errno
+import io
 import sys
+import types
 from pathlib import Path
 from typing import Any
 
@@ -27,7 +30,9 @@ import pytest
 from litman.core import checks, portable_link
 from litman.core.library import create_vault
 from litman.core.portable_link import (
+    LINKS_DENIED_HINT,
     link_mechanism,
+    links_denied,
     links_supported,
     links_unsupported_hint,
     reset_link_probe_cache,
@@ -291,3 +296,226 @@ def test_missing_project_dir_is_not_our_finding(
     issues = checks.check_link_support(vault, [])
 
     assert issues == []  # vault can link; the dead project is someone else's job
+
+
+# --------------------------------------------------------------------------
+# Access denied — a fact about this run, not about the drive
+# --------------------------------------------------------------------------
+
+
+def _refuse_links_with(monkeypatch: pytest.MonkeyPatch, code: int) -> None:
+    """Both mechanisms refused with ``code``, as the OS would raise it: on
+    Windows ``WinError 5`` arrives as a ``PermissionError`` with ``EACCES``."""
+
+    def boom(*_a: Any, **_k: Any) -> None:
+        raise OSError(code, "Refused (mocked)")
+
+    monkeypatch.setattr(Path, "symlink_to", boom)
+    monkeypatch.setattr(portable_link, "_create_junction", boom)
+
+
+def _capture_warning(monkeypatch: pytest.MonkeyPatch) -> io.StringIO:
+    from rich.console import Console
+
+    out = io.StringIO()
+    monkeypatch.setattr(portable_link, "_console", Console(file=out, width=400))
+    portable_link.reset_warning_state()
+    return out
+
+
+def test_access_denied_does_not_read_as_a_drive_without_links(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _refuse_links_with(monkeypatch, errno.EACCES)
+
+    assert links_denied(tmp_path) is True
+    assert links_supported(tmp_path) is True
+    assert link_mechanism(tmp_path) == _NATIVE
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_access_denied_is_not_remembered_in_this_process(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The long-lived server or a health check asking again must see it clear."""
+    with monkeypatch.context() as patch:
+        _refuse_links_with(patch, errno.EACCES)
+        assert links_denied(tmp_path) is True
+
+    assert links_denied(tmp_path) is False
+    assert link_mechanism(tmp_path) == _NATIVE
+
+
+@pytest.mark.parametrize("code", [errno.EPERM, errno.EINVAL, errno.ENOTSUP])
+def test_the_filesystems_own_refusals_still_read_as_no_links(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, code: int
+) -> None:
+    """``EPERM`` is how Linux says a FAT drive takes no symlinks; ``WinError 1``
+    is how Windows says one takes no junctions, and arrives as ``EINVAL``."""
+    _refuse_links_with(monkeypatch, code)
+
+    assert links_denied(tmp_path) is False
+    assert link_mechanism(tmp_path) == "none"
+
+
+def test_a_folder_that_takes_no_file_is_not_access_denied_on_links(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """That one is reported by the folder it could not update, as before."""
+    _refuse_links_with(monkeypatch, errno.EACCES)
+    monkeypatch.setattr(
+        portable_link, "entry_refusal", lambda _d: OSError(errno.EACCES, "no")
+    )
+
+    assert links_denied(tmp_path) is False
+    assert link_mechanism(tmp_path) == _NATIVE
+
+
+def test_the_warning_for_access_denied_says_so_and_how_to_retry(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    out = _capture_warning(monkeypatch)
+    _refuse_links_with(monkeypatch, errno.EACCES)
+    target = tmp_path / "target"
+    target.mkdir()
+
+    assert portable_link.make_portable_link(tmp_path / "a", target) is False
+    assert portable_link.make_portable_link(tmp_path / "b", target) is False
+
+    said = out.getvalue().strip()
+    assert said.startswith("warning: could not create folder links (access denied)")
+    assert "lit refresh-views" in said
+    # One verdict plus one way out, with no drive advice to act on.
+    assert len(said.splitlines()) == 1
+    assert len(said) <= 140
+    for wrong in ("cannot hold", "FAT32", "internal drive", "first failure"):
+        assert wrong not in said
+
+
+def test_the_warning_for_a_drive_without_links_is_unchanged(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    out = _capture_warning(monkeypatch)
+    _refuse_links_with(monkeypatch, errno.EPERM)
+    target = tmp_path / "target"
+    target.mkdir()
+
+    assert portable_link.make_portable_link(tmp_path / "a", target) is False
+
+    said = out.getvalue()
+    assert "this filesystem cannot hold folder links" in said
+    assert "internal drive" in said
+    assert "access denied" not in said
+
+
+def test_one_line_for_access_denied_naming_every_scope(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from litman.core.project_link import add_project
+
+    vault = create_vault(tmp_path)
+    project = tmp_path / "pepforge"
+    project.mkdir()
+    add_project(vault, "pepforge", project)
+    _refuse_links_with(monkeypatch, errno.EACCES)
+
+    issues = checks.check_link_access(vault, [])
+
+    assert [(i.category, i.severity) for i in issues] == [("links_denied", "info")]
+    assert "access denied" in issues[0].message
+    assert "views/" in issues[0].message
+    assert "pepforge" in issues[0].message
+    assert issues[0].hint == LINKS_DENIED_HINT
+    assert checks.check_link_support(vault, []) == []
+
+
+def test_a_drive_without_links_is_not_reported_as_access_denied(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    vault = create_vault(tmp_path)
+    _no_links(monkeypatch)
+
+    assert checks.check_link_access(vault, []) == []
+    assert len(checks.check_link_support(vault, [])) == 1
+
+
+def test_silent_on_access_when_links_work(tmp_path: Path) -> None:
+    assert checks.check_link_access(create_vault(tmp_path), []) == []
+
+
+# --------------------------------------------------------------------------
+# What a refused junction leaves behind: _winapi.CreateJunction makes a real
+# directory first and turns it into the junction second.
+# --------------------------------------------------------------------------
+
+
+def _junction_api(monkeypatch: pytest.MonkeyPatch, create: Any) -> None:
+    """Stand in for ``_winapi``, on any platform."""
+    monkeypatch.setitem(
+        sys.modules, "_winapi", types.SimpleNamespace(CreateJunction=create)
+    )
+
+
+def _makes_the_folder_then_refuses(_target: str, link: str) -> None:
+    Path(link).mkdir()
+    raise PermissionError(errno.EACCES, "Access is denied")
+
+
+def test_a_refused_junction_leaves_no_folder(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _junction_api(monkeypatch, _makes_the_folder_then_refuses)
+    target = tmp_path / "target"
+    target.mkdir()
+
+    with pytest.raises(PermissionError):
+        portable_link._create_junction(tmp_path / "link", target)
+
+    assert not (tmp_path / "link").exists()
+
+
+def test_the_junction_probe_leaves_nothing_when_refused(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _junction_api(monkeypatch, _makes_the_folder_then_refuses)
+
+    failure = portable_link._probe_junction(tmp_path)
+
+    assert failure is not None
+    assert failure.errno == errno.EACCES
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_a_refused_junction_never_removes_a_folder_with_anything_in_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def fills_the_folder_then_refuses(_target: str, link: str) -> None:
+        Path(link).mkdir()
+        (Path(link) / "note.txt").write_text("mine", encoding="utf-8")
+        raise PermissionError(errno.EACCES, "Access is denied")
+
+    _junction_api(monkeypatch, fills_the_folder_then_refuses)
+    target = tmp_path / "target"
+    target.mkdir()
+
+    with pytest.raises(PermissionError):
+        portable_link._create_junction(tmp_path / "link", target)
+
+    assert (tmp_path / "link" / "note.txt").read_text(encoding="utf-8") == "mine"
+
+
+def test_a_refused_junction_leaves_a_folder_it_did_not_make(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def already_there(_target: str, _link: str) -> None:
+        raise FileExistsError(errno.EEXIST, "Cannot create a file")
+
+    _junction_api(monkeypatch, already_there)
+    target = tmp_path / "target"
+    target.mkdir()
+    (tmp_path / "link").mkdir()
+
+    with pytest.raises(FileExistsError):
+        portable_link._create_junction(tmp_path / "link", target)
+
+    assert (tmp_path / "link").is_dir()

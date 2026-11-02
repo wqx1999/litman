@@ -1,18 +1,23 @@
 """Open a desktop-app agent at the vault (task-zcode-agent).
 
 Most catalog agents are terminal CLIs: :mod:`litman.core.terminal` opens a
-window that runs their command. An agent whose ``kind`` is ``"app"`` is a
-desktop app instead — litman opens the app itself at the vault and returns
-at once, without waiting for it.
+window that runs their command. An agent whose row has an ``open_url`` is (also)
+a desktop app — litman opens the app itself at the vault and returns at once,
+without waiting for it.
 
 Only the catalog's data fields are read here (``url_scheme``, ``app_args``,
 ``open_url``, ``mac_bundle``); no app is named in code (ADR-020). How each
 platform finds the app:
 
-* Windows: the app writes its link scheme's open command under
-  ``HKEY_CLASSES_ROOT\\<scheme>\\shell\\open\\command`` every time it starts,
-  and that command's first argument is the exe. An app installed but never
-  opened has no key yet, which is why "not found" also says "not opened yet".
+* Windows, a row with ``app_args``: the app writes its link scheme's open
+  command under ``HKEY_CLASSES_ROOT\\<scheme>\\shell\\open\\command`` every time
+  it starts, and that command's first argument is the exe. An app installed but
+  never opened has no key yet, which is why "not found" also says "not opened
+  yet".
+* Windows, a row without ``app_args``: that key's exe, or failing that the
+  system's answer on whether anything handles the scheme. A packaged app has no
+  such key and no exe to reach; a traditional install has the key, and can leave
+  it behind when uninstalled, which is why the exe has to exist.
 * macOS: ``<mac_bundle>`` under ``/Applications`` or ``~/Applications``.
 * Linux: a ``mimeapps.list`` or ``mimeinfo.cache`` names a handler for the
   scheme. Those are the files ``xdg-mime query default`` reads first; it is not
@@ -21,7 +26,8 @@ platform finds the app:
 
 On Windows, an exe plus an ``app_args`` template starts the exe directly,
 at the vault when the template names it. Everywhere else the app's link goes
-to the system opener; the app may ask the user to confirm it.
+to the system opener, on Windows from a short-lived child process; the app may
+ask the user to confirm it.
 """
 
 from __future__ import annotations
@@ -34,6 +40,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, cast
 from urllib.parse import quote
 
+from litman.core import viewer
 from litman.exceptions import LitmanError
 
 if TYPE_CHECKING:
@@ -43,6 +50,10 @@ if TYPE_CHECKING:
 # names for them, and the Windows branch is tested on every platform.
 _DETACHED_PROCESS = 0x00000008
 _CREATE_NEW_PROCESS_GROUP = 0x00000200
+_CREATE_NO_WINDOW = 0x08000000
+
+# AssocQueryStringW's ASSOCSTR value for the handler's display name.
+_ASSOCSTR_FRIENDLYAPPNAME = 4
 
 
 class AppNotFound(LitmanError):
@@ -90,6 +101,41 @@ def _read_scheme_command(scheme: str) -> str | None:
     except OSError:
         return None
     return value if isinstance(value, str) else None
+
+
+def _handler_name_result(scheme: str) -> int | None:
+    """The HRESULT of asking Windows for the display name of ``<scheme>:``'s
+    handler, or None when the call could not be made: off Windows, ctypes has
+    no ``WinDLL``."""
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        shlwapi = ctypes.WinDLL("shlwapi")  # type: ignore[attr-defined]  # Windows only
+        name = ctypes.create_unicode_buffer(512)
+        size = wintypes.DWORD(len(name))
+        result = shlwapi.AssocQueryStringW(
+            0,
+            _ASSOCSTR_FRIENDLYAPPNAME,
+            ctypes.c_wchar_p(scheme),
+            None,
+            name,
+            ctypes.byref(size),
+        )
+    except (ImportError, AttributeError, OSError):
+        return None
+    return int(result)
+
+
+def _scheme_has_handler(scheme: str) -> bool:
+    """Does Windows know a program for ``<scheme>:`` links?
+
+    The one probe that sees a packaged app. Measured on Win11 with Claude
+    4.29: it has no ``HKCR`` open command, and asking for the executable fails,
+    while asking for the display name returns 0 and ``Claude``. A scheme nothing
+    handles returns ``ERROR_NO_ASSOCIATION``. Any failure reads as no handler.
+    """
+    return _handler_name_result(scheme) == 0
 
 
 def _app_dirs() -> list[Path]:
@@ -191,9 +237,36 @@ def _spawn(argv: list[str]) -> None:
     )
 
 
-def _startfile(url: str) -> None:
-    # os.startfile is Windows-only; mypy can't see it on other platforms.
-    os.startfile(url)  # type: ignore[attr-defined]
+def _open_link_detached_windows(url: str) -> None:
+    """Open a link from a short-lived python that shares nothing with us.
+
+    A packaged app has no exe to start with ``DEVNULL`` handles, so its link
+    must go through ``os.startfile``, and that hands the app our console. An
+    Electron app started that way logs into the window only while the process
+    that opened it lives: a brief one is gone before that matters, ``lit gui``
+    is not. Measured on Win11 with Claude 4.29, not running beforehand:
+    ``os.startfile`` from a python alive for 40 s logged into its window, also
+    with ``ELECTRON_NO_ATTACH_CONSOLE=1``, which this app ignores; through this
+    child the window stayed clean and the app opened normally.
+
+    ``CREATE_NO_WINDOW`` rather than ``DETACHED_PROCESS``: a venv's
+    ``python.exe`` is a launcher that starts the real python, and with no console
+    to inherit that one opens its own, visible. Measured on Win11 in a uv tool
+    environment: with ``DETACHED_PROCESS`` a window flashed on every launch; with
+    ``CREATE_NO_WINDOW`` the child's console has no window, and Claude, not running
+    beforehand, opened normally with nothing logged into the parent's window.
+
+    The child is not waited on, so a failed open goes unnoticed here, which is
+    why :func:`open_app` checks :func:`app_installed` first.
+    """
+    subprocess.Popen(
+        [sys.executable, "-c", "import os,sys; os.startfile(sys.argv[1])", url],
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        creationflags=_CREATE_NO_WINDOW | _CREATE_NEW_PROCESS_GROUP,
+        close_fds=True,
+    )
 
 
 _UNQUOTED_EXE = re.compile(r"(.+?\.exe)(?:\s|$)", re.IGNORECASE)
@@ -247,14 +320,38 @@ def opens_at_vault(spec: AgentSpec) -> bool:
     )
 
 
+def app_reaches_user() -> bool:
+    """Would an app opened from this process show up in front of the user?
+
+    Reads this process's environment, not where the browser is. Asked only
+    to choose between a row's two ways of starting; a row that is only an app
+    goes to :func:`open_app` regardless.
+    """
+    if viewer.is_ssh_session():
+        return False
+    return _platform() in ("win32", "darwin") or not viewer.is_headless()
+
+
+def app_offered_here(spec: AgentSpec) -> bool:
+    """Does the row offer its app on this platform?"""
+    return spec.app_platforms is None or _platform() in spec.app_platforms
+
+
 def app_installed(spec: AgentSpec) -> bool:
-    """Is the app installed (on Windows: and opened once)? A row missing the
-    field a platform needs is never reported as installed."""
+    """Is the app installed (on Windows, a row with ``app_args``: and opened
+    once)? A row missing the field a platform needs is never reported as
+    installed."""
     if not spec.url_scheme or not spec.open_url:
         return False
     platform = _platform()
     if platform == "win32":
-        return windows_exe(spec) is not None
+        if spec.app_args:
+            return windows_exe(spec) is not None
+        # Either probe alone misses an install: a packaged app has no exe on
+        # record, and a scheme with one can still have no display name
+        # (measured: ERROR_NOT_FOUND). That error is no yes in itself, as
+        # `.txt` returns it too.
+        return windows_exe(spec) is not None or _scheme_has_handler(spec.url_scheme)
     if platform == "darwin":
         bundle = spec.mac_bundle
         return bool(bundle) and any((d / cast(str, bundle)).is_dir() for d in _app_dirs())
@@ -278,7 +375,7 @@ def open_app(spec: AgentSpec, vault: Path) -> None:
                 env = {**os.environ, "ELECTRON_NO_ATTACH_CONSOLE": "1"}
                 _popen_detached_windows(app_argv(spec, exe, vault), env)
             else:
-                _startfile(workspace_url(spec, vault))
+                _open_link_detached_windows(workspace_url(spec, vault))
             return
         if platform == "darwin":
             _spawn(["open", workspace_url(spec, vault)])

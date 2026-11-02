@@ -12,6 +12,7 @@ refresh, and removal of ``--cascade``.
 from __future__ import annotations
 
 import json
+import shutil
 import sys
 from pathlib import Path
 from typing import Any
@@ -21,7 +22,6 @@ from click.testing import CliRunner
 from ruamel.yaml import YAML
 
 from litman.cli import cli
-from litman.core import trash as trash_mod
 from litman.core.library import create_vault
 from litman.core.locking import lock_truth_file
 from litman.core.portable_link import is_portable_link
@@ -238,7 +238,7 @@ def test_rm_has_relations_reports_total_and_pointer(
     assert result.exit_code == 0, result.output
     # 2 ref opposites, total = 2.
     assert "is linked with 2 entries" in result.output
-    assert "lit show 2024_Target" in result.output
+    assert 'lit show "2024_Target"' in result.output
     # Refused (default N) → nothing changed.
     assert (vault / "papers" / "2024_Target").is_dir()
     assert _read_meta(vault, "2024_B")["related"] == ["2024_Target"]
@@ -839,17 +839,17 @@ def test_rm_eviction_failure_still_exits_zero(
     _prefill_trash(vault, TRASH_MAX_ENTRIES)
     _write_paper(vault, "2024_New")
 
-    real_rmtree = trash_mod.shutil.rmtree
+    real_rmtree = shutil.rmtree
 
     def flaky_rmtree(path, *args, **kwargs):  # type: ignore[no-untyped-def]
         # Fail only for the eviction of the oldest fabricated entry; the new
-        # paper's move into trash uses shutil.move, not rmtree, so this does
+        # paper's move into trash is a rename, not rmtree, so this does
         # not interfere with the rm itself.
         if Path(path).name.startswith("2020_Old000"):
             raise OSError("simulated eviction failure")
         return real_rmtree(path, *args, **kwargs)
 
-    monkeypatch.setattr(trash_mod.shutil, "rmtree", flaky_rmtree)
+    monkeypatch.setattr(shutil, "rmtree", flaky_rmtree)
 
     runner = CliRunner()
     result = runner.invoke(

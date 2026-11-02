@@ -21,14 +21,16 @@ the registry entries / project map the mutation needs). The single 0.5s budget
 
 Behavior contract — **both external drifts offer the same three answers**, one
 entry at a time: enter a new path / ``rm`` / blank to skip. Blank is the default
-everywhere, so pressing Enter is always the conservative answer.
+everywhere, so pressing Enter is always the conservative answer. A new path that
+is refused asks the same question again, until an answer settles that entry.
+Ctrl+C or EOF at a question ends the whole command.
 
 * Registry drift — a new path re-points the registration (``lit vault
   set-path``'s backend, which validates the target is a real vault); ``rm``
   routes to ``lit vault remove``; blank skips.
-* Project drift — a new path heals the binding and rebuilds the derived
-  ``litman_reflib/`` + ``REFERENCES.md``; ``rm`` routes to ``lit project rm``;
-  blank skips.
+* Project drift — a new path (held to the same rules as ``lit project
+  set-path``) heals the binding and rebuilds the derived ``litman_reflib/`` +
+  ``REFERENCES.md``; ``rm`` routes to ``lit project rm``; blank skips.
 
 Non-TTY for either: one stderr warning naming both remedies, zero mutation,
 never blocks automation on a prompt.
@@ -54,11 +56,13 @@ from __future__ import annotations
 import sys
 import threading
 from collections.abc import Callable
+from functools import partial
 from pathlib import Path
 from typing import TYPE_CHECKING, cast
 
 import click
 from rich.console import Console
+from rich.markup import escape
 
 from litman.commands._hub_report import (
     hub_settlement_lines,
@@ -70,9 +74,11 @@ from litman.core.vault_registry import (
     find_active,
     load_registry,
 )
+from litman.exceptions import TaxonomyError
 
 if TYPE_CHECKING:
     from litman.core.config import LitConfig
+    from litman.core.vault_registry import VaultEntry
 
 
 def _default_tty_probe() -> bool:
@@ -123,13 +129,86 @@ def _exists_bounded(
     return result
 
 
+def _could_not_reach(reply: str) -> str:
+    return (
+        f"Could not reach {reply!r} in time. "
+        "If its drive is not mounted yet, mount it first."
+    )
+
+
+def _checked_new_project_path(reply: str, budget_s: float = 0.5) -> str:
+    """The path a project moves to, from an answer typed at the drift prompt.
+
+    The rules are ``lit project set-path``'s, not a copy of them. They stat the
+    path at several points (``resolve`` / ``exists`` / ``is_dir``), and on a dead
+    mount any of those never returns, so all of them run on one daemon thread
+    under the wall-clock budget of :func:`_exists_bounded`.
+
+    Raises:
+        TaxonomyError: the path breaks those rules, or did not answer in time.
+    """
+    from litman.core.project_link import checked_project_path
+
+    verdict: list[str | TaxonomyError] = []
+
+    def _check() -> None:
+        try:
+            verdict.append(str(checked_project_path(Path(reply).expanduser())))
+        except TaxonomyError as exc:
+            verdict.append(exc)
+        except (OSError, RuntimeError, ValueError) as exc:
+            # No read access, a symlink loop, an unknown ``~user``: this runs
+            # ahead of the user's own command and must not take it down.
+            verdict.append(
+                TaxonomyError(
+                    f"Could not check {reply!r} ({exc}). "
+                    "Give the full path to the folder."
+                )
+            )
+
+    worker = threading.Thread(target=_check, daemon=True)
+    worker.start()
+    worker.join(timeout=budget_s)
+    if not verdict:
+        raise TaxonomyError(_could_not_reach(reply))
+    if isinstance(verdict[0], TaxonomyError):
+        raise verdict[0]
+    return verdict[0]
+
+
+def _relocate_vault(name: str, reply: str) -> VaultEntry:
+    """Re-point vault ``name`` at an answer typed at the drift prompt.
+
+    ``lit vault set-path``'s backend stats the path with no time limit and then
+    writes the registry. The write stays off a thread, so a bounded probe goes
+    first and only asks whether the path answers at all; what it finds there is
+    still for that backend's rules to judge.
+
+    Raises:
+        VaultRegistryError: the path breaks those rules, or did not answer in time.
+    """
+    from litman.core.vault_registry import apply_vault_set_path
+
+    try:
+        target = str(Path(reply).expanduser())
+        if _exists_bounded([target])[target] is None:
+            raise VaultRegistryError(_could_not_reach(reply))
+        return apply_vault_set_path(name, reply)
+    except (OSError, RuntimeError, ValueError) as exc:
+        # No read access, a symlink loop, an unknown ``~user``: this runs ahead
+        # of the user's own command and must not take it down.
+        raise VaultRegistryError(
+            f"Could not check {reply!r} ({exc}). Give the full path to the folder."
+        ) from exc
+
+
 # The keyword that means "remove this" in BOTH drift prompts. Matched
 # case-insensitively after strip.
 #
-# Known + accepted collision: a directory whose relative name is literally "rm"
-# cannot be given as the new path here. The prompt wants a path that resolves,
-# and a bare relative "rm" was never a usable answer to it — spelling it
-# "./rm" still works.
+# Known + accepted collision, at the vault prompt: a directory whose relative name
+# is literally "rm" cannot be given as the new path there. The prompt wants a path
+# that resolves, and a bare relative "rm" was never a usable answer to it —
+# spelling it "./rm" still works. The project prompt takes only full paths.
 _REMOVE_KEYWORD = "rm"
 
 
@@ -150,6 +229,32 @@ def _ask_drift_answer(question: str) -> tuple[str, str]:
     if reply.lower() == _REMOVE_KEYWORD:
         return ("remove", "")
     return ("relocate", reply)
+
+
+def _ask_until_settled[T](
+    question: str,
+    relocate: Callable[[str], T],
+    refusal: type[Exception],
+    console: Console,
+) -> tuple[str, T | None]:
+    """Ask the drift question until an answer settles this entry.
+
+    A new path that ``relocate`` refuses prints why and asks again, so a typo is
+    fixed on the spot; ``rm`` and blank still work after one. Ctrl+C or EOF leave
+    as ``click.Abort``, which the root group's hook lets through to end the command.
+
+    Returns:
+        ``("skip", None)``, ``("remove", None)`` or ``("relocate", <what
+        relocate returned>)``.
+    """
+    while True:
+        kind, reply = _ask_drift_answer(question)
+        if kind != "relocate":
+            return (kind, None)
+        try:
+            return (kind, relocate(reply))
+        except refusal as exc:
+            console.print(f"[red]error:[/] {escape(str(exc))}", soft_wrap=True)
 
 
 def _route_removal(run: Callable[[], None], console: Console) -> None:
@@ -193,8 +298,7 @@ def check_and_prompt_registry_drift(
       remedies, and returns. Never blocks automation on an interactive prompt.
 
     A new path that is not a real vault prints the registry layer's own error
-    and leaves the drift untouched, so the next command asks again rather than
-    silently pointing the registry somewhere wrong.
+    and asks again rather than silently pointing the registry somewhere wrong.
 
     Args:
         stdin_is_tty: Indirection so tests can force either branch without
@@ -249,8 +353,8 @@ def check_and_prompt_registry_drift(
         err.print(
             f"[yellow]warning:[/] vault registry has {len(dangling)} dangling "
             f"registration(s): {joined}. Run "
-            f"[bold]lit vault set-path <name> <new-path>[/] to fix "
-            f"(or [bold]lit vault remove <name>[/] to unregister).",
+            f'[bold]lit vault set-path "<name>" "<new-path>"[/] to fix '
+            f'(or [bold]lit vault remove "<name>"[/] to unregister).',
             soft_wrap=True,
         )
         return
@@ -261,7 +365,6 @@ def check_and_prompt_registry_drift(
     # conservative answer in both (see the module docstring's History note).
     console = Console()
     from litman.commands.vault import vault_remove_cmd
-    from litman.core.vault_registry import apply_vault_set_path
 
     for entry in dangling:
         console.print()  # blank line before, separating from prior output
@@ -273,39 +376,33 @@ def check_and_prompt_registry_drift(
             f"(was {entry.path}).",
             soft_wrap=True,
         )
-        kind, reply = _ask_drift_answer(
+        # Re-point. The whole validated write path already exists as
+        # ``lit vault set-path``'s backend: it requires an existing directory
+        # holding a lit-config.yaml, and touches only that entry's path
+        # (is_active / provenance / last_health_check_at are preserved).
+        kind, updated = _ask_until_settled(
             "    Moved? Enter the new path, 'rm' to unregister, "
-            "or blank to skip"
+            "or blank to skip",
+            partial(_relocate_vault, entry.name),
+            VaultRegistryError,
+            console,
         )
-        if kind == "skip":
+        if updated is not None:
+            console.print(
+                f"[green]✓ Updated[/] {entry.name} → {updated.path}",
+                soft_wrap=True,
+            )
+        elif kind == "skip":
             console.print(
                 "[dim]Skipped. You'll be reminded again next time.[/]"
             )
-            continue
-        if kind == "remove":
+        else:
             _route_removal(
                 lambda name=entry.name: vault_remove_cmd.callback(  # type: ignore[misc]
                     name=name, yes=False
                 ),
                 console,
             )
-            continue
-        # Re-point. The whole validated write path already exists as
-        # ``lit vault set-path``'s backend: it requires an existing directory
-        # holding a lit-config.yaml, and touches only that entry's path
-        # (is_active / provenance / last_health_check_at are preserved).
-        try:
-            updated = apply_vault_set_path(entry.name, reply)
-        except VaultRegistryError as exc:
-            console.print(f"[red]error:[/] {exc}", soft_wrap=True)
-            console.print(
-                "[dim]Left as-is. You'll be reminded again next time.[/]"
-            )
-            continue
-        console.print(
-            f"[green]✓ Updated[/] {entry.name} → {updated.path}",
-            soft_wrap=True,
-        )
     console.print()
 
 
@@ -330,15 +427,18 @@ def check_and_prompt_project_drift(
       present → return silently (the missing-vault case belongs to the
       registry-drift segment; we don't double-report).
     * Probe each project dir with a bounded stat. Only a definite ``False``
-      counts as drift; ``None`` (timeout / unknown) is skipped silently.
+      counts as drift; ``None`` (timeout / unknown) is skipped silently. A value
+      that is not a full path is drift without a stat (``stored_project_dir``).
     * Enter is NON-destructive (ADR-014): a missing project dir is more likely a
       not-yet-mounted / other-machine situation than a real deletion, and
       ``lit project rm`` is an irreversible cascade — so blank = skip, and
       removal has to be asked for by name.
     * TTY → prompt per missing project sequentially, with the same three answers
-      as registry drift. A new path runs the set-path mutation (config-only, via
-      staged_write) then rebuilds ALL projects' links + refs so the
-      litman_reflib at the new location is recreated. ``rm`` routes to
+      as registry drift. A new path has to pass ``lit project set-path``'s rules
+      (a refused one leaves that project as-is and moves on to the next); it
+      then runs the set-path mutation (config-only, via staged_write) and
+      rebuilds ALL projects' links + refs so the litman_reflib at the new
+      location is recreated. ``rm`` routes to
       ``lit project rm`` (its own warning block + y/N). Blank = skip — no
       persistent ignore flag, per the M28 surface-eagerly principle.
     * Non-TTY → one stderr warning listing the missing projects + both
@@ -376,6 +476,7 @@ def check_and_prompt_project_drift(
 
     if load_config_fn is None:
         from litman.core.config import load_config as load_config_fn
+    from litman.core.config import project_probe_paths, stored_project_dir
 
     vault = Path(active.path)
     try:
@@ -390,11 +491,12 @@ def check_and_prompt_project_drift(
     if not projects:
         return
 
-    status = exists(list(projects.values()))
+    status = exists(project_probe_paths(projects))
     missing = [
         name
         for name, path in projects.items()
-        if status.get(path) is False
+        if (project_dir := stored_project_dir(path)) is None
+        or status.get(str(project_dir)) is False
     ]
     if not missing:
         return
@@ -409,8 +511,8 @@ def check_and_prompt_project_drift(
         err.print(
             f"[yellow]warning:[/] {len(missing)} project director"
             f"{'y' if len(missing) == 1 else 'ies'} not found: {joined}. "
-            f"Run [bold]lit project set-path <name> <new-path>[/] to fix "
-            f"(or [bold]lit project rm <name>[/] to drop).",
+            f'Run [bold]lit project set-path "<name>" "<new-path>"[/] to fix '
+            f'(or [bold]lit project rm "<name>"[/] to drop).',
             soft_wrap=True,
         )
         return
@@ -426,14 +528,18 @@ def check_and_prompt_project_drift(
             f"(was {old}).",
             soft_wrap=True,
         )
-        kind, reply = _ask_drift_answer(
+        kind, new_path = _ask_until_settled(
             "    Moved? Enter the new path, 'rm' to delete the project, "
-            "or blank to skip"
+            "or blank to skip",
+            _checked_new_project_path,
+            TaxonomyError,
+            console,
         )
-        if kind == "skip":
+        if new_path is not None:
+            healed[name] = new_path
+        elif kind == "skip":
             console.print("[dim]Skipped. You'll be reminded again next time.[/]")
-            continue
-        if kind == "remove":
+        else:
             # Routed, never reimplemented: `lit project rm` owns the warning
             # block listing what the cascade destroys (papers untagged, plus
             # litman_reflib/ + REFERENCES.md, which live OUTSIDE the vault where
@@ -447,8 +553,6 @@ def check_and_prompt_project_drift(
                 ),
                 console,
             )
-            continue
-        healed[name] = str(Path(reply).expanduser())
 
     if not healed:
         return
@@ -496,11 +600,9 @@ def check_and_prompt_project_drift(
     rebuild_all_project_refs(vault, new_projects)
 
     for name in healed:
-        # Only claim a rebuild if it actually happened. A new path that is not
-        # a directory here (typo, or a legitimately not-yet-mounted / other-
-        # machine location per ADR-014) is "skipped" by rebuild_all_*; the
-        # config is updated but litman_reflib is NOT recreated, so the message
-        # must not lie about it.
+        # Only claim a rebuild if it actually happened: a hub can refuse the
+        # change, and the folder can go between the check above and the rebuild
+        # (then the next command asks about it again).
         info = link_status.get(name, {})
         if info.get("status") == "rebuilt":
             console.print(
@@ -508,20 +610,15 @@ def check_and_prompt_project_drift(
                 f"and rebuilt its litman_reflib.",
                 soft_wrap=True,
             )
-        elif info.get("status") == "error":
+        else:
             console.print(
                 f"[green]✓ Updated[/] {name} → {healed[name]}", soft_wrap=True
             )
-            console.print(
-                f"  {project_folder_not_updated(info['error'])}", soft_wrap=True
-            )
-        else:
-            console.print(
-                f"[green]✓ Updated[/] {name} → {healed[name]}[dim] (config only "
-                f"— directory not reachable here yet; run [bold]lit refresh-views"
-                f"[/bold] there to rebuild litman_reflib).[/dim]",
-                soft_wrap=True,
-            )
+            if info.get("status") == "error":
+                console.print(
+                    f"  {project_folder_not_updated(info['error'])}",
+                    soft_wrap=True,
+                )
         # That rebuild can delete a folder copy or move one out of the user's
         # own directory, and it is never silent whichever command triggered it
         # (see commands/_hub_report). This is the likeliest way to meet the
@@ -607,11 +704,10 @@ def check_and_prompt_bridge_drift(
     if not projects:
         return
 
+    from litman.core.config import project_probe_paths
     from litman.core.project_link import find_dangling_bridges
 
-    dir_status = exists(
-        [str(Path(p).expanduser()) for p in projects.values()]
-    )
+    dir_status = exists(project_probe_paths(projects))
     dangling = find_dangling_bridges(projects, dir_status, exists)
     if not dangling:
         return

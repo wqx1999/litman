@@ -14,6 +14,7 @@ from ruamel.yaml.error import YAMLError
 
 from litman.core.checks._base import TRASH_SIZE_WARN, Issue, _yaml
 from litman.core.code import CODES_DIRNAME, REPO_DIRNAME, REPO_META_FILENAME
+from litman.core.shell import shell_arg
 from litman.core.trash import (
     TRASH_DIRNAME,
     TRASH_MAX_ENTRIES,
@@ -105,7 +106,7 @@ def check_vault_registry_drift(
                 f"registered vault {entry.name!r} points at "
                 f"{entry.path} but that path no longer exists"
             ),
-            hint=f"lit vault remove {entry.name}",
+            hint=f"lit vault remove {shell_arg(entry.name)}",
         )
         for entry in reg.vaults
         if status.get(entry.path) is False
@@ -728,15 +729,15 @@ def check_supplementary(
                 "supplementary_missing", "error", paper_id,
                 f"{where}/{name} is recorded but missing",
                 "put the file back, or drop the record: "
-                f"`lit rm {paper_id} --si {si_stem(name)} --yes`",
+                f"`lit rm {shell_arg(paper_id)} --si {shell_arg(si_stem(name))} --yes`",
             )
         for name in drift.changed:
             add(
                 "supplementary_changed", "error", paper_id,
                 f"{where}/{name} no longer matches its recorded checksum",
                 "put the original back; to keep this one, copy it out, "
-                f"`lit rm {paper_id} --si {si_stem(name)} --yes`, then "
-                f"`lit add --si {paper_id}` the copy",
+                f"`lit rm {shell_arg(paper_id)} --si {shell_arg(si_stem(name))} --yes`, then "
+                f"`lit add --si {shell_arg(paper_id)}` the copy",
             )
         for name, kind in drift.odd_recorded:
             add(
@@ -767,8 +768,8 @@ def check_supplementary(
                     "supplementary_unchecked", "warning", paper_id,
                     f"{where}/{name} has no sha256 / bytes on record — its "
                     "content can't be verified",
-                    f"copy it out, `lit rm {paper_id} --si {si_stem(name)} "
-                    f"--yes`, then `lit add --si {paper_id}` the copy to record "
+                    f"copy it out, `lit rm {shell_arg(paper_id)} --si {shell_arg(si_stem(name))} "
+                    f"--yes`, then `lit add --si {shell_arg(paper_id)}` the copy to record "
                     "its checksum",
                 )
             else:
@@ -804,14 +805,14 @@ def _cited_finding(paper_id: str, problem: CitationProblem) -> tuple[str, str]:
             f"if it means this file, write its name after it: "
             f"{record['file']}（{label}）"
             if label
-            else f"check which file it means — `lit show {paper_id}` lists "
+            else f"check which file it means — `lit show {shell_arg(paper_id)}` lists "
             "each SI with its original name"
         )
         return message, hint
     if record is None:
         message = f"{where} cites {citation.token}, which this paper no longer has"
         hint = (
-            f"point it at the right file (`lit show {paper_id}` lists the SI), "
+            f"point it at the right file (`lit show {shell_arg(paper_id)}` lists the SI), "
             "or remove it"
         )
     else:
@@ -824,7 +825,7 @@ def _cited_finding(paper_id: str, problem: CitationProblem) -> tuple[str, str]:
             f"{record['file']} is now {now}"
         )
         hint = (
-            f"check which file it means — `lit show {paper_id}` lists each SI "
+            f"check which file it means — `lit show {shell_arg(paper_id)}` lists each SI "
             "with its original name"
         )
     if problem.moved_to:
@@ -978,7 +979,7 @@ def check_code_clone_integrity(
                         f"but no codes/{repo_name}/repo-meta.yaml exists"
                     ),
                     hint=(
-                        f"`lit code unlink {repo_name} --paper {pid}` "
+                        f"`lit code unlink {shell_arg(repo_name)} --paper {shell_arg(pid)}` "
                         "to drop the broken edge, or `lit code restore-all` "
                         "to re-clone if upstream metadata is recoverable"
                     ),
@@ -997,8 +998,8 @@ def check_code_clone_integrity(
                     f"no paper references {repo_name!r} in code-clones"
                 ),
                 hint=(
-                    f"`lit code rm {repo_name}` to delete, or "
-                    f"`lit code link {repo_name} --paper <id>` to bind it"
+                    f"`lit code rm {shell_arg(repo_name)}` to delete, or "
+                    f'`lit code link {shell_arg(repo_name)} --paper "<id>"` to bind it'
                 ),
             )
         )
@@ -1040,7 +1041,7 @@ def check_code_clone_integrity(
                     hint=(
                         f"`lit code restore-all` to re-clone {repo_name} from "
                         "its recorded upstream, or `lit code rm "
-                        f"{repo_name}` to drop the metadata"
+                        f"{shell_arg(repo_name)}` to drop the metadata"
                     ),
                 )
             )
@@ -1096,7 +1097,7 @@ def check_code_clone_integrity(
                             # paper if it was mis-deleted.
                             f"remove {back_ref!r} from the papers: list in "
                             f"codes/{repo_name}/{REPO_META_FILENAME}, or "
-                            f"`lit trash restore {back_ref}` if it was "
+                            f"`lit trash restore {shell_arg(back_ref)}` if it was "
                             "mis-deleted"
                         ),
                     )
@@ -1121,9 +1122,10 @@ def check_code_clone_integrity(
                             f"include {repo_name!r} (one-sided binding)"
                         ),
                         hint=(
-                            f"`lit code link {repo_name} --paper {back_ref}` to "
+                            f"`lit code link {shell_arg(repo_name)} "
+                            f"--paper {shell_arg(back_ref)}` to "
                             f"restore the forward edge, or `lit code unlink "
-                            f"{repo_name} --paper {back_ref}` to drop the "
+                            f"{shell_arg(repo_name)} --paper {shell_arg(back_ref)}` to drop the "
                             "reverse edge"
                         ),
                     )

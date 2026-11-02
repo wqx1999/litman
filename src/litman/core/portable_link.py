@@ -35,10 +35,16 @@ links are skipped, a one-shot stderr warning names the cause,
 dismissible notice. The links are pure **convenience** — the authoritative
 data lives in ``papers/<id>/metadata.yaml`` and ``INDEX.json``, and every
 command keeps working without them.
+
+A link refused with access denied is another matter (:func:`links_denied`): a
+sandbox around this process, say, while the drive itself is fine. The links are
+skipped the same way, but the warning and ``lit health-check`` say that instead,
+and nothing remembers it as a fact about the drive.
 """
 
 from __future__ import annotations
 
+import errno
 import os
 import secrets
 import shutil
@@ -66,6 +72,10 @@ _WARNED_THIS_PROCESS: bool = False
 
 _LINK_MECHANISM: dict[str, str] = {}
 
+# The hint for a link refused with access denied. Shared by the warning and
+# ``lit health-check``'s ``links_denied`` finding.
+LINKS_DENIED_HINT = "Run `lit refresh-views` to retry."
+
 
 def is_portable_link(path: Path) -> bool:
     """True if ``path`` is a folder link of the kind litman creates.
@@ -80,28 +90,27 @@ def is_portable_link(path: Path) -> bool:
     return path.is_symlink() or path.is_junction()
 
 
-def _probe_symlink(directory: Path) -> bool:
-    """POSIX probe: will this filesystem hold a symlink?"""
+def _probe_symlink(directory: Path) -> OSError | None:
+    """POSIX probe: why this filesystem refuses a symlink, ``None`` if it takes it."""
     probe = directory / f".litman-link-probe-{os.getpid()}"
-    ok = False
+    failure: OSError | None = None
     try:
         # Dangling on purpose: a probe that resolved somewhere real could be
         # followed by a tree-walker (or an rmtree) before we remove it.
         probe.symlink_to(".litman-link-probe-target-does-not-exist")
-        ok = True
-    except OSError:
-        ok = False
+    except OSError as err:
+        failure = err
     finally:
         try:
             if probe.is_symlink():
                 probe.unlink()
         except OSError:
             pass
-    return ok
+    return failure
 
 
-def _probe_junction(directory: Path) -> bool:
-    """Windows probe: will this filesystem hold a directory junction?
+def _probe_junction(directory: Path) -> OSError | None:
+    """Windows probe: why this filesystem refuses a junction, ``None`` if it takes it.
 
     Unlike the symlink probe this one needs a real target —
     ``_winapi.CreateJunction`` refuses a nonexistent source — so it creates a
@@ -111,14 +120,13 @@ def _probe_junction(directory: Path) -> bool:
     link = directory / f".litman-link-probe-{os.getpid()}"
     try:
         target.mkdir()
-    except OSError:
-        return False
-    ok = False
+    except OSError as err:
+        return err
+    failure: OSError | None = None
     try:
         _create_junction(link, target)
-        ok = True
-    except OSError:
-        ok = False
+    except OSError as err:
+        failure = err
     finally:
         try:
             if is_portable_link(link):
@@ -135,7 +143,7 @@ def _probe_junction(directory: Path) -> bool:
             target.rmdir()
         except OSError:
             pass
-    return ok
+    return failure
 
 
 def _create_junction(link_path: Path, target_path: Path) -> None:
@@ -152,22 +160,36 @@ def _create_junction(link_path: Path, target_path: Path) -> None:
     lacks the function. A plain ``OSError`` (e.g. a filesystem that cannot
     hold reparse points) propagates so the caller degrades to the advisory
     tier.
+
+    ``CreateJunction`` makes a real directory and then turns it into the
+    junction, and leaves the directory behind when the second step is refused.
+    Taken back here, by ``rmdir``, which cannot remove a folder with anything
+    in it.
     """
     try:
         import _winapi
     except ImportError:
         _winapi = None  # type: ignore[assignment]  # no _winapi off Windows
-    if _winapi is not None and hasattr(_winapi, "CreateJunction"):
-        _winapi.CreateJunction(str(target_path), str(link_path))
-        return
-    proc = subprocess.run(
-        ["cmd", "/c", "mklink", "/J", str(link_path), str(target_path)],
-        capture_output=True,
-        text=True,
-    )
-    if proc.returncode != 0:
-        detail = proc.stderr.strip() or proc.stdout.strip()
-        raise OSError(f"mklink /J failed for {link_path}: {detail}")
+    existed = os.path.lexists(link_path)
+    try:
+        if _winapi is not None and hasattr(_winapi, "CreateJunction"):
+            _winapi.CreateJunction(str(target_path), str(link_path))
+            return
+        proc = subprocess.run(
+            ["cmd", "/c", "mklink", "/J", str(link_path), str(target_path)],
+            capture_output=True,
+            text=True,
+        )
+        if proc.returncode != 0:
+            detail = proc.stderr.strip() or proc.stdout.strip()
+            raise OSError(f"mklink /J failed for {link_path}: {detail}")
+    except OSError:
+        if not existed:
+            try:
+                os.rmdir(link_path)
+            except OSError:
+                pass
+        raise
 
 
 def link_mechanism(directory: Path) -> str:
@@ -190,27 +212,57 @@ def link_mechanism(directory: Path) -> str:
     new entry at all (permissions, a read-only mount) reads as the platform's
     mechanism: nothing can be learned there about links, and the drive is not
     what is wrong — so the links it lacks are still reported, and ``--fix``
-    says which folder it could not update.
+    says which folder it could not update. So does one that takes a file but
+    refuses the link with access denied (:func:`links_denied`), and that answer
+    is not kept: it can change while the process runs.
     """
+    state = _link_state(directory)
+    if state != "denied":
+        return state
+    return "junction" if sys.platform == "win32" else "symlink"
+
+
+def _link_state(directory: Path) -> str:
+    """:func:`link_mechanism`'s answer, with access denied still told apart."""
     key = str(directory)
     cached = _LINK_MECHANISM.get(key)
     if cached is not None:
         return cached
     if sys.platform == "win32":
-        native, works = "junction", _probe_junction(directory)
+        native, failure = "junction", _probe_junction(directory)
     else:
-        native, works = "symlink", _probe_symlink(directory)
-    if works or (directory.is_dir() and entry_refusal(directory) is not None):
-        mechanism = native
+        native, failure = "symlink", _probe_symlink(directory)
+    if failure is None or (directory.is_dir() and entry_refusal(directory) is not None):
+        state = native
+    elif directory.is_dir() and _access_denied(failure):
+        return "denied"
     else:
-        mechanism = "none"
-    _LINK_MECHANISM[key] = mechanism
-    return mechanism
+        state = "none"
+    _LINK_MECHANISM[key] = state
+    return state
+
+
+def _access_denied(err: OSError) -> bool:
+    """Was a link refused by a permission check rather than by the filesystem?
+
+    ``EACCES``, which is what Windows's ``ERROR_ACCESS_DENIED`` arrives as. Not
+    ``EPERM``: that is how Linux says a FAT drive takes no symlinks.
+    """
+    return err.errno == errno.EACCES
 
 
 def links_supported(directory: Path) -> bool:
     """Can litman materialize folder links in ``directory`` at all?"""
     return link_mechanism(directory) != "none"
+
+
+def links_denied(directory: Path) -> bool:
+    """Does ``directory`` take a file but refuse a link with access denied?
+
+    A sandbox around this process does this: the drive can hold links, and the
+    same command run outside it makes them. Asked again each time.
+    """
+    return _link_state(directory) == "denied"
 
 
 def links_unsupported_hint() -> str:
@@ -219,11 +271,12 @@ def links_unsupported_hint() -> str:
     Shared by the creation-time warning and ``lit health-check``'s
     ``links_unsupported`` finding so the two never drift apart.
 
-    Deliberately free of system-settings instructions. By the time this fires
-    the cause is the filesystem itself — Windows uses junctions, which any
-    standard user can create on a normal internal drive — so the only remedy
-    is a different drive. Developer Mode, elevation or WSL would change
-    nothing here, and sending users into system dialogs reads as malware.
+    Deliberately free of system-settings instructions. Access denied goes to
+    :data:`LINKS_DENIED_HINT`, so what reaches this one is a refusal from the
+    filesystem — Windows uses junctions, which any standard user can create on
+    a normal internal drive — and the only remedy is a different drive.
+    Developer Mode, elevation or WSL would change nothing here, and sending
+    users into system dialogs reads as malware.
     """
     return (
         "common causes: FAT32 / exFAT drives (USB sticks, SD cards) and "
@@ -256,11 +309,11 @@ def make_portable_link(link_path: Path, target_path: Path) -> bool:
     any other pre-existing entry at ``link_path`` (link or regular file) is
     removed first so the operation is a true upsert.
 
-    On filesystems that refuse the link (FAT32/exFAT, network shares), the
-    ``OSError`` is caught, a one-shot warning is emitted, and the function
-    returns ``False``. The caller should treat ``False`` as "convenience link
-    absent" — the source-of-truth metadata is untouched and the command can
-    proceed.
+    On filesystems that refuse the link (FAT32/exFAT, network shares), or when
+    it is refused with access denied, the ``OSError`` is caught, a one-shot
+    warning is emitted, and the function returns ``False``. The caller should
+    treat ``False`` as "convenience link absent" — the source-of-truth metadata
+    is untouched and the command can proceed.
 
     Returns:
         ``True`` on success, ``False`` on graceful degrade.
@@ -301,6 +354,8 @@ def make_portable_link(link_path: Path, target_path: Path) -> bool:
             raise (obstruction if obstruction is not None else err) from None
         if obstruction is not None:
             _warn_link_obstructed(link_path, obstruction)
+        elif _access_denied(err):
+            _warn_links_denied()
         else:
             _warn_links_unsupported(link_path, err)
         return False
@@ -586,7 +641,8 @@ def _warn_links_unsupported(link_path: Path, err: OSError) -> None:
 
     One message for every platform, with no system-settings instructions.
     Windows creates junctions, which need no privilege on any normal internal
-    drive, so by the time this fires the cause is the filesystem itself
+    drive, and access denied has its own warning (:func:`_warn_links_denied`),
+    so by the time this fires the cause is the filesystem itself
     (FAT32 / exFAT, network shares) — a fact about the drive that Developer
     Mode, elevation or WSL would not change. And litman must never run
     elevated regardless (ADR-020: the server spawns agent processes, and
@@ -607,4 +663,19 @@ def _warn_links_unsupported(link_path: Path, err: OSError) -> None:
         "authoritative, and every command, the web UI and the agent "
         "workflow work normally.\n"
         f"    first failure at {link_path}: {err}[/]"
+    )
+
+
+def _warn_links_denied() -> None:
+    """Warn, under the same once-per-process latch, that a link was refused
+    with access denied: a fact about this run rather than the drive, so it says
+    nothing about moving the library.
+    """
+    global _WARNED_THIS_PROCESS
+    if _WARNED_THIS_PROCESS:
+        return
+    _WARNED_THIS_PROCESS = True
+    _console.print(
+        "[yellow]warning:[/] could not create folder links (access denied): "
+        f"views/ and project shortcuts may be out of date. {LINKS_DENIED_HINT}"
     )

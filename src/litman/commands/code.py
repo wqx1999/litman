@@ -30,6 +30,7 @@ from litman.core.code import (
     CODES_DIRNAME,
     REPO_DIRNAME,
     REPO_META_FILENAME,
+    bind_is_decided,
     bind_paper_to_repo,
     bump_repo_updated_at,
     clone_repo,
@@ -53,6 +54,7 @@ from litman.core.library import find_vault, resolve_library_or_vault
 from litman.core.locking import rmtree
 from litman.core.paper_lookup import complete_paper_id, resolve_paper_input
 from litman.core.project_link import code_links_not_refreshed
+from litman.core.shell import shell_arg
 from litman.core.undecodable import printable
 from litman.exceptions import CodeError, PaperNotFoundError
 
@@ -207,7 +209,7 @@ def code_add_cmd(
         raise reject_second_positional(
             taken=source,
             extra=misplaced_paper,
-            correct=f"lit code add {src} --paper {paper}",
+            correct=f"lit code add {shell_arg(src)} --paper {shell_arg(paper)}",
         )
 
     vault = find_vault(resolve_library_or_vault(library, vault_name))
@@ -288,7 +290,11 @@ def code_add_cmd(
                 vault, paper_id, repo_name, link_errors=link_errors
             )
     except Exception:
-        if repo_root.exists():
+        # A bind past its decision point lands on the next `lit`, and the clone
+        # is what it will point at. It is not fully committed yet, so `--move`
+        # below still leaves the source alone.
+        decided = paper_id is not None and bind_is_decided(vault, paper_id, repo_name)
+        if repo_root.exists() and not decided:
             rmtree(repo_root, ignore_errors=True)
         raise
 
@@ -534,7 +540,7 @@ def code_link_cmd(
         raise reject_second_positional(
             taken=repo_name,
             extra=misplaced_paper,
-            correct=f"lit code link {repo_name} --paper {misplaced_paper}",
+            correct=f"lit code link {shell_arg(repo_name)} --paper {shell_arg(misplaced_paper)}",
         )
     vault = find_vault(resolve_library_or_vault(library, vault_name))
     paper_id = resolve_paper_input(vault, paper_id, paper_doi)
@@ -604,7 +610,7 @@ def code_unlink_cmd(
         raise reject_second_positional(
             taken=repo_name,
             extra=misplaced_paper,
-            correct=f"lit code unlink {repo_name} --paper {misplaced_paper}",
+            correct=f"lit code unlink {shell_arg(repo_name)} --paper {shell_arg(misplaced_paper)}",
         )
     vault = find_vault(resolve_library_or_vault(library, vault_name))
     paper_id = resolve_paper_input(vault, paper_id, paper_doi)
@@ -745,7 +751,7 @@ def code_rm_cmd(
             f"{repo_name!r} is still bound to {len(bound_papers)} paper(s):\n"
             f"{bullet}\n\n"
             "Re-run with --cascade to auto-strip these bindings, or unbind "
-            f"individually with `lit code unlink {repo_name} --paper <id>` "
+            f'individually with `lit code unlink {shell_arg(repo_name)} --paper "<id>"` '
             "first."
         )
 
@@ -880,7 +886,7 @@ def code_restore_all_cmd(
             )
         console.print(
             "\n[dim]Restore the missing repo-meta.yaml from backup, or run "
-            "`lit code unlink <repo-name> --paper <paper-id>` to drop "
+            '`lit code unlink "<repo-name>" --paper "<paper-id>"` to drop '
             "the dangling reference.[/]"
         )
 

@@ -877,6 +877,15 @@ export function launchAgent(name?: string): Promise<AgentLaunchResult> {
   return mutateJSON('/api/agent/launch', 'POST', name ? { agent: name } : {})
 }
 
+export type AgentLaunchMode = 'terminal' | 'app'
+
+/** One way an agent could start on this machine. */
+export interface AgentModeEntry {
+  mode: AgentLaunchMode
+  usable: boolean
+  install_url: string
+}
+
 /** One agent's onboarding view: display name, beginner-facing brand, whether
  * litman supports it today
  * (Claude Code, ZCode, Antigravity CLI, Codex, DeepSeek Harness, Cursor and
@@ -885,9 +894,10 @@ export function launchAgent(name?: string): Promise<AgentLaunchResult> {
  * official install page, and `skill_state` — the server's content-level verdict
  * for THIS agent's skill install ('absent' | 'stale' | 'current'; null for an
  * unsupported placeholder, which is never probed). Agents sharing a skills
- * location legitimately share a state. `kind` says how it opens: in a terminal,
- * or as a desktop `app` at the vault. Agent-agnostic by contract: no per-agent
- * skill path or app path ever appears here. */
+ * location legitimately share a state. `modes` lists the ways it could start on
+ * this machine, each installed or not and with its own install page; `mode` is
+ * the way the launch endpoint would take now. Agent-agnostic by contract: no
+ * per-agent skill path or app path ever appears here. */
 export interface AgentStatusEntry {
   name: string
   display: string
@@ -896,7 +906,8 @@ export interface AgentStatusEntry {
   detected: boolean
   install_url: string
   skill_state: 'absent' | 'stale' | 'current' | null
-  kind: 'terminal' | 'app'
+  mode: AgentLaunchMode
+  modes: AgentModeEntry[]
 }
 
 /** The agent-onboarding status — the single data source for the TopBar red dot
@@ -952,6 +963,16 @@ export function setDefaultAgent(
   name: string,
 ): Promise<{ ok: boolean; default: string }> {
   return mutateJSON('/api/agent/default', 'PUT', { agent: name })
+}
+
+/** Save which way the GUI button starts an agent with both (PUT). Sends the
+ * NAME and the mode only. Throws the backend's verbatim message (400) for an
+ * unknown agent or a mode that agent lacks. */
+export function setAgentLaunchMode(
+  name: string,
+  mode: AgentLaunchMode,
+): Promise<{ ok: boolean; agent: string; mode: AgentLaunchMode }> {
+  return mutateJSON('/api/agent/launch-mode', 'PUT', { agent: name, mode })
 }
 
 /** Create a NEW vault directory + register it, through the `lit init` backend

@@ -60,6 +60,7 @@ from litman.core.document import find_paper
 from litman.core.fs_identity import Anchor
 from litman.core.gui_registry import APP_NAME, host_id
 from litman.core.id import is_valid_id
+from litman.core.shell import shell_arg
 from litman.core.supplementary import (
     SiItem,
     add_supplementary,
@@ -786,7 +787,10 @@ def _recorded_or_404(vault: Path, paper_id: str, file: str) -> None:
     if file not in {record["file"] for record in list_supplementary(meta)}:
         raise HTTPException(
             status_code=404,
-            detail=f"{paper_id} has no SI file {file!r}. `lit show {paper_id}` lists them.",
+            detail=(
+                f"{paper_id} has no SI file {file!r}. "
+                f"`lit show {shell_arg(paper_id)}` lists them."
+            ),
         )
 
 

@@ -101,6 +101,7 @@ from litman.core.checks.metadata import (
 )
 from litman.core.checks.projects import (
     check_config_readable,
+    check_link_access,
     check_link_support,
     check_priority_orphan,
     check_project_bridge_dangling,
@@ -181,6 +182,7 @@ __all__ = [
     "check_duplicate_doi",
     "check_inbox_staleness",
     "check_index_vs_disk",
+    "check_link_access",
     "check_link_support",
     "check_notes_from_trash",
     "check_paper_dir_validity",

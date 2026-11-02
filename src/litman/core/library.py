@@ -13,10 +13,12 @@ import click
 from click.core import ParameterSource
 
 from litman.core.locking import lock_truth_file, rmtree
+from litman.core.portable_link import _os_error_reason
 from litman.core.seeds import TAXONOMY_SEED, render_lit_config_seed
 from litman.core.undecodable import refusal
 from litman.core.views import write_index
 from litman.exceptions import (
+    IndexWriteError,
     LibraryNotFoundError,
     ParentNotFoundError,
     UndecodablePathError,
@@ -102,7 +104,13 @@ def create_vault(parent_dir: Path, name: str = DEFAULT_VAULT_NAME) -> Path:
         # INDEX.json seeded as the canonical empty form via the same renderer
         # that `lit refresh-views` uses, so the seed never drifts from the
         # regenerated output.
-        write_index(vault, [])
+        try:
+            write_index(vault, [])
+        except OSError as err:
+            raise IndexWriteError(
+                f"Could not write INDEX.json in {vault} ({_os_error_reason(err)}). "
+                "Try again."
+            ) from err
     except Exception:
         # Roll back: if we created the root, remove the half-built tree.
         if created_root and vault.exists():
@@ -151,7 +159,7 @@ def find_vault(explicit: Path | None = None) -> Path:
         if not (candidate / "lit-config.yaml").is_file():
             raise LibraryNotFoundError(
                 f"No lit-config.yaml at {candidate}. "
-                "Pass --library <vault-path> or run `lit init` first."
+                'Pass --library "<vault-path>" or run `lit init` first.'
             )
         ensure_vault_recovered(candidate)
         return candidate
@@ -183,7 +191,7 @@ def find_vault(explicit: Path | None = None) -> Path:
                 f"Active vault {active.name!r} points at {active_path} "
                 "but that directory no longer holds a lit-config.yaml. "
                 "Fix the path (move the vault back, or `lit vault remove` "
-                "and re-add), or `lit vault use <other-name>` to switch."
+                'and re-add), or `lit vault use "<other-name>"` to switch.'
             )
 
     here = Path.cwd().resolve()
@@ -194,9 +202,9 @@ def find_vault(explicit: Path | None = None) -> Path:
 
     raise LibraryNotFoundError(
         "No vault found. New to litman? Run `lit setup`. Or create a vault "
-        "directly with `lit init <parent-dir>` (it registers automatically), "
-        "or `lit vault add <name> <path>` to register an existing vault. "
-        "Advanced: set $LIT_LIBRARY or pass --library <vault-path>."
+        'directly with `lit init "<parent-dir>"` (it registers automatically), '
+        'or `lit vault add "<name>" "<path>"` to register an existing vault. '
+        'Advanced: set $LIT_LIBRARY or pass --library "<vault-path>".'
     )
 
 

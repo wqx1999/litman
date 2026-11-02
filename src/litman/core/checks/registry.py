@@ -54,6 +54,7 @@ from litman.core.checks.metadata import (
 )
 from litman.core.checks.projects import (
     check_config_readable,
+    check_link_access,
     check_link_support,
     check_priority_orphan,
     check_project_bridge_dangling,
@@ -117,7 +118,7 @@ if TYPE_CHECKING:
 #       tier=cheap, klass=A, regen (`--fix` regen repairs it; the Tier-1 hook
 #       gates the same rebuild behind a [Y/n] because rebuilding reads
 #       metadata).
-#   links_unsupported — the ONLY klass=env entry: a capability of the host,
+#   links_unsupported — a klass=env entry: a capability of the host,
 #       not a state of the library. Nothing drifted, nothing is broken, and no
 #       correction exists (hence report + severity=info, which health-check does
 #       not gate its exit code on). It exists so that when a filesystem cannot
@@ -126,6 +127,10 @@ if TYPE_CHECKING:
 #       views_vs_metadata and project_references can go SILENT about links they
 #       know cannot exist, and the absence is still explained once instead of
 #       reported ~6x per paper as unfixable damage.
+#   links_denied — the other klass=env entry: links refused with access denied,
+#       a state of this run (a sandbox, say) rather than of the drive. Report +
+#       severity=info as well, but the missing links it explains are still
+#       reported, because the same command elsewhere can make them.
 #   dangling_refs / bidirectional_refs — authored relation fields, surfaced for
 #       the user/CLI to re-sync → klass=B-auth, correction=report. A dangling
 #       edge points at nothing, so there is no side to re-sync it with; `--fix`
@@ -238,6 +243,13 @@ _CHECK_REGISTRY: tuple[CheckSpec, ...] = (
     CheckSpec(
         "links_unsupported",
         check_link_support,
+        "full",
+        "env",
+        "report",
+    ),
+    CheckSpec(
+        "links_denied",
+        check_link_access,
         "full",
         "env",
         "report",

@@ -48,7 +48,7 @@ from litman.commands._paper_count import (
     paper_id_lines,
     plural_papers,
 )
-from litman.core.config import config_to_yaml_dict, load_config
+from litman.core.config import config_to_yaml_dict, load_config, stored_project_dir
 from litman.core.confirm import _confirm_destructive, is_interactive
 from litman.core.document import list_papers
 from litman.core.library import find_vault, resolve_library_or_vault
@@ -194,7 +194,8 @@ def _project_status(*, in_taxonomy: bool, in_config: bool, path_str: str) -> str
         return "config-only"
     if not in_config:
         return "taxonomy-only"
-    if path_str and Path(path_str).expanduser().is_dir():
+    project_dir = stored_project_dir(path_str)
+    if project_dir is not None and project_dir.is_dir():
         return "ok"
     return "path-missing"
 
@@ -223,8 +224,9 @@ def project_list_cmd(
 
     \b
       ✓                name in BOTH truth sources, path exists on disk
-      ⚠ path-missing   name in both, but the config path is absent / not a
-                       directory on this machine (likely cross-machine drift)
+      ⚠ path-missing   name in both, but the config path is not a full path, or
+                       is absent / not a directory on this machine (likely
+                       cross-machine drift)
       ⚠ config-only    in lit-config.yaml but missing from TAXONOMY.md
       ⚠ taxonomy-only  in TAXONOMY.md but missing from the config map
     """
@@ -262,7 +264,7 @@ def project_list_cmd(
         console.print("[dim](no projects registered)[/]")
         console.print(
             "[dim]Register one with "
-            "`lit project add <name> --path <abs-path>`.[/]"
+            '`lit project add "<name>" --path "<abs-path>"`.[/]'
         )
         return
 
@@ -489,9 +491,7 @@ def project_rm_cmd(
     referencing = find_referencing_papers(papers, _PROJECTS_DICT, name)
 
     project_dir_str = config.projects.get(name)
-    project_dir = (
-        Path(project_dir_str).expanduser() if project_dir_str else None
-    )
+    project_dir = stored_project_dir(project_dir_str) if project_dir_str else None
 
     if referencing:
         warning_lines = [

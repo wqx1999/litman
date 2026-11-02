@@ -19,11 +19,13 @@ all discover skills from the Agent Skills open-standard directory
 ``~/.agents/skills`` and so share one adapter shape (Cursor additionally does
 a compatibility read of the Claude dir).
 
-Five are terminal CLIs (``kind="terminal"``): ``launch`` is a command run in
-a terminal at the vault. ZCode and DeepSeek Harness are desktop apps
-(``kind="app"``): litman opens the app itself through
-:mod:`litman.core.app_launch`, with no terminal in between. Consumers branch
-on ``kind``, the same data-driven way they branch on ``supported``.
+How an agent starts follows from its row (:func:`launch_modes`): ``launch`` is
+a command run in a terminal at the vault, and ``open_url`` is a desktop app
+that litman opens itself through :mod:`litman.core.app_launch`, with no
+terminal in between. Claude Code and Codex have both, ZCode and DeepSeek Harness
+only the app, and the other three only the CLI. Consumers branch on the mode, the same
+data-driven way they branch on ``supported``. A terminal launch runs in
+:func:`launch_env`, which leaves out the row's ``launch_env_unset``.
 
 All seven are ``supported=True`` — the catalog carries no greyed placeholder
 today. The machinery for one nonetheless stays as dormant capability: the
@@ -53,6 +55,8 @@ from typing import Any, Literal
 
 from litman.core import agent_permissions, app_launch, skill
 from litman.core.skill import aggregate_skill_state, install_all_skills
+
+LaunchMode = Literal["terminal", "app"]
 
 # Fallback default when the user has not chosen one (no per-vault override
 # anymore — the machine-level preferences.yaml or this constant decide).
@@ -86,8 +90,8 @@ class AgentSpec:
     detection, installation, and ``lit`` command approval so callers stay
     agent-agnostic.
 
-    ``launch`` and ``detect_bin`` are unused for ``kind="app"`` (left ``""``);
-    such a row is found and opened through the fields after ``kind``.
+    ``launch`` and ``detect_bin`` are ``""`` on a row that is only an app; an
+    app is found and opened through ``url_scheme`` and the fields after it.
     """
 
     name: str
@@ -105,12 +109,10 @@ class AgentSpec:
     # Catalog-internal: consumers go through agent_skills_parent_dir() /
     # skills_parent_dirs(), never read the path into an endpoint contract.
     skills_dir: Callable[[], Path] | None = None
-    # How it starts: a CLI run in a terminal, or a desktop app opened at the
-    # vault (core.app_launch).
-    kind: Literal["terminal", "app"] = "terminal"
-    # The app's link scheme. Windows finds the exe from the scheme's registry
-    # open command; Linux looks the scheme's handler up in the XDG
-    # mimeapps.list / mimeinfo.cache files.
+    # The app's link scheme. On Windows a row with app_args finds the exe from
+    # the scheme's registry open command, and a row without counts as installed
+    # on that exe or on the system knowing a handler for the scheme; Linux looks
+    # the scheme's handler up in the XDG mimeapps.list / mimeinfo.cache files.
     url_scheme: str | None = None
     # Windows: the exe's arguments; "{vault}" becomes the vault path.
     app_args: tuple[str, ...] = ()
@@ -122,6 +124,17 @@ class AgentSpec:
     # For an agent litman writes no approval rule for: how the user lets lit
     # run in the app. Shown when its skills are installed, never on launch.
     permission_hint: str | None = None
+    # On a row with both ways: the one to use when the user has not chosen.
+    # Ignored on a row with one way.
+    default_mode: LaunchMode = "terminal"
+    # On a row with both ways: where to get the app (install_url is the CLI's).
+    app_install_url: str | None = None
+    # Variables a terminal launch leaves out of the agent's environment: its own
+    # markers, inherited when lit itself runs inside one of its sessions.
+    launch_env_unset: tuple[str, ...] = ()
+    # On a row with both ways: the platforms (``sys.platform`` values) where the
+    # app is offered. Elsewhere the row is only its CLI. None is every platform.
+    app_platforms: tuple[str, ...] | None = None
 
 
 # Every supported agent's skill adapter reuses core.skill verbatim:
@@ -162,6 +175,13 @@ AGENTS: tuple[AgentSpec, ...] = (
             lambda: agent_permissions.install_claude_lit_permission()
         ),
         skills_dir=lambda: skill.default_skills_parent_dir(),
+        url_scheme="claude",
+        # The app asks the user to trust a folder passed by link, every time.
+        open_url="claude://code/new?folder={vault}",
+        mac_bundle="Claude.app",
+        app_install_url="https://claude.com/download",
+        # A session that inherits this marker does not save its transcript.
+        launch_env_unset=("CLAUDE_CODE_CHILD_SESSION",),
     ),
     AgentSpec(
         name="zcode",
@@ -183,7 +203,6 @@ AGENTS: tuple[AgentSpec, ...] = (
             lambda: agent_permissions.no_lit_permission("zcode")
         ),
         skills_dir=lambda: skill.standard_skills_parent_dir(),
-        kind="app",
         url_scheme="zcode",
         app_args=("--open-workspace", "{vault}"),
         open_url="zcode://workspace/open?path={vault}",
@@ -230,6 +249,12 @@ AGENTS: tuple[AgentSpec, ...] = (
             lambda: agent_permissions.install_codex_lit_permission()
         ),
         skills_dir=lambda: skill.standard_skills_parent_dir(),
+        url_scheme="codex",
+        open_url="codex://threads/new?path={vault}",
+        default_mode="app",
+        app_install_url="https://chatgpt.com/codex/",
+        # Its app has only been tried on Windows.
+        app_platforms=("win32",),
     ),
     AgentSpec(
         name="dsh",
@@ -250,7 +275,6 @@ AGENTS: tuple[AgentSpec, ...] = (
             lambda: agent_permissions.no_lit_permission("dsh")
         ),
         skills_dir=lambda: skill.standard_skills_parent_dir(),
-        kind="app",
         url_scheme="dsh",
         # Its link, passed to the exe as its registered open command does:
         # started through the exe, the app stays out of our console (handed
@@ -441,13 +465,22 @@ def refresh_path() -> None:
 def resolve_launch(spec: AgentSpec) -> str | None:
     """Resolve ``spec``'s launch executable against the live environment.
 
-    None for a desktop app, which has no launch command.
+    None for a row that is only a desktop app, which has no launch command.
     """
-    if spec.kind == "app":
+    if not spec.launch:
         return None
     refresh_path()
     argv = shlex.split(spec.launch)
     return shutil.which(argv[0]) if argv else None
+
+
+def launch_env(spec: AgentSpec) -> dict[str, str]:
+    """The environment for ``spec``'s terminal launch, as a new dict.
+
+    This process's environment without the row's ``launch_env_unset``; call it
+    after anything that refreshes PATH.
+    """
+    return {k: v for k, v in os.environ.items() if k not in spec.launch_env_unset}
 
 
 def default_agent_name() -> str:
@@ -495,15 +528,83 @@ def skills_parent_dirs() -> list[Path]:
     return out
 
 
-def detect(spec: AgentSpec) -> bool:
-    """Is ``spec``'s command present on PATH (a desktop app: installed)?
+def launch_modes(spec: AgentSpec) -> list[LaunchMode]:
+    """The ways ``spec`` can start, from its data alone: a launch command is
+    the terminal, an open link is the app."""
+    modes: list[LaunchMode] = []
+    if spec.launch:
+        modes.append("terminal")
+    if spec.open_url:
+        modes.append("app")
+    return modes
 
-    Generic, data-driven — no per-agent branching. A ``kind="app"`` row asks
-    :func:`litman.core.app_launch.app_installed`; any other probes
+
+def machine_modes(spec: AgentSpec) -> list[LaunchMode]:
+    """The ways ``spec`` could start on this machine, installed or not.
+
+    A row with both ways loses the app where it would not reach the user or
+    the row does not offer it. A row that is only an app keeps it:
+    :func:`litman.core.app_launch.open_app` decides what happens there, as it
+    always has.
+    """
+    modes = launch_modes(spec)
+    if len(modes) > 1 and not (
+        app_launch.app_offered_here(spec) and app_launch.app_reaches_user()
+    ):
+        return [mode for mode in modes if mode != "app"]
+    return modes
+
+
+def mode_usable(spec: AgentSpec, mode: str) -> bool:
+    """Can ``spec`` start this way here right now?
+
+    Generic, data-driven — no per-agent branching. The app asks
+    :func:`litman.core.app_launch.app_installed`; the terminal probes
     ``detect_bin`` if set, otherwise the first token of the launch command.
     """
-    if spec.kind == "app":
+    if mode not in machine_modes(spec):
+        return False
+    if mode == "app":
         return app_launch.app_installed(spec)
     refresh_path()
     probe = spec.detect_bin or shlex.split(spec.launch)[0]
     return shutil.which(probe) is not None
+
+
+def detect(spec: AgentSpec) -> bool:
+    """Can ``spec`` start at all here, in any of its ways?"""
+    return any(mode_usable(spec, mode) for mode in machine_modes(spec))
+
+
+def _first_usable(spec: AgentSpec, order: tuple[LaunchMode, ...]) -> LaunchMode:
+    """The first mode in ``order`` usable here; with none usable, the first
+    this machine could use, which is the one whose download to point at."""
+    possible = [mode for mode in order if mode in machine_modes(spec)]
+    if len(set(possible)) > 1:
+        for mode in possible:
+            if mode_usable(spec, mode):
+                return mode
+    return possible[0] if possible else spec.default_mode
+
+
+def choose_mode(spec: AgentSpec, saved: LaunchMode | None = None) -> LaunchMode:
+    """The way the GUI button starts ``spec``: the user's saved choice if it
+    is usable, else the catalog default if it is, else the other way. A saved
+    choice that is not usable right now is passed over, not forgotten."""
+    if saved is not None and mode_usable(spec, saved):
+        return saved
+    return _first_usable(spec, (spec.default_mode, "terminal", "app"))
+
+
+def cli_mode(spec: AgentSpec) -> LaunchMode:
+    """The way ``lit agent`` starts ``spec``: typed in a terminal, it runs in
+    that terminal when it can. No saved choice or catalog default is read, so
+    the ``lit agent`` line the GUI hands out means the same everywhere."""
+    return _first_usable(spec, ("terminal", "app"))
+
+
+def mode_install_url(spec: AgentSpec, mode: str) -> str:
+    """Where to get ``spec`` for this way of starting it."""
+    if mode == "app" and spec.app_install_url:
+        return spec.app_install_url
+    return spec.install_url

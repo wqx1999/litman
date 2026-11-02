@@ -39,10 +39,11 @@ from litman.commands._hub_report import (
     PROJECTS_NOT_UPDATED,
     hub_settlement_lines,
     project_folder_not_updated,
+    refreshed_line,
 )
 from litman.commands._options import library_option, vault_option
 from litman.core.atomic import staged_write
-from litman.core.config import load_config
+from litman.core.config import load_config, stored_project_dir
 from litman.core.correctors import (
     link_errors_from,
     moved_aside_from,
@@ -76,6 +77,7 @@ from litman.core.schema import (
     fixed_enum_values,
     retired_field_replacement,
 )
+from litman.core.shell import shell_arg
 from litman.core.supplementary import SUPPLEMENTARY_FIELD
 from litman.core.taxonomy import USER_DICTS, parse_taxonomy, read_taxonomy_text
 from litman.core.textclean import TEXT_FIELDS, clean_metadata_text
@@ -212,7 +214,7 @@ def _apply_set(
     if key in FORBIDDEN_SET_FIELDS:
         if key == "id":
             raise ModifyError(
-                "Cannot --set id. Use `lit rename <old> <new>` (M2.6) so the "
+                'Cannot --set id. Use `lit rename "<old>" "<new>"` (M2.6) so the '
                 "paper directory and back-references stay in sync."
             )
         raise ModifyError(
@@ -245,8 +247,8 @@ def _apply_set(
         if graded_project not in (metadata.get("projects") or []):
             raise ModifyError(
                 f"Cannot --set {key!r}: not linked to {graded_project!r}. "
-                f"Link it first: lit link {paper_id} "
-                f"--project {graded_project} --priority A"
+                f"Link it first: lit link {shell_arg(paper_id)} "
+                f"--project {shell_arg(graded_project)} --priority A"
             )
         # Tolerate-don't-produce: check_schema ACCEPTS a present
         # `priority-<project>: null` so hand-edits and older data do not
@@ -368,11 +370,11 @@ def _apply_add_tag(
         if value not in registered:
             if key == "projects":
                 hint = (
-                    f"Run `lit project add {value} --path <abs-path>` "
+                    f'Run `lit project add {shell_arg(value)} --path "<abs-path>"` '
                     "first."
                 )
             else:
-                hint = f"Run `lit taxonomy add {key} {value}` first."
+                hint = f"Run `lit taxonomy add {key} {shell_arg(value)}` first."
             raise ModifyError(
                 f"{key!r} value {value!r} is not registered in "
                 f"TAXONOMY.md. {hint}"
@@ -524,8 +526,8 @@ def _reject_code_managed_field(key: str, flag_name: str) -> None:
         raise ModifyError(
             f"{flag_name} {key!r} is not allowed: {key!r} is maintained by the "
             "`lit code` commands so both the paper and the repo's reverse "
-            "list stay in sync. Use `lit code link <repo> --paper <id>` to "
-            "bind, `lit code unlink <repo> --paper <id>` to unbind."
+            'list stay in sync. Use `lit code link "<repo>" --paper "<id>"` to '
+            'bind, `lit code unlink "<repo>" --paper "<id>"` to unbind.'
         )
 
 
@@ -951,8 +953,8 @@ def _apply_modify(
             project_dir_str = registry.get(proj)
             if not project_dir_str:
                 continue
-            project_dir = Path(project_dir_str).expanduser()
-            if not project_dir.is_dir():
+            project_dir = stored_project_dir(project_dir_str)
+            if project_dir is None or not project_dir.is_dir():
                 continue
             try:
                 write_references_md(
@@ -984,12 +986,13 @@ def _apply_modify(
     for line in hub_settlement_lines(0, moved_aside_from(derived)):
         console.print(f"  {line}", soft_wrap=True)
     # A views/ folder it could not change was said by the rebuild itself.
-    refreshed = "INDEX.json" if derived["view_errors"] else "INDEX.json + views/"
+    also = []
     if retitled_notes is not None:
-        refreshed += " + notes.md heading"
+        also.append("notes.md heading")
     if projects_changed and not project_side_skipped and not link_errors:
-        refreshed += " + project litman_reflib/REFERENCES.md"
-    console.print(f"[dim]{refreshed} refreshed.[/]")
+        also.append("project litman_reflib/REFERENCES.md")
+    if refreshed := refreshed_line(derived, *also):
+        console.print(refreshed)
     if project_side_skipped:
         console.print(PROJECTS_NOT_UPDATED, soft_wrap=True)
     elif link_errors:

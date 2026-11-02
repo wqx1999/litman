@@ -35,6 +35,7 @@ from typing import Any
 
 from litman.core.dates import now_iso
 from litman.core.locking import ensure_truth_locked
+from litman.core.replace import replace_file
 from litman.core.undecodable import config_refusal
 from litman.core.yaml_pool import ThreadLocalYAML
 from litman.exceptions import SyncError
@@ -446,7 +447,7 @@ def write_sync_state(vault: Path, state: SyncState) -> None:
     buf = io.StringIO()
     _yaml.dump(payload, buf)
     tmp.write_text(buf.getvalue(), encoding="utf-8")
-    tmp.replace(path)
+    replace_file(tmp, path)
 
 
 def stamp_push(vault: Path) -> None:
@@ -647,7 +648,7 @@ def write_sync_to_config(config_path: Path, payload: SetupPayload) -> None:
     tmp = config_path.with_suffix(config_path.suffix + ".tmp")
     with tmp.open("w", encoding="utf-8") as f:
         _yaml.dump(data, f)
-    tmp.replace(config_path)
+    replace_file(tmp, config_path)
 
 
 # ---------------------------------------------------------------------------

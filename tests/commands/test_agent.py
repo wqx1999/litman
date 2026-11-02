@@ -3,7 +3,7 @@
 The command resolves the vault, resolves which agent to launch (explicit NAME
 → machine-level default in preferences.yaml → catalog fallback), looks the
 launch command up in the code-level catalog, and hands the process over with
-the vault as working directory — POSIX via ``os.execvp``, Windows via a
+the vault as working directory — POSIX via ``os.execvpe``, Windows via a
 ``subprocess.run`` child whose exit code is passed through.
 
 One test drives the REAL exec path end-to-end through a true subprocess with a
@@ -84,6 +84,49 @@ def test_agent_real_spawn_execs_catalog_default_in_vault(
     assert Path(result.stdout.strip()).resolve() == vault.resolve()
 
 
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="the same stand-in `claude` as the test above: POSIX-only by design.",
+)
+def test_agent_real_spawn_leaves_the_session_marker_behind(
+    vault: Path, tmp_path: Path
+) -> None:
+    """Started from inside a Claude Code session, the real exec hands the new
+    session an environment without the marker, and everything else intact."""
+    bindir = tmp_path / "bin"
+    bindir.mkdir()
+    fake = bindir / "claude"
+    fake.write_text(
+        "#!/usr/bin/env python3\n"
+        "import os\n"
+        "print(os.environ.get('CLAUDE_CODE_CHILD_SESSION', 'gone'))\n"
+        "print(os.environ.get('CLAUDECODE', 'gone'))\n"
+        "print(os.environ.get('NO_COLOR', 'gone'))\n"
+    )
+    fake.chmod(0o755)
+    home = tmp_path / "home"
+    home.mkdir()
+    env = os.environ.copy()
+    src_dir = Path(litman.__file__).resolve().parents[1]
+    env["PYTHONPATH"] = str(src_dir) + os.pathsep + env.get("PYTHONPATH", "")
+    env["PATH"] = str(bindir) + os.pathsep + env["PATH"]
+    env["HOME"] = str(home)
+    env["USERPROFILE"] = str(home)
+    env["CLAUDE_CODE_CHILD_SESSION"] = "1"
+    env["CLAUDECODE"] = "1"
+    env["NO_COLOR"] = "1"
+
+    result = subprocess.run(
+        [sys.executable, "-m", "litman", "agent", "--library", str(vault)],
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.split() == ["gone", "1", "1"]
+
+
 # ---------------------------------------------------------------------------
 # Resolution + friendly errors
 # ---------------------------------------------------------------------------
@@ -120,7 +163,9 @@ def test_agent_unsupported_name_is_rejected(
     monkeypatch.setattr(agents, "AGENTS", (*agents.AGENTS, placeholder))
     execd: list[object] = []
     monkeypatch.setattr(agents, "resolve_launch", lambda spec: f"/usr/bin/{spec.name}")
-    monkeypatch.setattr(os, "execvp", lambda file, argv: execd.append((file, argv)))
+    monkeypatch.setattr(
+        os, "execvpe", lambda file, argv, _env: execd.append((file, argv))
+    )
     result = CliRunner().invoke(agent_cmd, ["future", "--library", str(vault)])
     assert result.exit_code != 0
     assert isinstance(result.exception, LitmanError)
@@ -150,13 +195,15 @@ def test_agent_command_missing_from_path(
 
 @pytest.fixture
 def exec_capture(monkeypatch: pytest.MonkeyPatch) -> dict[str, object]:
-    """Force the POSIX branch and capture chdir/execvp instead of running."""
+    """Force the POSIX branch and capture chdir/execvpe instead of running."""
     captured: dict[str, object] = {}
     monkeypatch.setattr(sys, "platform", "linux")
     monkeypatch.setattr(agents, "resolve_launch", lambda spec: f"/usr/bin/{spec.name}")
     monkeypatch.setattr(os, "chdir", lambda p: captured.setdefault("cwd", Path(p)))
     monkeypatch.setattr(
-        os, "execvp", lambda file, argv: captured.update(file=file, argv=argv)
+        os,
+        "execvpe",
+        lambda file, argv, env: captured.update(file=file, argv=argv, env=env),
     )
     return captured
 
@@ -184,14 +231,20 @@ def test_agent_windows_child_exit_code_passes_through(
     vault: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setenv("CLAUDE_CODE_CHILD_SESSION", "1")
+    monkeypatch.setenv("CLAUDECODE", "1")
     monkeypatch.setattr(
         agents, "resolve_launch", lambda spec: f"C:\\bin\\{spec.name}.exe"
     )
+    # The default agent has an app too, so its CLI is probed to choose.
+    monkeypatch.setattr(agents.shutil, "which", lambda name: f"C:\\bin\\{name}.exe")
     calls: dict[str, object] = {}
+    envs: list[dict[str, str]] = []
 
-    def fake_run(argv: list[str], cwd: Path) -> SimpleNamespace:
+    def fake_run(argv: list[str], cwd: Path, env: dict[str, str]) -> SimpleNamespace:
         calls["argv"] = argv
         calls["cwd"] = cwd
+        envs.append(env)
         return SimpleNamespace(returncode=7)
 
     monkeypatch.setattr("litman.commands.agent.subprocess.run", fake_run)
@@ -199,6 +252,9 @@ def test_agent_windows_child_exit_code_passes_through(
     assert result.exit_code == 7
     assert calls["argv"] == [r"C:\bin\claude.exe"]
     assert Path(str(calls["cwd"])).resolve() == vault.resolve()
+    assert "CLAUDE_CODE_CHILD_SESSION" not in envs[0]
+    assert envs[0]["CLAUDECODE"] == "1"
+    assert os.environ["CLAUDE_CODE_CHILD_SESSION"] == "1"
 
 
 def test_agent_windows_runs_npm_cmd_shim_through_cmd(
@@ -207,17 +263,26 @@ def test_agent_windows_runs_npm_cmd_shim_through_cmd(
     monkeypatch.setattr(sys, "platform", "win32")
     codex = r"C:\Users\Wang\AppData\Roaming\npm\codex.CMD"
     monkeypatch.setattr(agents, "resolve_launch", lambda _spec: codex)
+    # The real which breaks under a faked sys.platform on some Python versions.
+    monkeypatch.setattr(agents.shutil, "which", lambda name: f"C:\\bin\\{name}.exe")
+    monkeypatch.setenv("CLAUDE_CODE_CHILD_SESSION", "1")
     calls: list[list[str]] = []
-    monkeypatch.setattr(
-        "litman.commands.agent.subprocess.run",
-        lambda argv, cwd: calls.append(argv) or SimpleNamespace(returncode=0),
-    )
+    envs: list[dict[str, str]] = []
+
+    def fake_run(argv: list[str], cwd: Path, env: dict[str, str]) -> SimpleNamespace:
+        calls.append(argv)
+        envs.append(env)
+        return SimpleNamespace(returncode=0)
+
+    monkeypatch.setattr("litman.commands.agent.subprocess.run", fake_run)
 
     result = CliRunner().invoke(
         agent_cmd, ["codex", "--library", str(vault)]
     )
     assert result.exit_code == 0
     assert calls == [["cmd", "/c", codex]]
+    # Another agent's row lists nothing, so the variable stays.
+    assert envs[0]["CLAUDE_CODE_CHILD_SESSION"] == "1"
 
 
 # ---------------------------------------------------------------------------
@@ -239,6 +304,36 @@ def test_set_default_rejects_unknown_agent() -> None:
     assert "not a supported agent" in str(result.exception)
 
 
+def test_agent_launch_env_drops_only_what_the_row_lists(
+    vault: Path,
+    exec_capture: dict[str, object],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("CLAUDE_CODE_CHILD_SESSION", "1")
+    monkeypatch.setenv("CLAUDECODE", "1")
+    monkeypatch.setenv("NO_COLOR", "1")
+    result = CliRunner().invoke(agent_cmd, ["claude", "--library", str(vault)])
+    assert result.exit_code == 0, result.output
+    env = exec_capture["env"]
+    assert isinstance(env, dict)
+    assert "CLAUDE_CODE_CHILD_SESSION" not in env
+    assert env["CLAUDECODE"] == "1"
+    assert env["NO_COLOR"] == "1"
+    assert os.environ["CLAUDE_CODE_CHILD_SESSION"] == "1"
+
+
+def test_agent_launch_env_of_another_agent_keeps_everything(
+    vault: Path,
+    exec_capture: dict[str, object],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("CLAUDE_CODE_CHILD_SESSION", "1")
+    result = CliRunner().invoke(agent_cmd, ["codex", "--library", str(vault)])
+    assert result.exit_code == 0, result.output
+    assert exec_capture["argv"] == ["codex"]
+    assert exec_capture["env"] == dict(os.environ)
+
+
 def test_agent_launches_saved_default(
     vault: Path, exec_capture: dict[str, object]
 ) -> None:
@@ -250,7 +345,7 @@ def test_agent_launches_saved_default(
 
 
 # ---------------------------------------------------------------------------
-# A desktop-app agent (kind="app", task-zcode-agent): open it and return
+# A desktop-app agent (task-zcode-agent): open it and return
 # ---------------------------------------------------------------------------
 
 
@@ -263,7 +358,9 @@ def test_agent_app_opens_at_the_vault_and_returns(
     monkeypatch.setattr(
         app_launch, "open_app", lambda spec, at: opened.append((spec.name, at))
     )
-    monkeypatch.setattr(os, "execvp", lambda *_a: pytest.fail("an app is never exec'd"))
+    monkeypatch.setattr(
+        os, "execvpe", lambda *_a: pytest.fail("an app is never exec'd")
+    )
     monkeypatch.setattr(
         "litman.commands.agent.subprocess.run",
         lambda *_a, **_k: pytest.fail("an app is never waited on"),
@@ -310,7 +407,7 @@ def test_agent_dsh_on_windows_starts_its_exe_and_does_not_claim_the_vault(
     )
     monkeypatch.setattr(
         app_launch,
-        "_startfile",
+        "_open_link_detached_windows",
         lambda _url: pytest.fail("the system opener lets DSH log into our console"),
     )
 
@@ -334,4 +431,136 @@ def test_agent_dsh_never_opened_names_the_download(
         "DeepSeek Harness isn't installed, or hasn't been opened yet. "
         "Open it once, then try again. "
         "Get DeepSeek Harness: https://www.deepseek.com/harness/"
+    )
+
+
+# ---------------------------------------------------------------------------
+# An agent with both a CLI and an app (task-agent-launch-modes): the terminal
+# first, whatever the GUI button saved
+# ---------------------------------------------------------------------------
+
+
+def _claude_installed(
+    monkeypatch: pytest.MonkeyPatch, *, terminal: bool, app: bool
+) -> list[tuple[str, Path]]:
+    """A desktop machine; returns the record of apps opened."""
+    from litman.core import app_launch
+
+    monkeypatch.delenv("SSH_CONNECTION", raising=False)
+    monkeypatch.delenv("SSH_CLIENT", raising=False)
+    monkeypatch.setattr(app_launch, "_platform", lambda: "win32")
+    monkeypatch.setattr(
+        agents.shutil, "which", lambda name: f"/usr/bin/{name}" if terminal else None
+    )
+    monkeypatch.setattr(app_launch, "app_installed", lambda _spec: app)
+    opened: list[tuple[str, Path]] = []
+    monkeypatch.setattr(
+        app_launch, "open_app", lambda spec, at: opened.append((spec.name, at))
+    )
+    return opened
+
+
+def test_agent_with_both_runs_in_the_terminal_even_with_the_app_saved(
+    vault: Path, monkeypatch: pytest.MonkeyPatch, exec_capture: dict[str, object]
+) -> None:
+    opened = _claude_installed(monkeypatch, terminal=True, app=True)
+    agent_prefs.save_launch_mode("claude", "app")
+    result = CliRunner().invoke(agent_cmd, ["claude", "--library", str(vault)])
+    assert result.exit_code == 0, result.output
+    assert exec_capture["argv"] == ["claude"]
+    assert opened == []
+
+
+def test_agent_with_only_its_app_here_opens_it(
+    vault: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    opened = _claude_installed(monkeypatch, terminal=False, app=True)
+    monkeypatch.setattr(os, "execvpe", lambda *_a: pytest.fail("no CLI to exec"))
+    result = CliRunner().invoke(agent_cmd, ["claude", "--library", str(vault)])
+    assert result.exit_code == 0, result.output
+    assert opened == [("claude", vault)]
+    assert result.output == f"Opened Claude Code at {vault}.\n"
+
+
+@pytest.mark.parametrize("platform", ["darwin", "linux"])
+def test_agent_codex_off_windows_with_no_cli_names_the_cli_and_opens_nothing(
+    vault: Path, monkeypatch: pytest.MonkeyPatch, platform: str
+) -> None:
+    from litman.core import app_launch
+
+    opened = _claude_installed(monkeypatch, terminal=False, app=True)
+    monkeypatch.setattr(app_launch, "_platform", lambda: platform)
+    monkeypatch.setenv("DISPLAY", ":0")
+    result = CliRunner().invoke(agent_cmd, ["codex", "--library", str(vault)])
+    assert result.exit_code != 0
+    assert isinstance(result.exception, LitmanError)
+    message = str(result.exception)
+    assert "'codex' not found on PATH" in message
+    assert "https://developers.openai.com/codex/cli/" in message
+    assert "chatgpt.com" not in message
+    assert opened == []
+
+
+def test_agent_codex_prefers_its_cli_over_a_saved_app_and_the_catalog_default(
+    vault: Path, monkeypatch: pytest.MonkeyPatch, exec_capture: dict[str, object]
+) -> None:
+    opened = _claude_installed(monkeypatch, terminal=True, app=True)
+    agent_prefs.save_launch_mode("codex", "app")
+    result = CliRunner().invoke(agent_cmd, ["codex", "--library", str(vault)])
+    assert result.exit_code == 0, result.output
+    assert exec_capture["argv"] == ["codex"]
+    assert opened == []
+
+
+def test_agent_codex_on_windows_with_only_its_app_opens_it_at_the_vault(
+    vault: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    opened = _claude_installed(monkeypatch, terminal=False, app=True)
+    result = CliRunner().invoke(agent_cmd, ["codex", "--library", str(vault)])
+    assert result.exit_code == 0, result.output
+    assert opened == [("codex", vault)]
+    assert result.output == f"Opened Codex at {vault}.\n"
+
+
+def test_agent_with_both_and_neither_here_names_the_cli_download(
+    vault: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    opened = _claude_installed(monkeypatch, terminal=False, app=False)
+    monkeypatch.setattr(agents, "resolve_launch", lambda _spec: None)
+    result = CliRunner().invoke(agent_cmd, ["claude", "--library", str(vault)])
+    assert result.exit_code != 0
+    assert isinstance(result.exception, LitmanError)
+    message = str(result.exception)
+    assert "'claude' not found on PATH" in message
+    assert agents.get_agent("claude").install_url in message
+    assert opened == []
+
+
+def test_agent_with_both_over_ssh_never_opens_the_app(
+    vault: Path, monkeypatch: pytest.MonkeyPatch, exec_capture: dict[str, object]
+) -> None:
+    opened = _claude_installed(monkeypatch, terminal=True, app=True)
+    monkeypatch.setenv("SSH_CONNECTION", "1.2.3.4 5 6.7.8.9 22")
+    result = CliRunner().invoke(agent_cmd, ["claude", "--library", str(vault)])
+    assert result.exit_code == 0, result.output
+    assert exec_capture["argv"] == ["claude"]
+    assert opened == []
+
+
+def test_agent_app_start_failure_names_the_app_download_not_the_clis(
+    vault: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from litman.core import app_launch
+
+    _claude_installed(monkeypatch, terminal=False, app=True)
+
+    def broken(_spec: object, _at: Path) -> None:
+        raise app_launch.AppNotFound("Could not open Claude Code: denied")
+
+    monkeypatch.setattr(app_launch, "open_app", broken)
+    result = CliRunner().invoke(agent_cmd, ["claude", "--library", str(vault)])
+    assert result.exit_code != 0
+    assert str(result.exception) == (
+        "Could not open Claude Code: denied "
+        "Get Claude Code: https://claude.com/download"
     )

@@ -41,7 +41,7 @@ def _reset_warning(monkeypatch: pytest.MonkeyPatch) -> None:
 # ---------------------------------------------------------------------------
 
 
-def _refuse_links(monkeypatch: pytest.MonkeyPatch, errno: int = 13) -> None:
+def _refuse_links(monkeypatch: pytest.MonkeyPatch, errno: int = 1) -> None:
     """Make BOTH link mechanisms fail, as an exFAT drive would.
 
     Poisoning only ``Path.symlink_to`` leaves the Windows arm free to make a
@@ -49,7 +49,7 @@ def _refuse_links(monkeypatch: pytest.MonkeyPatch, errno: int = 13) -> None:
     """
 
     def boom(*_a: object, **_k: object) -> None:
-        raise OSError(errno, "Permission denied (mocked)")
+        raise OSError(errno, "Refused (mocked)")
 
     monkeypatch.setattr(Path, "symlink_to", boom)
     monkeypatch.setattr(portable_link, "_create_junction", boom)

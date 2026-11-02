@@ -22,6 +22,7 @@ from litman.core.config import load_config
 from litman.core.document import list_papers
 from litman.core.library import create_vault
 from litman.core.portable_link import is_portable_link
+from litman.core.project_link import add_project, checked_project_path
 from litman.core.taxonomy import parse_taxonomy
 from litman.exceptions import TaxonomyError
 
@@ -453,6 +454,23 @@ def test_project_set_path_missing_dir_rejected(
     assert result.exit_code != 0
     assert isinstance(result.exception, TaxonomyError)
     assert "does not exist" in str(result.exception)
+
+
+def test_project_path_refusals_read_the_same_on_every_platform(
+    vault: Path, tmp_path: Path
+) -> None:
+    not_absolute = "Path 'x' is not absolute. Give the full path to the folder."
+    with pytest.raises(TaxonomyError) as relative:
+        checked_project_path(Path("x"))
+    assert str(relative.value) == not_absolute
+    with pytest.raises(TaxonomyError) as added:
+        add_project(vault, "p", Path("x"))
+    assert str(added.value) == not_absolute
+
+    ghost = (tmp_path / "ghost").resolve()
+    with pytest.raises(TaxonomyError) as missing:
+        checked_project_path(ghost)
+    assert str(missing.value) == f"Path {str(ghost)!r} does not exist. Create it first."
 
 
 def test_project_set_path_unregistered_rejected(vault: Path) -> None:

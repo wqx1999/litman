@@ -42,6 +42,7 @@ from pathlib import Path
 from typing import Any
 
 import litman
+from litman.core.replace import replace_file
 from litman.core.vault_registry import registry_path
 
 PYPI_JSON_URL = "https://pypi.org/pypi/litman/json"
@@ -200,7 +201,7 @@ def _write_cache(data: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = _tmp_path(path)
     tmp.write_text(json.dumps(data), encoding="utf-8")
-    tmp.replace(path)
+    replace_file(tmp, path)
 
 
 def uv_receipt_path() -> Path:

@@ -27,7 +27,7 @@ post-M23.1 writer no longer emits; readers tolerate its absence (default
 ``False``).
 
 Atomicity: the sidecar is written first, then the paper folder is moved
-via ``shutil.move`` (POSIX ``os.rename`` if same FS — guaranteed atomic).
+via ``move_dir`` (``os.rename`` on the same drive — guaranteed atomic).
 On a failure between the two writes, the sidecar is dropped to avoid
 orphaned metadata. Restore is the inverse: move first, then drop the
 sidecar.
@@ -39,11 +39,11 @@ trashed entries — they are absent from INDEX.json and views/.
 
 from __future__ import annotations
 
+import contextlib
 import io
 import itertools
 import os
 import re
-import shutil
 import sys
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -61,6 +61,7 @@ from litman.core.code import (
     make_repo_meta,
     repo_meta_text,
 )
+from litman.core.config import stored_project_dir
 from litman.core.dates import now_iso
 from litman.core.document import load_yaml_or_raise
 from litman.core.locking import rmtree
@@ -80,6 +81,7 @@ from litman.core.project_link import (
 )
 from litman.core.project_refs import LITERATURE_SUBDIR, write_references_md
 from litman.core.relations import ALL_REF_FIELDS, RELATION_PAIRS
+from litman.core.replace import move_dir
 from litman.core.views import (
     papers_for_index,
     render_index,
@@ -324,7 +326,7 @@ def move_to_trash(
     sidecar_path.write_text(buf.getvalue(), encoding="utf-8")
 
     try:
-        shutil.move(str(src), str(entry_path))
+        move_dir(src, entry_path)
     except Exception:
         sidecar_path.unlink(missing_ok=True)
         raise
@@ -759,8 +761,8 @@ def _rebuild_project_links(
         project_dir_str = registry.get(project)
         if not project_dir_str:
             continue
-        project_dir = Path(project_dir_str).expanduser()
-        if not project_dir.is_dir():
+        project_dir = stored_project_dir(project_dir_str)
+        if project_dir is None or not project_dir.is_dir():
             continue
 
         errors_before = len(link_errors)
@@ -887,10 +889,12 @@ def restore_from_trash(
         sealed_meta["updated-at"] = now
         pruned_meta_text = _dump_rt_to_string(sealed_meta)
 
+    write = staged_write(vault, op_id=f"restore-{paper_id}")
+
     # Step 1: move the folder back (filesystem). If the staged write below
     # fails, roll the folder back into trash so the op is atomic end-to-end.
     dst.parent.mkdir(parents=True, exist_ok=True)
-    shutil.move(str(entry.entry_path), str(dst))
+    move_dir(entry.entry_path, dst)
 
     # INDEX.json reflects the post-restore (pruned) paper list, rendered in
     # memory so it does not depend on the just-moved files being re-read.
@@ -917,7 +921,7 @@ def restore_from_trash(
     new_index = render_index(surviving, now)
 
     try:
-        with staged_write(vault, op_id=f"restore-{paper_id}") as stage:
+        with write as stage:
             if pruned_meta_text is not None:
                 stage.write_text(
                     f"papers/{paper_id}/metadata.yaml", pruned_meta_text
@@ -955,10 +959,16 @@ def restore_from_trash(
                     )
             stage.write_text("INDEX.json", new_index)
     except Exception:
-        # Roll the folder back into trash so a failed transaction leaves no
-        # half-restored paper (steps 1-2 are one logical transaction).
-        if dst.exists() and not entry.entry_path.exists():
-            shutil.move(str(dst), str(entry.entry_path))
+        if write.committed:
+            # Past the decision point the next recovery finishes this write, so
+            # the folder stays where its metadata and INDEX are going to say it
+            # is. Nothing in the trash describes it any more.
+            with contextlib.suppress(OSError):
+                _sidecar_path(entry.entry_path).unlink(missing_ok=True)
+        elif dst.exists() and not entry.entry_path.exists():
+            # Roll the folder back into trash so a failed transaction leaves no
+            # half-restored paper (steps 1-2 are one logical transaction).
+            move_dir(dst, entry.entry_path)
         raise
 
     # Drop sidecar now that the restore is committed; a stray sidecar is

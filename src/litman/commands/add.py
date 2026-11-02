@@ -66,6 +66,7 @@ from litman.core.locking import lock_truth_file, rmtree
 from litman.core.notes import WIKILINK_REMINDER, discussion_scaffold
 from litman.core.paper_lookup import complete_paper_id, resolve_paper_id
 from litman.core.placeholders import is_placeholder
+from litman.core.shell import shell_arg
 from litman.core.views import load_index_papers, view_fields_snapshot
 from litman.core.yaml_pool import ThreadLocalYAML
 from litman.exceptions import AddError, DuplicateDOIError, IDError
@@ -173,8 +174,9 @@ def _refuse_doi_duplicate(doi: str, existing_id: str, meta: dict[str, Any]) -> N
         f"  added: {added}\n"
         f"\n"
         f"Next steps:\n"
-        f"  lit show {existing_id}                       # inspect\n"
-        f"  lit rm {existing_id} && lit add <pdf> --doi {doi}   # replace"
+        f"  lit show {shell_arg(existing_id)}                       # inspect\n"
+        f"  lit rm {shell_arg(existing_id)}                         # replace, step 1\n"
+        f'  lit add "<pdf>" --doi {shell_arg(doi)}   # replace, step 2'
     )
 
 
@@ -985,6 +987,6 @@ def add_cmd(
                 # reader: it lives in lit-library/add-errors.md. A warning nobody
                 # finishes reading protects nobody, so this line carries the
                 # verdict and the way out and stops.
-                f"Fix: `lit modify {escape(paper_id)} "
+                f"Fix: `lit modify {escape(shell_arg(paper_id))} "
                 '--set-author "Family, Given" ...` (repeat, in order).'
             )

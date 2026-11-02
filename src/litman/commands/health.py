@@ -55,6 +55,7 @@ from litman.core.document import list_papers
 from litman.core.library import find_vault, resolve_library_or_vault
 from litman.core.locking import ensure_truth_locked
 from litman.core.portable_link import views_line_once
+from litman.core.shell import shell_arg
 
 if TYPE_CHECKING:
     from litman.core.supplementary import SiFixPolicy
@@ -126,6 +127,7 @@ _CATEGORY_HEADERS: dict[str, str] = {
         "Project bridge links (litman_reflib / litman_code) resolve to a live target"
     ),
     "links_unsupported": "Folder links (views/ + project shortcuts)",
+    "links_denied": "Folder links refused here (views/ + project shortcuts)",
     "dangling_refs": "Dangling references (related/contradicts/extends + reverse)",
     "dangling_wikilinks": "Dangling [[id]] wikilinks in notes",
     "relevance_orphan": "Orphan relevance-<project> annotations",
@@ -462,8 +464,8 @@ def _report_renames(applied: dict[str, Any]) -> None:
     renames = applied.get(DIRTY_RENAMES)
     for pid, target in renames if isinstance(renames, list) else []:
         console.print(
-            f"    [yellow]rename[/] {escape(pid)}: `lit rename {escape(pid)} "
-            f"{escape(target)}` if you want the id to match the clean title",
+            f"    [yellow]rename[/] {escape(pid)}: `lit rename {escape(shell_arg(pid))} "
+            f"{escape(shell_arg(target))}` if you want the id to match the clean title",
             soft_wrap=True,
         )
 
@@ -505,12 +507,12 @@ def _si_fix_policy() -> SiFixPolicy:
                 "Drop the record(s)?",
                 default=True,
             )
-        flags = " ".join(f"--si {si_stem(name)}" for name in names)
+        flags = " ".join(f"--si {shell_arg(si_stem(name))}" for name in names)
         record, them = ("record", "it") if len(names) == 1 else ("records", "them")
         console.print(
             f"  [yellow]kept[/] {escape(paper_id)}: {record} of missing "
-            f"{escape(listed)} [dim](drop {them}: `lit rm {escape(paper_id)} "
-            f"{flags} --yes`)[/]",
+            f"{escape(listed)} [dim](drop {them}: `lit rm {escape(shell_arg(paper_id))} "
+            f"{escape(flags)} --yes`)[/]",
             soft_wrap=True,
         )
         return False
@@ -524,7 +526,7 @@ def _si_fix_policy() -> SiFixPolicy:
                 "Record it anyway?",
                 default=False,
             )
-        command = f"lit add --si {paper_id} {shell_path(path)} --force"
+        command = f"lit add --si {shell_arg(paper_id)} {shell_path(path)} --force"
         console.print(
             f"  [yellow]left[/] {escape(printable(str(path)))}: can't confirm it belongs "
             f"to {escape(paper_id)} [dim](record it: `{escape(command)}`)[/]",
@@ -603,12 +605,16 @@ def _apply_fixes(vault: Path, issues: list[Issue]) -> dict[str, Any]:
             counts[_PROJECT_FOLDERS_LEFT] = folders_left
         # Likewise a views/ folder it could not change (the regen said which).
         views_left = bool(regenerated.get("view_errors"))
+        # And INDEX.json, if it could not be written (the regen said that too).
+        index_left = regenerated.get("index") == 0
         # A regen is a single wholesale rebuild; attribute one cleaned unit to
         # each fired klass-A category so the report names what was healed.
         for cat in klass_a_present:
             if folders_left and cat == "project_references":
                 continue
             if views_left and cat == "views_vs_metadata":
+                continue
+            if index_left and cat == "index_vs_disk":
                 continue
             counts[cat] = 1
         # Passed through, not counted: how many hub folder copies the rebuild

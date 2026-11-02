@@ -224,6 +224,11 @@ def _isolate_machine_config_roots(
     home = tmp_path_factory.mktemp("machine-home")
     monkeypatch.setenv("HOME", str(home))
     monkeypatch.setenv("USERPROFILE", str(home))
+    # refresh_path() writes PATH straight into os.environ, so this restores it.
+    # On Windows the registry's %USERPROFILE%\\... entry expands to this test's
+    # new home, and left in place one such entry per test passes the 32767
+    # limit on an environment variable partway through the suite.
+    monkeypatch.setenv("PATH", os.environ.get("PATH", ""))
     for var in (
         "XDG_CONFIG_HOME",
         "XDG_DATA_HOME",
@@ -348,12 +353,14 @@ def _isolate_skills_dir(
 def _no_desktop_apps(monkeypatch: pytest.MonkeyPatch) -> None:
     """Every desktop-app probe reports "not installed" unless a test says otherwise.
 
-    ``agents.detect`` of a ``kind="app"`` row reads the machine: the Windows
-    registry, the macOS app folders, or the XDG mime files on Linux. Left
+    ``agents.detect`` of a row with an app reads the machine: the Windows
+    registry or link handlers, the macOS app folders, or the XDG mime files on
+    Linux. Left
     real, an agent-status test would depend on whether the box has the app
     installed. Tests that need an installed app re-patch these seams;
     ``test_app_launch`` keeps the real ones it tests.
     """
     monkeypatch.setattr("litman.core.app_launch._read_scheme_command", lambda _s: None)
+    monkeypatch.setattr("litman.core.app_launch._scheme_has_handler", lambda _s: False)
     monkeypatch.setattr("litman.core.app_launch._app_dirs", lambda: [])
     monkeypatch.setattr("litman.core.app_launch._xdg_default_handler", lambda _s: "")

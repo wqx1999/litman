@@ -414,7 +414,7 @@ def test_T4_crash_after_sentinel_before_promote(
     r = results[0]
     assert r.kind == "rolled_forward"
     assert r.n_files == len(_PAYLOAD)
-    assert "op-T4" in (r.message or "")
+    assert "no need to run it again" in (r.message or "")
     assert not op_dir.exists()
     assert _snapshot(vault) == ref
 
@@ -772,8 +772,8 @@ def test_T10_recover_via_vault_open_hook(
     assert not op_dir.exists()
     assert _snapshot(vault) == ref
     # Recovery line on stderr, not stdout (pipe-safe).
-    assert "op-T10" in result.stderr
-    assert "op-T10" not in result.stdout
+    assert "no need to run it again" in result.stderr
+    assert "no need to run it again" not in result.stdout
 
 
 # --- AC4: vault-open recovery fires exactly once per command -----------
@@ -825,7 +825,7 @@ def test_vault_open_recovery_fires_exactly_once_per_command(
     # And it actually healed the vault before command logic ran.
     assert not op_dir.exists()
     assert _snapshot(vault) == ref
-    assert "op-AC4" in result.stderr
+    assert "no need to run it again" in result.stderr
 
 
 # --- T11: promotion follows manifest order, not dict/glob order ---------

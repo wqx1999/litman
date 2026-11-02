@@ -23,7 +23,7 @@ from litman.core import viewer
 from litman.core.checks import run_all_checks
 from litman.core.cite import format_acs
 from litman.core.code import code_clone_upstreams, missing_code_clones
-from litman.core.config import CONFIG_FILENAME
+from litman.core.config import CONFIG_FILENAME, stored_project_dir
 from litman.core.document import find_paper, list_papers
 from litman.core.fs_identity import Anchor
 from litman.core.gui_registry import host_id
@@ -755,7 +755,8 @@ def get_projects(request: Request) -> list[dict[str, str]]:
         in_cfg = name in config_names
         path_str = config_map.get(name, "")
         if in_tax and in_cfg:
-            path_ok = bool(path_str) and Path(path_str).expanduser().is_dir()
+            project_dir = stored_project_dir(path_str)
+            path_ok = project_dir is not None and project_dir.is_dir()
             status = "ok" if path_ok else "path-missing"
         elif in_cfg:
             status = "config-only"

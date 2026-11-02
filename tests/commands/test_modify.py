@@ -2068,7 +2068,7 @@ def test_modify_set_priority_for_a_project_the_paper_is_not_in_is_refused(
     assert result.exit_code != 0
     msg = str(result.exception)
     assert "not linked to 'nosuch'" in msg
-    assert f"lit link {paper_id} --project nosuch --priority A" in msg
+    assert f'lit link "{paper_id}" --project nosuch --priority A' in msg
     assert "priority-nosuch" not in _read_meta(vault, paper_id)
 
 
