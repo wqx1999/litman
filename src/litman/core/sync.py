@@ -39,6 +39,7 @@ import shutil
 import stat
 import subprocess
 import sys
+import tempfile
 from collections.abc import Callable, Iterable, Iterator
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta
@@ -1024,6 +1025,21 @@ def _rclone_fs_info(remote: str) -> tuple[str, str] | None:
     return name, root
 
 
+def _cloud_holds_library(target_url: str) -> bool | None:
+    """Whether the cloud folder holds a library; ``None`` if rclone cannot tell.
+
+    Runs :func:`remote_holds_files` with the filter rules in a scratch file:
+    the sync's state folder is made only once the names are known to fit.
+    """
+    with tempfile.TemporaryDirectory(prefix="litman-sync-") as scratch:
+        filters_file = Path(scratch) / "filters.txt"
+        filters_file.write_bytes(two_way_filter_rules().encode("utf-8"))
+        try:
+            return remote_holds_files(target_url, filters_file)
+        except SyncError:
+            return None
+
+
 def require_bisync_names_fit(vault: Path, target_url: str) -> None:
     """Refuse, before rclone runs, a two-way sync whose record names would be too long.
 
@@ -1034,29 +1050,30 @@ def require_bisync_names_fit(vault: Path, target_url: str) -> None:
     when rclone cannot report a path (a cloud remote while offline, say).
 
     Raises:
-        SyncError: the names would be too long. The message says by how much,
-            and whether a shorter cloud path is enough or the library must move.
+        SyncError: the names would be too long. The message says by how much
+            and names the longer of the two paths to shorten, but never a
+            cloud folder that already holds a library: other machines may
+            sync with it.
     """
     local = _rclone_fs_info(str(vault))
     cloud = _rclone_fs_info(target_url) if local is not None else None
     if local is None or cloud is None:
         return
     windows = sys.platform == "win32"
-    room = _NAME_MAX - len(_LONGEST_RECORD_SUFFIX)
-
-    def length(path2: tuple[str, str]) -> int:
-        return name_length(bisync_session_name(local, path2, windows=windows), windows=windows)
-
-    over = length(cloud) - room
+    session = bisync_session_name(local, cloud, windows=windows)
+    over = name_length(session, windows=windows) + len(_LONGEST_RECORD_SUFFIX) - _NAME_MAX
     if over <= 0:
         return
     verdict = (
         f"This library path plus the cloud path is {over} "
         f"character{'' if over == 1 else 's'} too long for rclone."
     )
-    # The shortest cloud path this remote takes: a one-letter folder in it.
-    shortest = _rclone_fs_info(f"{target_url.partition(':')[0]}:x")
-    if shortest is not None and length(shortest) <= room:
+    library_part, cloud_part = (
+        name_length(_session_name_half(*side, windows=windows), windows=windows)
+        for side in (local, cloud)
+    )
+    # When the cloud folder cannot be listed, the lengths decide alone.
+    if cloud_part > library_part and _cloud_holds_library(target_url) is not True:
         raise SyncError(f"{verdict} Pick a shorter cloud path: `lit sync setup`.")
     raise SyncError(f"{verdict} Move the library, then run `lit vault set-path`.")
 

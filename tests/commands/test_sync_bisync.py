@@ -451,42 +451,55 @@ _MOVE_THE_LIBRARY = " Move the library, then run `lit vault set-path`."
 
 
 @pytest.mark.parametrize(
-    ("library", "cloud_folder", "shortest_known", "message"),
+    ("library", "cloud_folder", "holds", "message"),
     [
         # The session name, "v…v..gdrive_c…c", is library + 9 + cloud_folder long,
-        # 241 at most; with the folder "x" it is library + 10.
-        pytest.param(100, 132, True, None, id="fits"),
+        # 241 at most; its cloud side, "gdrive_c…c", is 7 + cloud_folder.
+        pytest.param(100, 132, False, None, id="fits"),
         pytest.param(
-            100, 133, True, _TOO_LONG.format("1 character") + _SHORTER_CLOUD_PATH,
-            id="a-shorter-cloud-path-is-enough",
+            100, 133, False, _TOO_LONG.format("1 character") + _SHORTER_CLOUD_PATH,
+            id="the-cloud-path-is-longer",
         ),
         pytest.param(
-            231, 10, True, _TOO_LONG.format("9 characters") + _SHORTER_CLOUD_PATH,
-            id="a-one-letter-cloud-folder-is-just-enough",
+            140, 93, False, _TOO_LONG.format("1 character") + _MOVE_THE_LIBRARY,
+            id="the-library-path-is-longer",
         ),
         pytest.param(
-            232, 10, True, _TOO_LONG.format("10 characters") + _MOVE_THE_LIBRARY,
-            id="the-library-must-move",
+            120, 113, False, _TOO_LONG.format("1 character") + _MOVE_THE_LIBRARY,
+            id="both-as-long",
         ),
         pytest.param(
-            100, 133, False, _TOO_LONG.format("1 character") + _MOVE_THE_LIBRARY,
-            id="the-shortest-cloud-path-is-unknown",
+            100, 133, True, _TOO_LONG.format("1 character") + _MOVE_THE_LIBRARY,
+            id="the-cloud-folder-holds-a-library",
+        ),
+        pytest.param(
+            100, 133, None, _TOO_LONG.format("1 character") + _SHORTER_CLOUD_PATH,
+            id="the-cloud-folder-cannot-be-listed",
         ),
     ],
 )
-def test_record_names_too_long_are_refused_with_a_way_out_that_is_enough(
+def test_record_names_too_long_are_refused_naming_the_path_to_shorten(
     monkeypatch: pytest.MonkeyPatch,
     library: int,
     cloud_folder: int,
-    shortest_known: bool,
+    holds: bool | None,
     message: str | None,
 ) -> None:
     infos = {
         "vault": ("local", "/" + "v" * library),
         "gdrive:lib": ("gdrive", "c" * cloud_folder),
-        "gdrive:x": ("gdrive", "x") if shortest_known else None,
     }
+    listed: list[str] = []
+
+    def holds_files(target_url: str, filters_file: Path) -> bool:
+        listed.append(target_url)
+        assert filters_file.read_bytes() == two_way_filter_rules().encode("utf-8")
+        if holds is None:
+            raise SyncError("rclone could not list it")
+        return holds
+
     monkeypatch.setattr(core_sync, "_rclone_fs_info", infos.get)
+    monkeypatch.setattr(core_sync, "remote_holds_files", holds_files)
 
     if message is None:
         core_sync.require_bisync_names_fit(Path("vault"), "gdrive:lib")
@@ -494,6 +507,9 @@ def test_record_names_too_long_are_refused_with_a_way_out_that_is_enough(
         with pytest.raises(SyncError) as refused:
             core_sync.require_bisync_names_fit(Path("vault"), "gdrive:lib")
         assert str(refused.value) == message
+    # The cloud folder is listed only when it is the longer path.
+    cloud_is_longer = 7 + cloud_folder > library
+    assert listed == (["gdrive:lib"] if message is not None and cloud_is_longer else [])
 
 
 @needs_rclone
@@ -592,6 +608,59 @@ def test_a_library_one_character_over_is_refused_before_anything_is_touched(
     unchecked = _sync(vault)
     assert unchecked.exit_code != 0, unchecked.output
     assert not core_sync.bisync_initialised(workdir)
+
+
+@needs_rclone
+def test_a_library_path_longer_than_the_cloud_path_is_the_one_to_move(
+    tmp_path: Path, cloud: Path
+) -> None:
+    """A long library path and a short cloud path on a local-type remote: the library
+    is the one to move, though a one-letter cloud folder would fit with it."""
+    folder = cloud / "lib"
+    remote = core_sync._rclone_fs_info(f"fake-cloud:{folder}")
+    assert remote is not None
+
+    def session_length(vault: Path) -> int:
+        local = core_sync._rclone_fs_info(str(vault))
+        assert local is not None
+        name = core_sync.bisync_session_name(local, remote, windows=_WINDOWS)
+        return core_sync.name_length(name, windows=_WINDOWS)
+
+    probe = tmp_path / "L" / "literature_vault"
+    parent = tmp_path / ("L" * (251 - session_length(probe) + 1))
+    parent.mkdir()
+    vault = create_vault(parent).resolve()
+    assert session_length(vault) == 251
+    write_sync_to_config(
+        vault / "lit-config.yaml", SetupPayload(remote="fake-cloud", path=str(folder))
+    )
+
+    refused = _sync(vault)
+
+    assert refused.exit_code == 1
+    assert str(refused.exception) == _TOO_LONG.format("10 characters") + _MOVE_THE_LIBRARY
+    assert not folder.exists()
+
+
+@needs_rclone
+def test_a_cloud_folder_that_holds_a_library_is_not_the_one_to_change(
+    tmp_path: Path, cloud: Path
+) -> None:
+    """The cloud path is the longer one, but machine A already syncs with that folder:
+    B, whose library path is 10 characters longer than A's, is told to move its library."""
+    a, folder = _machine_with_record_name(tmp_path, cloud, 241)
+    assert _sync(a).exit_code == 0
+    up_there = _tree(folder)
+    b = _machine(tmp_path, cloud, "b" * 11)
+    write_sync_to_config(
+        b / "lit-config.yaml", SetupPayload(remote="fake-cloud", path=str(folder))
+    )
+
+    refused = _sync(b)
+
+    assert refused.exit_code == 1
+    assert str(refused.exception) == _TOO_LONG.format("10 characters") + _MOVE_THE_LIBRARY
+    assert _tree(folder) == up_there
 
 
 # ---------------------------------------------------------------------------
