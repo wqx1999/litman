@@ -13,7 +13,13 @@ from typing import TYPE_CHECKING, Any
 from ruamel.yaml.error import YAMLError
 
 from litman.core.checks._base import TRASH_SIZE_WARN, Issue, _yaml
-from litman.core.code import CODES_DIRNAME, REPO_DIRNAME, REPO_META_FILENAME
+from litman.core.code import (
+    CODES_DIRNAME,
+    REPO_DIRNAME,
+    REPO_META_FILENAME,
+    code_folder_kind,
+    left_behind_message,
+)
 from litman.core.shell import shell_arg
 from litman.core.trash import (
     TRASH_DIRNAME,
@@ -923,6 +929,14 @@ def check_code_clone_integrity(
       but has no ``repo-meta.yaml``. Whatever atomic clone+link op
       created the directory failed to land the metadata file, so the repo
       is unrecoverable and unreferenceable.
+    * **left-behind checkout** (``warning``) — ``codes/<name>/`` holds only a
+      ``repo/`` checkout: the repo was removed from the library (two-way sync
+      brings a removal made on another machine) and the checkout stayed.
+      Nothing is lost, and only the user can say whether to keep it.
+
+    An empty ``codes/<name>/`` is no issue: two-way sync brings one to every
+    machine while another still keeps a left-behind checkout in it, and takes
+    it away once that one is dealt with.
 
     Defensive: silently skips when ``codes/`` does not exist (vault may
     legitimately have no clones) and skips non-directory children of
@@ -1006,6 +1020,21 @@ def check_code_clone_integrity(
 
     # Broken clone dirs: codes/<name>/ without repo-meta.yaml. Vault-level.
     for repo_name in sorted(disk_dirs_no_meta):
+        kind = code_folder_kind(codes_dir / repo_name)
+        if kind == "empty":
+            continue
+        if kind == "left-behind":
+            what, way_out = left_behind_message(repo_name)
+            out.append(
+                Issue(
+                    category="code_clone_integrity",
+                    severity="warning",
+                    paper_id=None,
+                    message=what,
+                    hint=way_out,
+                )
+            )
+            continue
         out.append(
             Issue(
                 category="code_clone_integrity",

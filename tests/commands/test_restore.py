@@ -38,12 +38,14 @@ from litman.core import project_link as project_link_mod
 from litman.core import trash as trash_mod
 from litman.core.atomic import StagedWrite
 from litman.core.checks import check_project_references
+from litman.core.code import read_head, record_repo_heads
 from litman.core.document import list_papers
 from litman.core.library import create_vault
 from litman.core.portable_link import is_portable_link
 from litman.core.trash import TRASH_DIRNAME
 from litman.exceptions import RmError, TrashError
 from tests._git_clone import clean_clone
+from tests._git_upstream import make_bare_upstream
 from tests.commands.test_trash import ESCAPED_PHRASES
 
 _yaml = YAML(typ="safe")
@@ -358,6 +360,28 @@ def test_restore_reclone_success_rebuilds_repo_meta(
     assert (vault / "codes" / "RepoX" / "repo-meta.yaml").is_file()
     assert _read_repo_meta(vault, "RepoX")["papers"] == ["2024_Target"]
     assert "Re-cloned" in result.output
+
+
+def test_restore_reclones_the_commit_the_repo_meta_records(
+    vault: Path, tmp_path: Path
+) -> None:
+    """Other machines syncing this library are at the recorded commit, not at
+    the upstream's tip: the re-clone fetches that commit."""
+    upstream = make_bare_upstream(tmp_path / "up")
+    c1 = upstream.commits[0]
+    _write_paper(vault, "2024_Target", code_clones=["RepoX"])
+    root = _make_fake_repo(vault, "RepoX", papers=["2024_Target"], upstream=upstream.url)
+    record_repo_heads(vault, {"RepoX": (c1, "main")}, op_id="test")
+    runner = CliRunner()
+    runner.invoke(cli, ["rm", "2024_Target", "-y", "--library", str(vault)])
+    assert not root.exists()
+
+    result = runner.invoke(
+        cli, ["trash", "restore", "2024_Target", "-y", "--library", str(vault)]
+    )
+
+    assert result.exit_code == 0, result.output
+    assert read_head(root / "repo") == (c1, "main")
 
 
 def test_restore_reclone_refused_keeps_binding(

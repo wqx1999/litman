@@ -35,6 +35,7 @@ from rich.table import Table
 
 from litman.commands._options import library_option, vault_option
 from litman.core.checks import run_push_integrity_errors
+from litman.core.code import left_behind_message
 from litman.core.config import CONFIG_FILENAME, load_config
 from litman.core.confirm import refuse_without_terminal
 from litman.core.document import list_papers
@@ -70,6 +71,9 @@ _rclone_console = Console(stderr=True)
 # in docs/4-commands.md. Clear of every other litman command's codes.
 EXIT_SYNC_NEEDS_CHOICE = 20
 EXIT_SYNC_CONFLICTS = 21
+# A sync with conflicts exits 21 even when a repo did not follow too; the
+# summary lists both.
+EXIT_SYNC_REPOS_DIFFER = 22
 
 
 @click.group("sync", invoke_without_command=True)
@@ -123,10 +127,13 @@ def sync_group(
 
     Never synced: INDEX.json and views/ (rebuilt after every sync),
     lit-config.yaml (each machine keeps its own project folders) and
-    codes/*/repo/ checkouts.
+    codes/*/repo/ checkouts. A code repo follows by version instead: each
+    machine fetches the commit its repo-meta.yaml records from the repo's
+    upstream, and moves its own checkout there unless it holds your changes.
 
     Exit codes: 0 synced, 1 failed, 20 waiting for your --first-from
-    choice, 21 synced with conflicts.
+    choice, 21 synced with conflicts, 22 synced but a code repo here does
+    not match the library (21 when there are conflicts as well).
 
     The subcommands are one-way: push mirrors the vault to the cloud as a
     backup, pull restores it from there, setup points litman at an rclone
@@ -281,17 +288,13 @@ def _render_two_way_summary(result: TwoWayResult) -> None:
                     "    [dim]It is in the trash: "
                     f"`lit trash restore {escape(shell_arg(name))}` brings it back.[/]"
                 )
-            if d.left_behind:
-                lines.append(
-                    f"    [dim]{escape(', '.join(d.left_behind))} stays on this machine: "
-                    "code checkouts are not synced.[/]"
-                )
     if result.deletions_unchecked:
         lines.append(
             "[yellow]Could not read rclone's per-file report:[/] a paper deleted on one "
             "machine and changed on another may be left incomplete. "
             "`lit health-check` finds it."
         )
+    lines += _repo_lines(result)
     if result.projects_without_folder:
         names = result.projects_without_folder
         lines.append(
@@ -315,12 +318,61 @@ def _render_two_way_summary(result: TwoWayResult) -> None:
             title=f"lit sync — {escape(result.target_url)}",
             border_style=(
                 "yellow"
-                if result.conflicts or result.deleted_folders or result.deletions_unchecked
+                if result.conflicts
+                or result.deleted_folders
+                or result.deletions_unchecked
+                or _repos_differ(result)
                 else "green"
             ),
         )
     )
     _print_backups(result)
+
+
+def _repos_differ(result: TwoWayResult) -> bool:
+    """Whether a code repo here does not match the library, or could not be checked."""
+    return result.repos_error is not None or (
+        result.repos is not None and result.repos.mismatched
+    )
+
+
+def _repo_lines(result: TwoWayResult) -> list[str]:
+    """The summary's code repos part: what followed, what did not and why."""
+    lines: list[str] = []
+    report = result.repos
+    if report is not None:
+        rows: list[str] = []
+        for done in report.restored:
+            verb = "fetched at" if done.action == "cloned" else "moved to"
+            on = f"on {escape(done.branch)}" if done.branch else "detached"
+            rows.append(f"  • {escape(done.name)}: {verb} {done.commit[:7]} ({on})")
+        for missed in report.not_restored:
+            rows.append(
+                f"  • [yellow]{escape(missed.name)}:[/] {escape(missed.what)}. "
+                f"{escape(missed.way_out)}"
+            )
+        for name in report.left_behind:
+            what, way_out = left_behind_message(name)
+            rows.append(f"  • [yellow]{escape(what)}.[/] {escape(way_out)}")
+        if rows:
+            style = "bold yellow" if report.mismatched else "bold"
+            lines += [f"[{style}]Code repos:[/]", *rows]
+        if report.uncommitted:
+            lines.append(
+                f"[yellow]Uncommitted changes in {escape(', '.join(report.uncommitted))} "
+                "are not synced.[/]"
+            )
+        if report.unpushed:
+            lines.append(
+                f"[yellow]Commits in {escape(', '.join(report.unpushed))} that no remote has "
+                "are not synced:[/] push them so your other machines can fetch them."
+            )
+    if result.repos_error is not None:
+        lines.append(
+            f"[yellow]Code repos were not brought up to date:[/] "
+            f"{escape(result.repos_error)}. The next `lit sync` tries again."
+        )
+    return lines
 
 
 def _print_backups(result: TwoWayResult) -> None:
@@ -361,6 +413,7 @@ def _run_two_way(
             first_from=first_from,
             force=force,
             on_log=_echo_rclone_line,
+            git_progress=console.is_terminal,
         )
     except SyncChoiceRequiredError as err:
         console.print(
@@ -374,6 +427,8 @@ def _run_two_way(
     _render_two_way_summary(result)
     if result.conflicts or result.deleted_folders:
         sys.exit(EXIT_SYNC_CONFLICTS)
+    if _repos_differ(result):
+        sys.exit(EXIT_SYNC_REPOS_DIFFER)
 
 
 # ---------------------------------------------------------------------------

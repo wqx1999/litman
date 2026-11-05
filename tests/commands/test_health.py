@@ -2940,8 +2940,9 @@ def test_code_clone_integrity_asymmetric_forward_missing(vault: Path) -> None:
 
 
 def test_code_clone_integrity_missing_repo_meta(vault: Path) -> None:
-    """codes/Z/ dir exists but no repo-meta.yaml inside → 1 error."""
+    """codes/Z/ holds files but no repo-meta.yaml → 1 error."""
     (vault / "codes" / "Z").mkdir(parents=True)
+    (vault / "codes" / "Z" / "notes.md").write_text("# Z\n", encoding="utf-8")
     _write_paper(vault, "2024_Foo_Bar")
     issues = check_code_clone_integrity(vault, list_papers(vault))
     assert len(issues) == 1
@@ -2953,6 +2954,34 @@ def test_code_clone_integrity_missing_repo_meta(vault: Path) -> None:
     assert "lit code restore-all" in issues[0].hint
 
 
+def test_code_clone_integrity_an_empty_code_folder_is_no_issue(vault: Path) -> None:
+    """Two-way sync brings an empty codes/Z/ to every machine while another one
+    keeps a checkout of a removed Z in it: nothing to fix here."""
+    (vault / "codes" / "Z" / "repo").mkdir(parents=True)
+    (vault / "codes" / "Z" / ".DS_Store").write_bytes(b"\0")
+
+    assert check_code_clone_integrity(vault, list_papers(vault)) == []
+
+
+def test_code_clone_integrity_a_left_behind_checkout_is_a_warning(vault: Path) -> None:
+    """codes/Z/ holding only a checkout: Z was removed from the library and its
+    checkout stayed. Said as the sync summary says it; nothing is touched."""
+    checkout = vault / "codes" / "Z" / "repo"
+    checkout.mkdir(parents=True)
+    (checkout / "train.py").write_text("print(1)\n", encoding="utf-8")
+
+    issues = check_code_clone_integrity(vault, list_papers(vault))
+
+    assert [(i.severity, i.message, i.hint) for i in issues] == [
+        (
+            "warning",
+            "codes/Z/repo/ stays on this machine: Z was removed from the library",
+            "Move that folder out of the library, or delete it.",
+        )
+    ]
+    assert (checkout / "train.py").is_file()
+
+
 def test_code_clone_integrity_all_three_failure_modes(vault: Path) -> None:
     """Dangling clone + dangling ref + missing repo-meta + healthy pair."""
     # Healthy pair: paper P references repo R, both sides exist.
@@ -2962,8 +2991,9 @@ def test_code_clone_integrity_all_three_failure_modes(vault: Path) -> None:
     _write_repo_meta(vault, "X", papers=[])
     # Dangling ref: paper references Y, no codes/Y/ dir.
     _write_paper(vault, "Q_q_q", code_clones=["Y"])
-    # Missing repo-meta: codes/Z/ exists as dir but no repo-meta.yaml.
+    # Missing repo-meta: codes/Z/ holds a file but no repo-meta.yaml.
     (vault / "codes" / "Z").mkdir(parents=True)
+    (vault / "codes" / "Z" / "notes.md").write_text("# Z\n", encoding="utf-8")
 
     issues = check_code_clone_integrity(vault, list_papers(vault))
     assert len(issues) == 3

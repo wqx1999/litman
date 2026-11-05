@@ -740,13 +740,13 @@ lit code restore-all [--dry-run]
 
 | Subcommand | What it does |
 |---|---|
-| `add <source>` | Clone (URL source) or copy/move (local-path source) into `codes/<name>/repo/`, seeding `repo-meta.yaml` and `notes.md`. |
+| `add <source>` | Clone (URL source) or copy/move (local-path source) into `codes/<name>/repo/`, seeding `repo-meta.yaml` (with the checkout's `commit` and `branch`) and `notes.md`. An empty `codes/<name>/` folder is taken as free. |
 | `link <repo-name> --paper <id>` | Bind an already-present repo to a paper (idempotent if already bound). |
 | `unlink <repo-name> --paper <id>` | Unbind a repo from a paper without deleting the clone. Drops only the named paper's edge; tolerant of an already-deleted clone. |
 | `list` | List repos and their paper bindings. `--format json` emits each repo's `repo-meta.yaml`, so the bindings come out as ids rather than a summary cell. |
-| `update <repo-name>` | `git pull --ff-only` inside the repo. |
+| `update <repo-name>` | `git pull --ff-only` inside the repo, then record its `commit` and `branch` in `repo-meta.yaml`. A shallow clone that `lit sync` moved to an older commit, and that holds no changes of yours, is moved to its branch's tip instead. |
 | `rm <repo-name>` | Permanently delete `codes/<repo-name>/`. Hard delete (re-clonable from the recorded upstream). |
-| `restore-all` | Re-clone every repo whose `repo/` checkout is missing (cross-machine recovery, or a restored paper's repo), and link it into its papers' projects. A `local:<path>` repo is copied from that folder again. |
+| `restore-all` | Re-clone every repo whose `repo/` checkout is missing (cross-machine recovery, or a restored paper's repo), at the `commit` its `repo-meta.yaml` records, and link it into its papers' projects. A `local:<path>` repo is copied from that folder again. |
 
 Per-subcommand flags:
 
@@ -762,6 +762,10 @@ Per-subcommand flags:
   without it, `rm` refuses when any paper still references the repo), `-y` / `--yes`.
 - `restore-all`: `--depth N`, `--dry-run`. Exit code 1 if any clone failed or any
   orphan reference was found (CI / cron-gateable).
+
+At a terminal, `add`, `update` and `restore-all` show git's progress. git never
+asks for a user name or password (it fails instead), and a download that stays
+under 1 KB/s for a minute is given up.
 
 ### `lit taxonomy`
 
@@ -963,6 +967,21 @@ down. It syncs with a folder inside the remote (the `--path` of
   `lit-config.yaml` and `codes/*/repo/` checkouts. Each machine keeps its own
   project folders: a project added on another machine arrives without a folder
   here, and the summary prints the `lit project set-path` that gives it one.
+- **Code repos follow by version.** Before each sync, the commit and branch of a
+  checkout you moved on this machine (`lit code update`, or a pull, commit or
+  checkout of your own) are written to its `repo-meta.yaml`. After it, a missing
+  checkout is fetched from the repo's upstream at the commit `repo-meta.yaml`
+  records, and one at another commit is moved there. A checkout with changes of
+  yours (a changed tracked file, or a commit no remote has) is left where it is;
+  untracked files alone do not stop the move. The summary lists what moved, what
+  did not and why, and the checkouts whose uncommitted changes stay on this
+  machine. A repo imported from a folder (`local:`) is not fetched: copy that
+  folder over. A repo that cannot be fetched (offline, say) never stops the
+  sync; the next `lit sync` tries again.
+- **A code repo removed on another machine** leaves its checkout here
+  untouched, and every sync reminds you to move that folder out of the library
+  or delete it. Until then the other machines get an empty `codes/<name>/`
+  folder, which `lit health-check` does not report.
 - **After every sync** the read-only lock on `metadata.yaml`, `paper.pdf`, SI
   files and `TAXONOMY.md` is put back, and `INDEX.json`, `views/` and the
   project links are rebuilt.
@@ -981,6 +1000,11 @@ down. It syncs with a folder inside the remote (the `--path` of
 | `1` | Failed, with rclone's last lines. What was not synced is picked up by the next `lit sync`. |
 | `20` | Nothing was synced: pick the side that wins with `--first-from cloud` or `--first-from local`. |
 | `21` | Synced, with conflicts: the newer copy of each file was kept and the older one is in the backup, or a folder deleted on one machine won over changes made to it on the other. |
+| `22` | Synced, but a code repo here does not match the library: its checkout is missing, at another commit, or left behind by a repo removed on another machine. The summary says why and what to do. |
+
+A sync with conflicts that also left a code repo behind exits `21`, and its
+summary lists both. A checkout at the recorded commit with uncommitted changes
+is only listed; it does not change the exit code.
 
 | Subcommand | What it does |
 |---|---|

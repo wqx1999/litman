@@ -44,7 +44,7 @@ from collections.abc import Callable, Iterable, Iterator
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Any, Literal
+from typing import TYPE_CHECKING, Any, Literal
 
 from platformdirs import user_data_dir
 
@@ -58,6 +58,9 @@ from litman.core.replace import replace_file
 from litman.core.undecodable import config_refusal
 from litman.core.yaml_pool import ThreadLocalYAML
 from litman.exceptions import LitmanError, SyncChoiceRequiredError, SyncError
+
+if TYPE_CHECKING:
+    from litman.core.code_sync import RepoSyncReport
 
 RCLONE_BIN = "rclone"
 SYNC_STATE_FILENAME = ".litman-sync-state.yaml"
@@ -849,6 +852,11 @@ class BisyncPaths:
     def conflicts_root(self) -> Path:
         """Where the older copy of every conflict goes, one folder per sync."""
         return self.local_backup_root / "conflicts"
+
+    @property
+    def repo_heads_file(self) -> Path:
+        """The commit each code checkout was at when this machine's last sync ended."""
+        return self.workdir / "repo-heads.json"
 
 
 def remote_backup_root(target_url: str) -> str:
@@ -2052,6 +2060,10 @@ class TwoWayResult:
     be read, so folders were not checked for the second kind and one may be
     left with only the changed files. ``taxonomy_restored`` lists the values
     a TAXONOMY.md conflict would have dropped and that were added back.
+
+    ``repos`` is what bringing the code checkouts to their recorded commits
+    did (:func:`litman.core.code_sync.bring_repos_in`); ``repos_error`` says
+    why recording or bringing them failed, the file sync having gone through.
     """
 
     target_url: str
@@ -2069,6 +2081,8 @@ class TwoWayResult:
     taxonomy_restored: dict[str, tuple[str, ...]] = field(default_factory=dict)
     taxonomy_restore_error: str | None = None
     deletions_unchecked: bool = False
+    repos: RepoSyncReport | None = None
+    repos_error: str | None = None
 
 
 def two_way_sync(
@@ -2078,6 +2092,7 @@ def two_way_sync(
     first_from: FirstFrom | None = None,
     force: bool = False,
     on_log: Callable[[str], None] | None = None,
+    git_progress: bool = False,
 ) -> TwoWayResult:
     """Sync ``vault`` with ``target_url`` both ways through ``rclone bisync``.
 
@@ -2089,7 +2104,9 @@ def two_way_sync(
        local vault (:func:`local_vault_is_fresh`) → the cloud's wins; both
        holding a library → :class:`SyncChoiceRequiredError`, nothing changed.
        A changed filter set is refused the same way. ``first_from`` is the
-       user's explicit choice and overrides all three.
+       user's explicit choice and overrides all three. Then record in each
+       code repo's ``repo-meta.yaml`` the commit of a checkout the user moved
+       (:func:`litman.core.code_sync.record_repo_versions`).
     3. Unlock TRUTH (Windows cannot replace a read-only file) and run bisync.
        Then settle what it left: move every conflict's older copy out of the
        vault, let a folder deleted on one machine win over changes made to it
@@ -2098,8 +2115,12 @@ def two_way_sync(
        TAXONOMY.md conflict, once a pass settles nothing new, add back the
        values only the older copy had and run one more pass to take them up.
        Re-lock TRUTH in a ``finally``.
-    4. Record the result in the sync-state file, then rebuild INDEX.json,
-       views/ and the project links from TRUTH (none of them travels).
+    4. Record the result in the sync-state file. Bring each code checkout to
+       the commit its ``repo-meta.yaml`` records, fetching it from the
+       upstream (:func:`litman.core.code_sync.bring_repos_in`; git's progress
+       shows with ``git_progress``). A repo that cannot follow is reported,
+       never a reason to fail the sync. Then rebuild INDEX.json, views/ and
+       the project links from TRUTH (none of them travels).
 
     Every file a run replaces or deletes goes to a backup folder: on this
     machine under ``<data dir>/sync-backup/<vault-key>/``, in the cloud under
@@ -2164,6 +2185,17 @@ def two_way_sync(
             )
     if not rules_unchanged:
         paths.filters_file.write_bytes(rules)
+
+    # The commits the user moved checkouts to go up with this sync.
+    from litman.core import code_sync
+
+    repos_error: str | None = None
+    try:
+        code_sync.record_repo_versions(
+            vault, code_sync.read_last_heads(paths.repo_heads_file)
+        )
+    except (LitmanError, OSError) as err:
+        repos_error = str(err)
 
     baseline = _read_snapshot(paths.snapshot_file) if mode == "sync" else None
     before = local_snapshot(vault)
@@ -2300,6 +2332,16 @@ def two_way_sync(
         remote_changed = True
     _stamp_quietly(vault, "conflicts" if conflicts or deleted_folders else "ok")
 
+    # Before the rebuild, which links the checkouts into their projects.
+    repos: RepoSyncReport | None = None
+    try:
+        repos = code_sync.bring_repos_in(
+            vault, depth=_clone_depth(vault), progress=git_progress
+        )
+        code_sync.write_last_heads(paths.repo_heads_file, repos.heads)
+    except (LitmanError, OSError) as err:
+        repos_error = repos_error or str(err)
+
     rebuild: dict[str, Any] | None = None
     rebuild_error: str | None = None
     try:
@@ -2330,7 +2372,20 @@ def two_way_sync(
         taxonomy_restored=restored,
         taxonomy_restore_error=restore_error,
         deletions_unchecked=deletions_unchecked,
+        repos=repos,
+        repos_error=repos_error,
     )
+
+
+def _clone_depth(vault: Path) -> int:
+    """This vault's ``default_clone_depth``; the default when its config cannot be read."""
+    from litman.core.code import DEFAULT_CLONE_DEPTH
+    from litman.core.config import load_config
+
+    try:
+        return load_config(vault).default_clone_depth
+    except (LitmanError, OSError):
+        return DEFAULT_CLONE_DEPTH
 
 
 def _restore_taxonomy(

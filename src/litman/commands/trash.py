@@ -40,6 +40,9 @@ from litman.core.code import (
     bind_paper_to_repo,
     fetch_repo,
     make_repo_meta,
+    read_repo_meta,
+    valid_branch,
+    valid_commit,
     write_notes,
     write_repo_meta,
 )
@@ -185,10 +188,21 @@ def _reclone_missing_repo(
     if os.path.lexists(repo_dir):
         raise CodeError(f"{repo_dir} is already there")
     had_meta = (repo_root / REPO_META_FILENAME).is_file()
+    # The commit the restored repo-meta.yaml records, which other machines
+    # syncing this library are at.
+    try:
+        recorded = read_repo_meta(vault, repo_name) if had_meta else {}
+    except CodeError:
+        recorded = {}
     made_root = not repo_root.exists()
     repo_root.mkdir(parents=True, exist_ok=True)
     try:
-        fetch_repo(upstream, repo_dir)
+        fetch_repo(
+            upstream,
+            repo_dir,
+            commit=valid_commit(recorded.get("commit")),
+            branch=valid_branch(recorded.get("branch")),
+        )
         if not had_meta:
             write_repo_meta(
                 repo_root, make_repo_meta(name=repo_name, upstream=upstream)

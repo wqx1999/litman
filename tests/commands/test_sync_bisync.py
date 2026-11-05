@@ -1150,18 +1150,23 @@ def _incomplete_papers(root: Path) -> list[str]:
     ]
 
 
-def _sync_in_order(a: Path, b: Path, deleter_first: bool) -> tuple[Path, Result]:
+def _sync_in_order(
+    a: Path, b: Path, deleter_first: bool, *, checkout_left_on: Path | None = None
+) -> tuple[Path, Result]:
     """Sync A, B, A (deleter first) or B, A, B; return the machine that settled it.
 
     A is the machine that deletes. The machine syncing second meets the
-    collision and must exit 21; the other two runs are ordinary.
+    collision and must exit 21; the other two runs are ordinary, except that
+    ``checkout_left_on``, keeping the checkout of a removed code repo, exits
+    22 once the removal has reached it.
     """
     first, second = (a, b) if deleter_first else (b, a)
     assert _sync(first).exit_code == 0
     settled = _sync(second)
     assert settled.exit_code == sync_cmd.EXIT_SYNC_CONFLICTS, settled.output
     last = _sync(first)
-    assert last.exit_code == 0, last.output
+    expected = sync_cmd.EXIT_SYNC_REPOS_DIFFER if first == checkout_left_on else 0
+    assert last.exit_code == expected, last.output
     return second, settled
 
 
@@ -1246,13 +1251,15 @@ def test_a_code_folder_deleted_on_one_machine_wins_and_its_checkout_is_left_alon
 ) -> None:
     a, b = _two_synced_machines(tmp_path, cloud, n_papers=2)
     tool_a = a / "codes" / "tool"
-    tool_a.mkdir(parents=True)
+    (tool_a / "repo").mkdir(parents=True)
+    (tool_a / "repo" / "README").write_text("A's checkout\n", encoding="utf-8")
     (tool_a / "repo-meta.yaml").write_text("name: tool\n", encoding="utf-8")
     (tool_a / "notes.md").write_text("# tool\n", encoding="utf-8")
     for name in ("repo-meta.yaml", "notes.md"):
         _touch(tool_a / name, _T0)
     assert _sync(a).exit_code == 0
-    assert _sync(b).exit_code == 0
+    # B has no checkout, and the repo has no upstream to fetch one from.
+    assert _sync(b).exit_code == 22
     checkout = b / "codes" / "tool" / "repo"
     checkout.mkdir()
     (checkout / "README").write_text("work in progress\n", encoding="utf-8")
@@ -1261,7 +1268,7 @@ def test_a_code_folder_deleted_on_one_machine_wins_and_its_checkout_is_left_alon
     (b / "codes" / "tool" / "notes.md").write_bytes(b"# tool\nedited\n")
     _touch(b / "codes" / "tool" / "notes.md", time.time() - 50)
 
-    settler, result = _sync_in_order(a, b, deleter_first)
+    settler, result = _sync_in_order(a, b, deleter_first, checkout_left_on=b)
 
     assert "codes/tool: deleted or renamed" in result.output
     if settler == b:

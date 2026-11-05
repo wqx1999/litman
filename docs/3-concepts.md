@@ -307,8 +307,10 @@ from them, so there is no rebuild to run afterwards.
 |---|---|---|---|
 | `name` | string | machine | The `codes/<name>/` directory name. |
 | `upstream` | string or null | machine | Clone URL, `local:<path>` for an imported directory, or `null` when nothing is fetchable. `lit code restore-all` clones from it. |
+| `commit` | string | machine | The commit the checkout is at, as git writes it (40 hex digits). Written by `lit code add`, `lit code update` and `lit sync`; two-way `lit sync` brings every machine's checkout to it. Missing in files written before it existed. |
+| `branch` | string or null | machine | The checkout's branch, or `null` when HEAD is detached. Written with `commit`. |
 | `created-at` | string | machine | ISO 8601, set once at `lit code add`. |
-| `updated-at` | string | machine | Refreshed on bind, unbind, and `lit code update`. |
+| `updated-at` | string | machine | Refreshed on bind, unbind, `lit code update`, and when `commit` or `branch` changes. |
 | `papers` | list[string] | machine | Back-reference: the paper ids that list this repo under `code-clones`. The N side of the 1:N binding. |
 | `framework` | string or null | you (hand-edit) | Free annotation (e.g. `pytorch`). |
 | `runs-on` | string or null | you (hand-edit) | Free annotation (e.g. `cuda 12`). |
