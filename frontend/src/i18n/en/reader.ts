@@ -244,7 +244,7 @@ export const reader = {
       `Unbinds ${repos.length === 1 ? '1 repo' : `${repos.length} repos`} (kept — has your own changes): ${repos.join(', ')}`,
     // `reason` is the server's text.
     reposUnchecked: (repos: { name: string; reason: string }[]) =>
-      `Unbinds ${repos.length === 1 ? '1 repo' : `${repos.length} repos`} (kept — could not check it for changes): ${repos.map((r) => `${r.name} (${r.reason})`).join(', ')}`,
+      `Unbinds ${repos.length === 1 ? '1 repo' : `${repos.length} repos`} (kept — could not check for changes): ${repos.map((r) => `${r.name} (${r.reason})`).join(', ')}`,
     projects: (projects: string[]) =>
       `Unlinks from ${projects.length === 1 ? '1 project' : `${projects.length} projects`}: ${projects.join(', ')}`,
     // "(deleted)" is the literal tag written into those notes; keep it as-is.
