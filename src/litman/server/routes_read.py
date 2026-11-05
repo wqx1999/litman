@@ -220,6 +220,9 @@ def get_whatsnew() -> dict[str, Any]:
     return {
         "version": __version__,
         "bullets": bullets_for(__version__),
+        # The Chinese twin; [] when this version has none, and the SPA then
+        # shows the English bullets in a Chinese UI too.
+        "bulletsZh": bullets_for(__version__, "zh"),
         "changelogUrl": CHANGELOG_URL,
         "seen": load_whatsnew_seen(),
     }

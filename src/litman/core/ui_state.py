@@ -36,9 +36,15 @@ browser profile, and the GUI has two of each: the desktop shortcut runs
 upward when one is busy. Either switch silently lost the marker and the card
 came back every launch.
 
+``uiLang`` (the GUI's language: ``auto`` follows the system, or ``en`` /
+``zh`` pinned by hand) is a third top-level tenant for the same two reasons:
+it is a preference about the app, not a library, and a choice made in the app
+window must hold in a browser tab too.
+
 File shape (self-describing, so a future CLI reader needs no migration)::
 
-    {"pins": {"<vault-key>": ["<paper-id>", ...]}, "whatsNewSeen": "<version>"}
+    {"pins": {"<vault-key>": ["<paper-id>", ...]}, "whatsNewSeen": "<version>",
+     "uiLang": "auto" | "en" | "zh"}
 """
 
 from __future__ import annotations
@@ -63,6 +69,12 @@ _PINS_KEY = "pins"
 
 # Top-level key holding the last release whose what's-new card was dismissed.
 _WHATSNEW_SEEN_KEY = "whatsNewSeen"
+
+# Top-level key holding the GUI language preference.
+_UI_LANG_KEY = "uiLang"
+
+# The accepted values; ``auto`` (follow the system) is also the default.
+UI_LANG_PREFS = ("auto", "en", "zh")
 
 
 def ui_state_path() -> Path:
@@ -197,11 +209,39 @@ def save_whatsnew_seen(version: str) -> None:
     _write_state(state)
 
 
+def load_ui_lang() -> str:
+    """The GUI language preference: ``auto``, ``en`` or ``zh``.
+
+    ``auto`` when nothing was chosen yet, and equally when the file is
+    missing / corrupt / holds a value outside :data:`UI_LANG_PREFS` — the GUI
+    then follows the system language, the default. Never raises.
+    """
+    pref = _load_state().get(_UI_LANG_KEY)
+    return pref if isinstance(pref, str) and pref in UI_LANG_PREFS else "auto"
+
+
+def save_ui_lang(pref: str) -> None:
+    """Record the GUI language preference (atomic, other tenants kept).
+
+    Raises :class:`ValueError` for anything outside :data:`UI_LANG_PREFS` —
+    the value comes from a client, and the file must only ever hold one the
+    loader accepts.
+    """
+    if pref not in UI_LANG_PREFS:
+        raise ValueError(
+            f"Unknown UI language {pref!r}; expected one of {', '.join(UI_LANG_PREFS)}."
+        )
+    state = _load_state()
+    state[_UI_LANG_KEY] = pref
+    _write_state(state)
+
+
 def remove_ui_state() -> dict[str, object]:
     """Delete ``ui-state.json``; counterpart of ``agent_prefs.remove_prefs``.
 
-    Used by ``lit uninstall`` so GUI state (pins, the what's-new marker) does
-    not outlive the install: it removes the whole file, tenants and all.
+    Used by ``lit uninstall`` so GUI state (pins, the what's-new marker, the
+    language preference) does not outlive the install: it removes the whole
+    file, tenants and all.
     Removes the containing config dir too if it becomes empty (this runs
     last in the uninstall sequence, so it gets the rmdir chance the earlier
     removers pass up while siblings still exist).

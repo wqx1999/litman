@@ -95,6 +95,10 @@ _VAULTLESS_ALLOWED = frozenset(
         # card that cannot be dismissed there would return every launch.
         ("GET", "/api/whatsnew"),
         ("PUT", "/api/whatsnew/seen"),
+        # The GUI language preference, another machine-level ui-state.json
+        # tenant: the welcome page renders in that language too.
+        ("GET", "/api/ui-lang"),
+        ("PUT", "/api/ui-lang"),
         # The directory picker (task-path-browser): the welcome page has no
         # vault yet and browses the host's folders to create the first one —
         # ``fs/mkdir`` lets that flow make a fresh parent folder without leaving

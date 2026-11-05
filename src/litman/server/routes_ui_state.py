@@ -1,4 +1,5 @@
-"""GUI-state write endpoints for the litman webUI: pins, what's-new dismissal.
+"""GUI-state endpoints for the litman webUI: pins, what's-new dismissal, the
+UI language preference.
 
 This state is GUI working state, persisted in the machine-level
 ``ui-state.json`` beside the vault registry (:mod:`litman.core.ui_state`) —
@@ -21,7 +22,8 @@ Contract with the SPA:
 
 The what's-new endpoint is the odd one out: it needs no vault (the welcome
 page can pop the card too) and it takes no body — the server records the
-version IT is running. See :func:`put_whatsnew_seen`.
+version IT is running. See :func:`put_whatsnew_seen`. The language
+preference needs no vault either: the welcome page renders in it.
 """
 
 from __future__ import annotations
@@ -32,7 +34,13 @@ from typing import cast
 from fastapi import APIRouter, HTTPException, Request
 
 from litman.core.id import is_valid_id
-from litman.core.ui_state import load_pins, save_pins, save_whatsnew_seen
+from litman.core.ui_state import (
+    load_pins,
+    load_ui_lang,
+    save_pins,
+    save_ui_lang,
+    save_whatsnew_seen,
+)
 
 router = APIRouter(prefix="/api")
 
@@ -121,3 +129,33 @@ def put_whatsnew_seen() -> dict[str, str]:
 
     save_whatsnew_seen(__version__)
     return {"seen": __version__}
+
+
+@router.get("/ui-lang")
+def get_ui_lang() -> dict[str, str]:
+    """The GUI language preference: ``auto`` (follow the system), ``en``, ``zh``.
+
+    Machine-level, beside the what's-new marker, so the app window and a
+    browser tab agree (each has its own ``localStorage``). Needs no vault.
+    """
+    return {"lang": load_ui_lang()}
+
+
+@router.put("/ui-lang")
+async def put_ui_lang(request: Request) -> dict[str, str]:
+    """Record the GUI language preference from ``{"lang": "auto"|"en"|"zh"}``.
+
+    400 for a body that is not that shape, 422 for an unknown value.
+    """
+    try:
+        payload = await request.json()
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail="Body must be JSON.") from exc
+    lang = payload.get("lang") if isinstance(payload, dict) else None
+    if not isinstance(lang, str):
+        raise HTTPException(status_code=400, detail="'lang' must be a string.")
+    try:
+        save_ui_lang(lang)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return {"lang": lang}
