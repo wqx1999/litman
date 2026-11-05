@@ -180,8 +180,6 @@ export interface Tab {
   key: string
   kind: TabKind
   paperId: string
-  /** Display label (paper id + a kind suffix). */
-  label: string
   /** True for a tab opened from the trash view: PDF/md render read-only and the
    * tab carries a "Trash" badge. Absent on normal library tabs. */
   trash?: boolean

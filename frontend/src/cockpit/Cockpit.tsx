@@ -70,6 +70,7 @@ import type { RelField } from './Relations'
 import MetadataEditDialog from './MetadataEditDialog'
 import { useEscapeLayer } from '../ui/escapeStack'
 import { modalBackdropProps } from '../ui/modalShell'
+import { enumLabel, getT, useT } from '../i18n'
 
 interface Props {
   paper: PaperMeta | null
@@ -154,6 +155,8 @@ function UnreadConfirm({
   onCancel: () => void
   onConfirm: () => void
 }) {
+  const t = useT()
+  const m = t.cockpit.unreadConfirm
   useEscapeLayer(true, onCancel)
   return (
     <div
@@ -164,15 +167,11 @@ function UnreadConfirm({
         onClick={(e) => e.stopPropagation()}
         className="w-[22rem] animate-grow-in rounded-2xl bg-white p-5 shadow-xl ring-1 ring-stone-200"
       >
-        <h2 className="text-sm font-semibold text-stone-900">Mark as unread?</h2>
-        <p className="mt-1.5 text-xs leading-relaxed text-stone-600">
-          This clears the first-read date
-          {readDate ? ` (${readDate})` : ''}, returning this paper to unread.
-        </p>
+        <h2 className="text-sm font-semibold text-stone-900">{m.title}</h2>
+        <p className="mt-1.5 text-xs leading-relaxed text-stone-600">{m.body(readDate)}</p>
         {lastRevisited != null && (
           <p className="mt-2 rounded-md border border-amber-300 bg-amber-50 px-2.5 py-1.5 text-xs leading-relaxed text-amber-700">
-            The last revisit ({lastRevisited}) will also be cleared — a revisit
-            cannot exist without a first read. This cannot be undone.
+            {m.revisitCleared(lastRevisited)}
           </p>
         )}
         <div className="mt-5 flex justify-end gap-2">
@@ -182,14 +181,14 @@ function UnreadConfirm({
             disabled={busy}
             className="rounded-lg px-3 py-1.5 text-xs text-stone-600 transition-colors hover:bg-stone-100 disabled:opacity-40"
           >
-            Cancel
+            {t.common.cancel}
           </button>
           <button
             onClick={onConfirm}
             disabled={busy}
             className="rounded-lg bg-rose-500 px-3 py-1.5 text-xs font-medium text-white transition-colors hover:bg-rose-600 disabled:opacity-60"
           >
-            Mark unread
+            {m.confirm}
           </button>
         </div>
       </div>
@@ -214,6 +213,8 @@ function DropConfirm({
   onCancel: () => void
   onConfirm: () => void
 }) {
+  const t = useT()
+  const m = t.cockpit.dropConfirm
   useEscapeLayer(true, onCancel)
   return (
     <div
@@ -224,11 +225,8 @@ function DropConfirm({
         onClick={(e) => e.stopPropagation()}
         className="w-[22rem] animate-grow-in rounded-2xl bg-white p-5 shadow-xl ring-1 ring-stone-200"
       >
-        <h2 className="text-sm font-semibold text-stone-900">Drop this paper?</h2>
-        <p className="mt-1.5 text-xs leading-relaxed text-stone-600">
-          Sets the status of “{title}” to dropped, removing it from the active
-          reading lists. You can restore it later by changing the status back.
-        </p>
+        <h2 className="text-sm font-semibold text-stone-900">{m.title}</h2>
+        <p className="mt-1.5 text-xs leading-relaxed text-stone-600">{m.body(title)}</p>
         <div className="mt-5 flex justify-end gap-2">
           <button
             autoFocus
@@ -236,14 +234,14 @@ function DropConfirm({
             disabled={busy}
             className="rounded-lg px-3 py-1.5 text-xs text-stone-600 transition-colors hover:bg-stone-100 disabled:opacity-40"
           >
-            Cancel
+            {t.common.cancel}
           </button>
           <button
             onClick={onConfirm}
             disabled={busy}
             className="rounded-lg bg-rose-500 px-3 py-1.5 text-xs font-medium text-white transition-colors hover:bg-rose-600 disabled:opacity-60"
           >
-            Drop
+            {m.confirm}
           </button>
         </div>
       </div>
@@ -306,6 +304,9 @@ function ReadOnlyCockpit({
   restoring: boolean
   orphanRepoCount: number
 }) {
+  const t = useT()
+  const m = t.cockpit.panel
+  const fields = t.cockpit.fields
   return (
     <div
       className={`relative flex shrink-0 overflow-hidden border-l border-stone-200 bg-stone-100 transition-[width] duration-300 ease-fluid ${
@@ -319,7 +320,7 @@ function ReadOnlyCockpit({
       >
         <button
           onClick={onToggle}
-          title="Expand metadata"
+          title={m.expand}
           className="text-stone-500 transition-colors hover:text-stone-800"
         >
           ‹
@@ -333,20 +334,20 @@ function ReadOnlyCockpit({
       >
         <div className="mb-3 flex items-center justify-between">
           <span className="text-[11px] font-semibold uppercase tracking-wider text-stone-600">
-            Trashed paper
+            {m.trashedHeading}
           </span>
           <button
             onClick={onToggle}
-            title="Collapse metadata"
+            title={m.collapse}
             className="text-stone-500 transition-colors hover:text-stone-800"
           >
             ›
           </button>
         </div>
 
-        {loading && <div className="text-sm text-stone-500">Loading…</div>}
+        {loading && <div className="text-sm text-stone-500">{m.loading}</div>}
         {!loading && !paper && (
-          <div className="text-sm text-stone-500">Select a trashed paper.</div>
+          <div className="text-sm text-stone-500">{m.selectTrashed}</div>
         )}
 
         {paper && (
@@ -364,19 +365,16 @@ function ReadOnlyCockpit({
                   disabled={restoring || !onRestore}
                   className="w-full rounded-lg bg-accent-500 px-3 py-2 text-sm font-medium text-white shadow-sm transition-colors hover:bg-accent-600 disabled:opacity-50"
                 >
-                  {restoring ? 'Restoring…' : '↩ Restore to library'}
+                  {restoring ? m.restoring : m.restore}
                 </button>
                 {orphanRepoCount > 0 && (
                   <div className="mt-1.5 rounded-md border border-amber-300 bg-amber-50 px-2.5 py-1.5 text-[11px] leading-relaxed text-amber-700 dark:border-amber-700 dark:bg-amber-950/40 dark:text-amber-300">
-                    {orphanRepoCount} hard-deleted{' '}
-                    {orphanRepoCount === 1 ? 'repo needs' : 'repos need'} re-clone
-                    in the CLI after restore (lit trash restore / lit
-                    health-check).
+                    {m.orphanRepos(orphanRepoCount)}
                   </div>
                 )}
               </div>
             </div>
-            <Field label="Authors" count={paper.authors?.length}>
+            <Field label={fields.authors} count={paper.authors?.length}>
               {paper.authors && paper.authors.length > 0 ? (
                 <span
                   title={
@@ -391,7 +389,7 @@ function ReadOnlyCockpit({
                 '—'
               )}
             </Field>
-            <Field label="Venue / Year">
+            <Field label={fields.venueYear}>
               {[paper.journal, paper.year].filter(Boolean).join(' · ') || '—'}
             </Field>
             {paper.doi && (
@@ -406,38 +404,42 @@ function ReadOnlyCockpit({
                 </a>
               </Field>
             )}
-            <Field label="Status">
-              <span className="text-stone-700">{paper.status || '—'}</span>
+            <Field label={fields.status}>
+              <span className="text-stone-700">
+                {paper.status ? enumLabel(t.common.status, paper.status) : '—'}
+              </span>
             </Field>
-            <Field label="Type">
-              <span className="text-stone-700">{paper.type || '—'}</span>
+            <Field label={fields.type}>
+              <span className="text-stone-700">
+                {paper.type ? enumLabel(t.common.paperType, paper.type) : '—'}
+              </span>
             </Field>
-            <Field label="Read-date">
+            <Field label={fields.readDate}>
               <span className="text-stone-700">{paper['read-date'] || '—'}</span>
             </Field>
-            <Field label="Topics">
+            <Field label={fields.topics}>
               <Chips values={paper.topics} />
             </Field>
-            <Field label="Methods">
+            <Field label={fields.methods}>
               <Chips values={paper.methods} />
             </Field>
-            <Field label="Data">
+            <Field label={fields.data}>
               <Chips values={paper.data} />
             </Field>
-            <Field label="Projects">
+            <Field label={fields.projects}>
               <Chips values={paper.projects} suffix={(v) => paper[`priority-${v}`] ?? null} />
             </Field>
-            <Field label="Relations" count={relationCount(paper)}>
+            <Field label={fields.relations} count={relationCount(paper)}>
               <Relations key={paper.id} paper={paper} onOpenPaper={onOpenPaper} />
             </Field>
-            <Field label="Code-clones" count={paper['code-clones']?.length}>
+            <Field label={fields.codeClones} count={paper['code-clones']?.length}>
               <CodeCloneChips
                 values={paper['code-clones']}
                 missing={paper['code-clones-missing']}
               />
             </Field>
             <Field
-              label="Supplementary"
+              label={fields.supplementary}
               count={parseSupplementary(paper.supplementary).length}
             >
               <SupplementaryChips paperId={paper.id} value={paper.supplementary} readOnly />
@@ -470,7 +472,11 @@ function WriteCockpit({
   onAddSi = () => {},
   openFiles = 'none',
 }: Props) {
-  const [copied, setCopied] = useState<string | null>(null)
+  const t = useT()
+  const m = t.cockpit.panel
+  const fields = t.cockpit.fields
+  const rr = t.cockpit.readRevisit
+  const [copied, setCopied] = useState<'id' | 'path' | 'citation' | null>(null)
   // Caveats from the last Cite (unverified abbreviation, missing fields, ...).
   // Auto-dismissed after a few seconds (long enough to read a couple of lines)
   // so it behaves like a transient toast, not a banner that sticks until the
@@ -537,10 +543,10 @@ function WriteCockpit({
   }, [paper?.id])
 
   // Per-paper copy actions live here (the selected-paper context), not the top
-  // bar. `ID` pastes into CLI commands / metadata / filenames; `path` is the
+  // bar. `id` pastes into CLI commands / metadata / filenames; `path` is the
   // paper-folder path on the vault host — from it you reach pdf / metadata /
   // notes, or hand it straight to a terminal or an agent.
-  async function doCopy(form: string, value: string) {
+  async function doCopy(form: 'id' | 'path', value: string) {
     try {
       await navigator.clipboard.writeText(value)
       setCopied(form)
@@ -668,8 +674,10 @@ function WriteCockpit({
     const { me, record } = pendingSi
     await runWrite(async () => {
       const { warnings } = await removeSiFile(me, record.file)
-      if (warnings.length) notify(`Deleted ${record.file} · ${warnings.join(' · ')}`, 'warning')
-      else notify(`Deleted ${record.file}`, 'success')
+      const p = getT().cockpit.panel
+      if (warnings.length)
+        notify(p.siDeletedWithWarnings(record.file, warnings.join(' · ')), 'warning')
+      else notify(p.siDeleted(record.file), 'success')
     })
     setPendingSi(null)
   }
@@ -705,7 +713,7 @@ function WriteCockpit({
       // sentence is still the CLI's.
       notify(
         refused
-          ? `“${value}” looks like an existing value. Look for it in the list.`
+          ? getT().cockpit.panel.looksLikeExisting(value)
           : err instanceof Error
             ? err.message
             : String(err),
@@ -843,7 +851,7 @@ function WriteCockpit({
     // visible) — no write.
     triggerUnread: () => {
       if (readDate != null) setShowUnread(true)
-      else notify('Not marked read yet')
+      else notify(getT().cockpit.panel.notReadYet)
     },
     // `lit promote` is sugar for status=deep-read (commands/promote.py); mirror
     // that exact value through the existing setEnum write rather than invent a
@@ -856,7 +864,7 @@ function WriteCockpit({
       if (paper && vaultPath) doCopy('path', `${vaultPath}/papers/${paper.id}`)
     },
     copyId: () => {
-      if (paper) doCopy('ID', paper.id)
+      if (paper) doCopy('id', paper.id)
     },
   }
   useEffect(() => {
@@ -902,7 +910,7 @@ function WriteCockpit({
       >
         <button
           onClick={onToggle}
-          title="Expand metadata"
+          title={m.expand}
           className="text-stone-500 transition-colors hover:text-stone-800"
         >
           ‹
@@ -918,7 +926,7 @@ function WriteCockpit({
       >
         <div className="mb-3 flex items-center justify-between">
           <span className="text-[11px] font-semibold uppercase tracking-wider text-stone-600">
-            Metadata
+            {m.heading}
           </span>
           <div className="flex items-center gap-2.5">
             {/* Edit lives on the section header, not among the Copy/Cite pills
@@ -938,8 +946,8 @@ function WriteCockpit({
               <button
                 onClick={() => setEditingMeta(true)}
                 disabled={writing}
-                title="Edit title, year, journal, authors and other bibliographic fields"
-                aria-label="Edit metadata"
+                title={m.editTitle}
+                aria-label={m.editAria}
                 className="text-sm leading-none text-stone-400 transition-colors hover:text-accent-600 disabled:opacity-40"
               >
                 ✎
@@ -947,7 +955,7 @@ function WriteCockpit({
             )}
             <button
               onClick={onToggle}
-              title="Collapse metadata"
+              title={m.collapse}
               className="text-stone-500 transition-colors hover:text-stone-800"
             >
               ›
@@ -955,14 +963,14 @@ function WriteCockpit({
           </div>
         </div>
 
-        {loading && <div className="text-sm text-stone-500">Loading…</div>}
+        {loading && <div className="text-sm text-stone-500">{m.loading}</div>}
         {!loading && !paper && loadError && (
           <div className="break-words rounded-md border border-red-300 bg-red-50 px-2.5 py-1.5 text-xs leading-relaxed text-red-700 dark:border-red-800 dark:bg-red-950/40 dark:text-red-300">
             {loadError}
           </div>
         )}
         {!loading && !paper && !loadError && (
-          <div className="text-sm text-stone-500">Select a paper.</div>
+          <div className="text-sm text-stone-500">{m.selectPaper}</div>
         )}
 
         {paper && (
@@ -976,42 +984,38 @@ function WriteCockpit({
               </div>
               <div className="mt-2.5 flex flex-wrap items-center gap-1.5">
                 <button
-                  onClick={() => doCopy('ID', paper.id)}
-                  title="Copy the paper id"
+                  onClick={() => doCopy('id', paper.id)}
+                  title={m.copyIdTitle}
                   className="flex items-center gap-1 rounded-md border border-stone-300 bg-white px-2.5 py-1 text-xs font-medium text-stone-600 shadow-sm transition-colors hover:bg-stone-50 hover:text-stone-900"
                 >
-                  <span className="text-stone-400">⧉</span> Copy ID
+                  <span className="text-stone-400">⧉</span> {m.copyId}
                 </button>
                 <button
                   onClick={() =>
                     vaultPath && doCopy('path', `${vaultPath}/papers/${paper.id}`)
                   }
                   disabled={!vaultPath}
-                  title={
-                    vaultPath
-                      ? 'Copy the paper folder path'
-                      : 'Vault path unavailable'
-                  }
+                  title={vaultPath ? m.copyPathTitle : m.noVaultPath}
                   className="flex items-center gap-1 rounded-md border border-stone-300 bg-white px-2.5 py-1 text-xs font-medium text-stone-600 shadow-sm transition-colors hover:bg-stone-50 hover:text-stone-900 disabled:opacity-50"
                 >
-                  <span className="text-stone-400">⧉</span> Copy path
+                  <span className="text-stone-400">⧉</span> {m.copyPath}
                 </button>
                 <button
                   onClick={doCite}
-                  title="Copy an ACS-style citation (journal abbrev. year, volume, pages)"
+                  title={m.citeTitle}
                   className="flex items-center gap-1 rounded-md border border-stone-300 bg-white px-2.5 py-1 text-xs font-medium text-stone-600 shadow-sm transition-colors hover:bg-stone-50 hover:text-stone-900"
                 >
-                  <span className="text-stone-400">❝</span> Cite
+                  <span className="text-stone-400">❝</span> {m.cite}
                 </button>
                 {copied && (
                   <span className="text-[11px] font-medium text-emerald-600">
-                    ✓ copied {copied}
+                    {m.copied[copied]}
                   </span>
                 )}
               </div>
               {citeWarn && (
                 <div className="mt-2 rounded-md border border-amber-300 bg-amber-50 px-2.5 py-1.5 text-[11px] leading-relaxed text-amber-700">
-                  <span className="font-semibold">Citation copied — verify:</span>
+                  <span className="font-semibold">{m.citeWarnHeading}</span>
                   <ul className="mt-0.5 list-disc space-y-0.5 pl-4">
                     {citeWarn.map((w, i) => (
                       <li key={i}>{w}</li>
@@ -1020,7 +1024,7 @@ function WriteCockpit({
                 </div>
               )}
             </div>
-            <Field label="Authors" count={paper.authors?.length}>
+            <Field label={fields.authors} count={paper.authors?.length}>
               {paper.authors && paper.authors.length > 0 ? (
                 <span
                   title={
@@ -1035,7 +1039,7 @@ function WriteCockpit({
                 '—'
               )}
             </Field>
-            <Field label="Venue / Year">
+            <Field label={fields.venueYear}>
               {[paper.journal, paper.year].filter(Boolean).join(' · ') || '—'}
             </Field>
             {paper.doi && (
@@ -1051,42 +1055,48 @@ function WriteCockpit({
               </Field>
             )}
 
-            <Field label="Status">
+            <Field label={fields.status}>
               {fixedEnums ? (
                 <EnumSelect
-                  field="status"
+                  label={t.cockpit.enumSelect.statusAria}
                   value={paper.status}
                   options={fixedEnums.status.values}
+                  optionLabel={(v) => enumLabel(t.common.status, v)}
                   allowsNone={fixedEnums.status.allowsNone}
                   disabled={writing}
                   onPick={(next) => setEnum('status', next)}
                 />
               ) : (
-                <span className="text-stone-400">{paper.status || '—'}</span>
+                <span className="text-stone-400">
+                  {paper.status ? enumLabel(t.common.status, paper.status) : '—'}
+                </span>
               )}
             </Field>
-            <Field label="Type">
+            <Field label={fields.type}>
               {fixedEnums ? (
                 <EnumSelect
-                  field="type"
+                  label={t.cockpit.enumSelect.typeAria}
                   value={paper.type}
                   options={fixedEnums.type.values}
+                  optionLabel={(v) => enumLabel(t.common.paperType, v)}
                   allowsNone={fixedEnums.type.allowsNone}
                   disabled={writing}
                   onPick={(next) => setEnum('type', next)}
                 />
               ) : (
-                <span className="text-stone-400">{paper.type || '—'}</span>
+                <span className="text-stone-400">
+                  {paper.type ? enumLabel(t.common.paperType, paper.type) : '—'}
+                </span>
               )}
             </Field>
 
-            <Field label="Read / Revisit">
+            <Field label={fields.readRevisit}>
               <div className="flex items-center gap-1.5">
                 {readDate != null && (
                   <button
                     type="button"
-                    aria-label="Mark as unread"
-                    title="Mark as unread (undo the first-read stamp)"
+                    aria-label={rr.unreadAria}
+                    title={rr.unreadTitle}
                     disabled={writing}
                     onClick={() => setShowUnread(true)}
                     className="grid h-6 w-6 place-items-center rounded-md text-stone-300 transition-colors hover:bg-rose-50 hover:text-rose-500 disabled:opacity-40"
@@ -1098,32 +1108,24 @@ function WriteCockpit({
                   type="button"
                   disabled={writing || readDate != null}
                   onClick={markRead}
-                  title={
-                    readDate != null
-                      ? `First read ${readDate}`
-                      : 'Stamp the first-read date (today)'
-                  }
+                  title={readDate != null ? rr.firstRead(readDate) : rr.markReadTitle}
                   className="rounded-md border border-stone-300 bg-white px-2.5 py-1 text-xs font-medium text-stone-600 shadow-sm transition-colors hover:bg-stone-50 hover:text-stone-900 disabled:opacity-50"
                 >
-                  {readDate != null ? `Read · ${readDate}` : 'Mark read'}
+                  {readDate != null ? rr.readOn(readDate) : rr.markRead}
                 </button>
                 <button
                   type="button"
                   disabled={writing || readDate == null}
                   onClick={logRevisit}
-                  title={
-                    readDate == null
-                      ? 'Mark as read first'
-                      : 'Stamp a return visit (today)'
-                  }
+                  title={readDate == null ? rr.readFirst : rr.revisitTitle}
                   className="rounded-md border border-stone-300 bg-white px-2.5 py-1 text-xs font-medium text-stone-600 shadow-sm transition-colors hover:bg-stone-50 hover:text-stone-900 disabled:opacity-50"
                 >
-                  Log revisit
+                  {rr.logRevisit}
                 </button>
               </div>
               {lastRevisited != null && (
                 <div className="mt-1 text-[11px] text-stone-500">
-                  last revisited {lastRevisited}
+                  {rr.lastRevisited(lastRevisited)}
                 </div>
               )}
               {showUnread && (
@@ -1144,7 +1146,7 @@ function WriteCockpit({
               fields={[
                 {
                   key: 'topics',
-                  label: 'Topics',
+                  label: fields.topics,
                   values: paper.topics,
                   vocabulary: taxonomy?.topics ?? [],
                   count: (v) => countValue('topics', v),
@@ -1158,7 +1160,7 @@ function WriteCockpit({
                 },
                 {
                   key: 'methods',
-                  label: 'Methods',
+                  label: fields.methods,
                   values: paper.methods,
                   vocabulary: taxonomy?.methods ?? [],
                   count: (v) => countValue('methods', v),
@@ -1172,7 +1174,7 @@ function WriteCockpit({
                 },
                 {
                   key: 'data',
-                  label: 'Data',
+                  label: fields.data,
                   values: paper.data,
                   vocabulary: taxonomy?.data ?? [],
                   count: (v) => countValue('data', v),
@@ -1186,7 +1188,7 @@ function WriteCockpit({
                 },
                 {
                   key: 'projects',
-                  label: 'Projects',
+                  label: fields.projects,
                   values: paper.projects,
                   vocabulary: projects.map((p) => p.name),
                   // A project whose folder has moved (or is half-registered)
@@ -1210,7 +1212,7 @@ function WriteCockpit({
                 },
               ]}
             />
-            <Field label="Relations" count={relationCount(paper)}>
+            <Field label={fields.relations} count={relationCount(paper)}>
               <Relations
                 key={paper.id}
                 paper={paper}
@@ -1219,7 +1221,7 @@ function WriteCockpit({
                 busy={writing}
               />
             </Field>
-            <Field label="Code-clones" count={paper['code-clones']?.length}>
+            <Field label={fields.codeClones} count={paper['code-clones']?.length}>
               <CodeCloneChips
                 values={paper['code-clones']}
                 missing={paper['code-clones-missing']}
@@ -1228,7 +1230,7 @@ function WriteCockpit({
               />
             </Field>
             <Field
-              label="Supplementary"
+              label={fields.supplementary}
               count={parseSupplementary(paper.supplementary).length}
             >
               <SupplementaryChips

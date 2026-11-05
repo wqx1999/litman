@@ -8,6 +8,7 @@ import {
   unregisterVault,
 } from '../api'
 import type { FsAnchor } from '../api'
+import { useT } from '../i18n'
 import type { VaultsPayload } from '../types'
 import { anchorIcon } from '../ui/icons'
 import PathField, { describeLocation } from '../ui/PathField'
@@ -39,6 +40,8 @@ export default function WelcomePage({
   /** Re-fetch the vault list without leaving this page (after a Forget). */
   onRefresh: () => Promise<void>
 }) {
+  const T = useT()
+  const t = T.browse.welcome
   const [parentDir, setParentDir] = useState('~')
   const [name, setName] = useState('literature_vault')
   const [busy, setBusy] = useState(false)
@@ -146,10 +149,10 @@ export default function WelcomePage({
         <div className="flex flex-col items-center text-center">
           <img src={logoUrl} alt="litman" className="h-12 w-auto select-none" />
           <h1 className="mt-4 text-lg font-semibold text-stone-900">
-            Create your library
+            {t.title}
           </h1>
           <p className="mt-1.5 text-sm text-stone-500">
-            litman keeps your papers in one folder on disk.
+            {t.subtitle}
           </p>
         </div>
 
@@ -164,7 +167,7 @@ export default function WelcomePage({
             </div>
           </div>
           <label className="block">
-            <span className="text-xs font-medium text-stone-600">Location</span>
+            <span className="text-xs font-medium text-stone-600">{t.location}</span>
             <PathField
               mode="parent-dir"
               value={parentDir}
@@ -176,7 +179,7 @@ export default function WelcomePage({
             />
           </label>
           <label className="block">
-            <span className="text-xs font-medium text-stone-600">Name</span>
+            <span className="text-xs font-medium text-stone-600">{t.name}</span>
             <input
               type="text"
               value={name}
@@ -202,13 +205,13 @@ export default function WelcomePage({
           disabled={!canCreate}
           className="mt-6 w-full rounded-lg bg-accent-500 px-4 py-2.5 text-sm font-medium text-white shadow-sm transition-colors hover:bg-accent-600 disabled:opacity-50"
         >
-          {busy ? 'Creating…' : 'Create library'}
+          {busy ? t.creating : t.create}
         </button>
 
         {existing.length > 0 && (
           <div className="mt-7 border-t border-stone-200 pt-5">
             <p className="text-xs font-medium text-stone-500">
-              Or open an existing library
+              {t.openExisting}
             </p>
             <ul className="mt-2 space-y-1.5">
               {existing.map((v) =>
@@ -228,7 +231,7 @@ export default function WelcomePage({
                         </span>
                       </span>
                       <span className="shrink-0 text-xs font-medium text-accent-600">
-                        Open
+                        {t.open}
                       </span>
                     </button>
                   </li>
@@ -247,7 +250,7 @@ export default function WelcomePage({
                             {v.name}
                           </span>
                           <span className="shrink-0 rounded-full bg-rose-100 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-rose-700">
-                            moved
+                            {t.moved}
                           </span>
                         </span>
                         <span className="block truncate font-mono text-[11px] text-rose-400 line-through">
@@ -266,7 +269,7 @@ export default function WelcomePage({
                             disabled={busy}
                             className="text-xs font-medium text-accent-600 disabled:opacity-50"
                           >
-                            Locate
+                            {t.locate}
                           </button>
                           <button
                             onClick={() => {
@@ -277,7 +280,7 @@ export default function WelcomePage({
                             disabled={busy}
                             className="text-xs font-medium text-stone-400 transition-colors hover:text-rose-500 disabled:opacity-50"
                           >
-                            Forget
+                            {t.forget}
                           </button>
                         </span>
                       )}
@@ -302,21 +305,21 @@ export default function WelcomePage({
                           disabled={busy}
                           className="shrink-0 rounded-md px-3 py-2 text-xs font-medium text-stone-500 transition-colors hover:bg-stone-100 disabled:opacity-50"
                         >
-                          Cancel
+                          {T.common.cancel}
                         </button>
                         <button
                           onClick={() => locate(v.name)}
                           disabled={busy || locatePath.trim().length === 0}
                           className="shrink-0 rounded-md bg-accent-500 px-3 py-2 text-xs font-medium text-white transition-colors hover:bg-accent-600 disabled:opacity-50"
                         >
-                          {busy ? '…' : 'Locate'}
+                          {busy ? '…' : t.locate}
                         </button>
                       </div>
                     )}
                     {forgetting === v.name && (
                       <div className="mt-2 flex items-center justify-between gap-2 rounded-md bg-rose-50 px-2.5 py-1.5 ring-1 ring-rose-100">
                         <span className="min-w-0 text-[11px] leading-snug text-rose-700">
-                          Remove from the list? Nothing on disk is deleted.
+                          {t.forgetConfirm}
                         </span>
                         <span className="flex shrink-0 items-center gap-1.5">
                           <button
@@ -324,14 +327,14 @@ export default function WelcomePage({
                             disabled={busy}
                             className="rounded px-2 py-1 text-[11px] font-medium text-stone-600 transition-colors hover:bg-white disabled:opacity-50"
                           >
-                            Cancel
+                            {T.common.cancel}
                           </button>
                           <button
                             onClick={() => forget(v.name)}
                             disabled={busy}
                             className="rounded-md bg-rose-500 px-2.5 py-1 text-[11px] font-medium text-white transition-colors hover:bg-rose-600 disabled:opacity-50"
                           >
-                            {busy ? '…' : 'Remove'}
+                            {busy ? '…' : t.remove}
                           </button>
                         </span>
                       </div>

@@ -16,6 +16,7 @@ import {
   putDiscussion,
   putNotes,
 } from '../api'
+import { getT, useT } from '../i18n'
 
 /** The edit session for one md tab, owned by App (keyed per tab) so it survives
  * this view's unmount on tab switch. Absent (undefined) = not editing. */
@@ -134,6 +135,9 @@ export default function MdView({
   onEndEdit,
   onSaved,
 }: Props) {
+  const tx = useT().reader.mdView
+  // The file's own name, which no language changes.
+  const file = `${doc}.md`
   // The current on-disk text (null = file absent / not loaded yet). The render
   // html is derived from it; edit mode seeds its textarea from it.
   const [text, setText] = useState<string | null>(null)
@@ -379,7 +383,7 @@ export default function MdView({
       // longer dirty and switch-back shows the rendered view.
       onEndEdit(tabKey)
     } catch {
-      onNotify?.(`Couldn't save ${doc}.md — your edit is kept; try again.`)
+      onNotify?.(getT().reader.mdView.saveFailed(`${doc}.md`))
     } finally {
       setSaving(false)
     }
@@ -463,9 +467,9 @@ export default function MdView({
 
   const header =
     doc === 'notes' ? (
-      <span className="text-stone-700">📝 Notes</span>
+      <span className="text-stone-700">{tx.header.notes}</span>
     ) : (
-      <span className="text-stone-700">💬 Discussion</span>
+      <span className="text-stone-700">{tx.header.discussion}</span>
     )
 
   return (
@@ -491,7 +495,7 @@ export default function MdView({
               // unchanged; note it was the LIGHT side that was short, not the
               // dark variant added for it.
               <span className="font-mono text-xs font-normal text-amber-700 dark:text-amber-400">
-                Unsaved draft — previewing
+                {tx.previewingDraft}
               </span>
             )}
             <button
@@ -499,27 +503,27 @@ export default function MdView({
               disabled={saving}
               className="rounded-lg px-2.5 py-1 text-xs font-normal text-stone-600 transition-colors hover:bg-stone-200 disabled:opacity-40"
             >
-              {previewingDraft ? 'Edit' : 'Preview'}
+              {previewingDraft ? tx.edit : tx.preview}
             </button>
             <button
               onClick={() => void save()}
               disabled={saving}
               className="rounded-lg bg-accent-500 px-2.5 py-1 text-xs font-medium text-white transition-colors hover:bg-accent-600 disabled:opacity-60"
             >
-              {saving ? 'Saving…' : 'Save'}
+              {saving ? tx.saving : tx.save}
             </button>
           </div>
         ) : readOnly ? (
           <span className="font-mono text-xs font-normal text-stone-400">
-            read-only (trash)
+            {tx.readOnly}
           </span>
         ) : (
           <span className="font-mono text-xs font-normal text-stone-400">
             {loadError
-              ? 'unavailable'
+              ? tx.unavailable
               : missing
-                ? 'double-click to start writing'
-                : 'double-click to edit'}
+                ? tx.hintStart
+                : tx.hintEdit}
           </span>
         )}
       </div>
@@ -546,12 +550,11 @@ export default function MdView({
         // overwrite the original.
         <div className="flex-1 overflow-auto p-8 text-sm leading-relaxed text-stone-500">
           <p className="font-medium text-stone-600">
-            Couldn't load {doc}.md
+            {tx.loadFailed(file)}
           </p>
           <p className="mt-2 max-w-prose">{loadError}</p>
           <p className="mt-2 max-w-prose text-stone-400">
-            Fix the file on disk, then reopen this tab — litman never
-            overwrites it.
+            {tx.loadFailedFix}
           </p>
         </div>
       ) : missing && !previewingDraft ? (
@@ -561,9 +564,7 @@ export default function MdView({
           }`}
           onDoubleClick={enterEdit}
         >
-          {readOnly
-            ? `No ${doc}.md for this trashed paper.`
-            : `No ${doc}.md for this paper yet — double-click to start writing.`}
+          {readOnly ? tx.missingTrashed(file) : tx.missing(file)}
         </div>
       ) : (
         <div

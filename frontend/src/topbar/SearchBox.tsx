@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
-import type { SearchScope } from '../types'
 import { DROPDOWN_LIMIT, type Candidate } from '../search'
+import { useT } from '../i18n'
 import { isEditingTarget } from '../useKeyboardShortcuts'
 
 interface Props {
@@ -13,16 +13,6 @@ interface Props {
   /** Selecting a row opens the matched scope: the PDF for an id/title hit, or the
    * notes/discussion doc (scrolled to the match) for a markdown hit. */
   onSelect: (candidate: Candidate) => void
-}
-
-const SCOPE_LABEL: Record<SearchScope, string> = {
-  id: 'id',
-  title: 'title',
-  author: 'author',
-  doi: 'doi',
-  year: 'year',
-  notes: 'notes',
-  discussion: 'discussion',
 }
 
 /** Bold every case-insensitive occurrence of `q` in `text`. Plain substring
@@ -66,6 +56,7 @@ export default function SearchBox({
   loading,
   onSelect,
 }: Props) {
+  const t = useT()
   const [open, setOpen] = useState(false)
   const [active, setActive] = useState(0)
   const boxRef = useRef<HTMLDivElement>(null)
@@ -181,7 +172,7 @@ export default function SearchBox({
           }}
           onFocus={() => setOpen(true)}
           onKeyDown={onKeyDown}
-          placeholder="Search id, title, notes, discussion…"
+          placeholder={t.topbar.searchBox.placeholder}
           role="combobox"
           aria-expanded={panelOpen}
           aria-controls="search-listbox"
@@ -195,8 +186,8 @@ export default function SearchBox({
             // and the caret should stay put for the next query).
             onMouseDown={(e) => e.preventDefault()}
             onClick={clear}
-            aria-label="Clear search"
-            title="Clear search (Esc)"
+            aria-label={t.topbar.searchBox.clearLabel}
+            title={t.topbar.searchBox.clearTitle}
             className="absolute right-2 top-1/2 -translate-y-1/2 rounded px-1 text-sm leading-none text-stone-400 transition-colors hover:text-stone-700"
           >
             ✕
@@ -230,7 +221,7 @@ export default function SearchBox({
                     {highlight(c.id, value)}
                   </span>
                   <span className="ml-auto shrink-0 rounded bg-stone-200 px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide text-stone-500">
-                    {SCOPE_LABEL[c.scope]}
+                    {t.topbar.searchBox.scope[c.scope]}
                   </span>
                 </div>
                 <div className="truncate text-sm text-stone-800">
@@ -247,14 +238,14 @@ export default function SearchBox({
 
           {shown.length === 0 && (
             <div className="px-3 py-2.5 text-xs text-stone-400">
-              {loading ? 'Searching…' : 'No matches.'}
+              {loading ? t.topbar.searchBox.searching : t.topbar.searchBox.noMatches}
             </div>
           )}
 
           {(overflow > 0 || (loading && shown.length > 0)) && (
             <div className="flex items-center justify-between border-t border-stone-200 px-3 py-1.5 text-[11px] text-stone-400">
-              <span>{overflow > 0 ? `+${overflow} more in the list` : ''}</span>
-              {loading && <span>Searching notes…</span>}
+              <span>{overflow > 0 ? t.topbar.searchBox.moreInList(overflow) : ''}</span>
+              {loading && <span>{t.topbar.searchBox.searchingNotes}</span>}
             </div>
           )}
         </div>

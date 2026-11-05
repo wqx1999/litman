@@ -17,6 +17,7 @@ import {
   fetchSearch,
   fetchVaults,
   fetchVaultVersion,
+  fetchUiLang,
   fetchVersion,
   fetchWhatsNew,
   markWhatsNewSeen,
@@ -73,10 +74,12 @@ import SwitchVaultDialog from './topbar/SwitchVaultDialog'
 import BrowsePanel from './nav/BrowsePanel'
 import type { FacetKey, Filters, ListMode } from './nav/BrowsePanel'
 import { emptyFilters } from './nav/BrowsePanel'
-import TabArea from './tabs/TabArea'
+import TabArea, { tabLabel } from './tabs/TabArea'
 import Cockpit from './cockpit/Cockpit'
 import Toast, { type ToastVariant } from './ui/Toast'
 import { servedVault } from './vaults'
+import { enumLabel, getLangPref, getT, isLangPref, setLangPref, useT } from './i18n'
+import { rich } from './i18n/rich'
 
 const SMART_VIEWS: ReadonlySet<string> = new Set(['reading', 'recent-read'])
 
@@ -123,11 +126,6 @@ const ARRAY_FILTER_FIELDS: Array<'topics' | 'methods' | 'data'> = [
 /** The open SI window: its request, and whether the poll popped it. */
 type SiWindowState = SiRequestSeed & { auto: boolean }
 
-function tabLabel(id: string, kind: TabKind): string {
-  if (kind === 'pdf') return id
-  return `${id} · ${kind}`
-}
-
 /** Reads the `.dark` class the no-FOUC script (index.html) already set on
  * <html>, then flips it and persists the choice. Lifted from TopBar to App
  * (Phase 4) so the `L` keyboard shortcut and the header toggle drive ONE theme
@@ -173,16 +171,13 @@ interface ResyncSnapshot {
   mtimes: DocMtimes | null
 }
 
-// Per-paper tag arrays, with the singular label used in the message. `data` has
-// NO trailing-s to strip, so it is spelled out (not derived from the key).
-const RESYNC_TAG_FIELDS: ReadonlyArray<{
-  key: 'topics' | 'methods' | 'data' | 'projects'
-  label: string
-}> = [
-  { key: 'topics', label: 'topic' },
-  { key: 'methods', label: 'method' },
-  { key: 'data', label: 'data' },
-  { key: 'projects', label: 'project' },
+// Per-paper tag arrays. The singular word each one gets in the message is UI
+// text (`browse.resyncLog.tagAdded`).
+const RESYNC_TAG_FIELDS: ReadonlyArray<'topics' | 'methods' | 'data' | 'projects'> = [
+  'topics',
+  'methods',
+  'data',
+  'projects',
 ]
 
 // Taxonomy keys the diff inspects (D3): `projects` is owned by the projects-
@@ -210,6 +205,12 @@ function diffResync(
   const out: ActivityLogEntry[] = []
   const add = (message: string, variant: ToastVariant = 'info') =>
     out.push({ ts: now, variant, message })
+  const T = getT()
+  const t = T.browse.resyncLog
+  const statusText = (v: string | null | undefined) =>
+    resyncScalar(v && enumLabel(T.common.status, v))
+  const typeText = (v: string | null | undefined) =>
+    resyncScalar(v && enumLabel(T.common.paperType, v))
 
   // Papers: add / remove (→ trashed when it lands in trash) / per-survivor diff.
   const prevById = new Map(prev.papers.map((p) => [p.id, p]))
@@ -217,29 +218,29 @@ function diffResync(
   const trashedIds = new Set(fresh.trash.map((t) => t.paperId))
 
   for (const p of fresh.papers) {
-    if (!prevById.has(p.id)) add(`+ ${p.id} added`, 'success')
+    if (!prevById.has(p.id)) add(t.paperAdded(p.id), 'success')
   }
   for (const p of prev.papers) {
     if (!freshById.has(p.id)) {
-      add(trashedIds.has(p.id) ? `🗑 ${p.id} trashed` : `− ${p.id} removed`)
+      add(trashedIds.has(p.id) ? t.paperTrashed(p.id) : t.paperRemoved(p.id))
     }
   }
   for (const [id, f] of freshById) {
     const p = prevById.get(id)
     if (!p) continue
     if (f.status !== p.status)
-      add(`${id}: status ${resyncScalar(p.status)} → ${resyncScalar(f.status)}`)
+      add(t.statusChanged(id, statusText(p.status), statusText(f.status)))
     if (f.type !== p.type)
-      add(`${id}: type ${resyncScalar(p.type)} → ${resyncScalar(f.type)}`)
+      add(t.typeChanged(id, typeText(p.type), typeText(f.type)))
     const prevRead = p['read-date']
     const freshRead = f['read-date']
-    if (!prevRead && freshRead) add(`${id}: marked read`)
-    else if (prevRead && !freshRead) add(`${id}: read-date cleared`)
-    for (const { key, label } of RESYNC_TAG_FIELDS) {
+    if (!prevRead && freshRead) add(t.markedRead(id))
+    else if (prevRead && !freshRead) add(t.readDateCleared(id))
+    for (const key of RESYNC_TAG_FIELDS) {
       const before = new Set(p[key] ?? [])
       const after = new Set(f[key] ?? [])
-      for (const v of after) if (!before.has(v)) add(`${id}: +${label} ${v}`)
-      for (const v of before) if (!after.has(v)) add(`${id}: −${label} ${v}`)
+      for (const v of after) if (!before.has(v)) add(t.tagAdded(id, key, v))
+      for (const v of before) if (!after.has(v)) add(t.tagRemoved(id, key, v))
     }
   }
 
@@ -248,8 +249,8 @@ function diffResync(
     for (const key of RESYNC_TAXONOMY_KEYS) {
       const before = new Set(prev.taxonomy[key] ?? [])
       const after = new Set(fresh.taxonomy[key] ?? [])
-      for (const v of after) if (!before.has(v)) add(`taxonomy: +${key} ${v}`)
-      for (const v of before) if (!after.has(v)) add(`taxonomy: −${key} ${v}`)
+      for (const v of after) if (!before.has(v)) add(t.taxonomyAdded(key, v))
+      for (const v of before) if (!after.has(v)) add(t.taxonomyRemoved(key, v))
     }
   }
 
@@ -259,9 +260,9 @@ function diffResync(
     const prevProjects = new Set(prev.projects.map((p) => p.name))
     const freshProjects = new Set(fresh.projects.map((p) => p.name))
     for (const name of freshProjects)
-      if (!prevProjects.has(name)) add(`project: + ${name}`)
+      if (!prevProjects.has(name)) add(t.projectAdded(name))
     for (const name of prevProjects)
-      if (!freshProjects.has(name)) add(`project: − ${name}`)
+      if (!freshProjects.has(name)) add(t.projectRemoved(name))
   }
 
   // Doc mtimes: a notes/discussion edit made outside the GUI bumps the file
@@ -273,7 +274,7 @@ function diffResync(
       const after = fresh.mtimes[id]
       if (!after) continue
       if (after.notes != null && (before.notes == null || after.notes > before.notes))
-        out.push({ ts: after.notes * 1000, variant: 'info', message: `${id}: notes updated` })
+        out.push({ ts: after.notes * 1000, variant: 'info', message: t.notesUpdated(id) })
       if (
         after.discussion != null &&
         (before.discussion == null || after.discussion > before.discussion)
@@ -281,7 +282,7 @@ function diffResync(
         out.push({
           ts: after.discussion * 1000,
           variant: 'info',
-          message: `${id}: discussion appended`,
+          message: t.discussionAppended(id),
         })
     }
   }
@@ -307,6 +308,7 @@ function isVaultGone(err: unknown): boolean {
 }
 
 export default function App() {
+  const T = useT()
   const [vaults, setVaults] = useState<VaultsPayload | null>(null)
   // The vault this server is serving: `undefined` = not yet known (pre-bootstrap),
   // `null` = none (render the welcome page), a string = a real vault (render the
@@ -776,6 +778,18 @@ export default function App() {
     void bootstrap()
   }, [bootstrap])
 
+  // The UI language preference, on mount — the welcome page renders in it too.
+  // The local mirror already applied it for the first paint; the server copy
+  // (ui-state.json) is the record and wins when the two differ: the other
+  // browser profile changed it since.
+  useEffect(() => {
+    fetchUiLang()
+      .then(({ lang }) => {
+        if (isLangPref(lang) && lang !== getLangPref()) setLangPref(lang)
+      })
+      .catch(() => {})
+  }, [])
+
   useEffect(() => {
     // Only seed once a real vault is being served: `undefined` = still
     // bootstrapping, `null` = welcome page (no vault to seed from).
@@ -808,12 +822,9 @@ export default function App() {
         // it once per run) — tell the user the app is still on the old
         // version and hand them the manual path.
         if (v.selfUpdateFailed) {
-          notify(
-            `Automatic update failed (${v.selfUpdateFailed}). ` +
-              'You are still on the previous version — run `lit self-update` in a terminal.',
-            'error',
-            { sticky: true },
-          )
+          notify(getT().browse.app.selfUpdateFailed(v.selfUpdateFailed), 'error', {
+            sticky: true,
+          })
         }
         // Post-update "What's new": pop once when the running version is not
         // the one this MACHINE last dismissed the card for. A fresh install
@@ -1329,16 +1340,13 @@ export default function App() {
   const onSiAdded = useCallback(
     (snap: SiSnapshot) => {
       closeSiWindow(snap.id)
+      const t = getT().browse.app
       const n = snap.added.length
-      const added = n === 1 ? 'Added 1 SI file' : `Added ${n} SI files`
       const w = snap.warnings.length
       if (w === 0) {
-        notify(added, 'success')
+        notify(t.siAdded(n), 'success')
       } else {
-        notify(
-          `${added} · ${w === 1 ? '1 warning' : `${w} warnings`} in the activity log`,
-          'warning',
-        )
+        notify(t.siAddedWithWarnings(n, w), 'warning')
         appendLog(
           snap.warnings.map((message) => ({ ts: Date.now(), variant: 'warning', message })),
         )
@@ -1535,7 +1543,7 @@ export default function App() {
   const manualResync = useCallback(() => {
     lastResyncRef.current = Date.now()
     doResync()
-    notify('Refreshed from disk.', 'success')
+    notify(getT().browse.app.refreshed, 'success')
   }, [doResync, notify])
 
   const openTab = useCallback(
@@ -1544,7 +1552,7 @@ export default function App() {
       setTabs((prev) =>
         prev.some((t) => t.key === key)
           ? prev
-          : [...prev, { key, kind, paperId: id, label: tabLabel(id, kind) }],
+          : [...prev, { key, kind, paperId: id }],
       )
       setActiveTab(key)
       selectPaper(id)
@@ -1571,13 +1579,13 @@ export default function App() {
   const openWikilink = useCallback(
     (target: string) => {
       if (target.includes(':')) {
-        notify('Cross-vault link — open that vault to follow it.')
+        notify(getT().browse.app.crossVaultLink)
         return
       }
       if (allPapers.some((p) => p.id === target)) {
         openPdf(target)
       } else {
-        notify(`No paper "${target}" in this vault.`)
+        notify(getT().browse.app.noSuchPaper(target))
       }
     },
     [allPapers, openPdf, notify],
@@ -1844,7 +1852,7 @@ export default function App() {
     }
     setRemoving(false)
     setPendingRemove(null)
-    notify(`Removed “${id}” to trash · restore from the 🗑 Trash`, 'success')
+    notify(getT().browse.app.removedToTrash(id), 'success')
     // The removed paper drops out of the list + counts; do NOT re-fetch its own
     // metadata (it's gone) — just reload the list, the INDEX projection, and the
     // trash count (the paper just landed in trash). Pins: a pin on the removed
@@ -2064,7 +2072,7 @@ export default function App() {
   const onRegisterVault = useCallback(
     async (name: string, path: string, setActive: boolean) => {
       await registerVault(name, path)
-      notify(`Registered vault “${name}”.`, 'success')
+      notify(getT().browse.app.vaultRegistered(name), 'success')
       // Best-effort: the register already succeeded, so a failure HERE must not
       // propagate into the dialog's catch — it would render as if the register
       // failed, contradicting the success toast, and a resubmit would then 400
@@ -2088,7 +2096,7 @@ export default function App() {
   const onCreateVault = useCallback(
     async (parentDir: string, name: string, setActive: boolean) => {
       const created = await createVault(parentDir, name)
-      notify(`Created vault “${created.name}” at ${created.path}.`, 'success')
+      notify(getT().browse.app.vaultCreated(created.name, created.path), 'success')
       // Best-effort, same reason as onRegisterVault: the vault exists on disk
       // now, so a failed list refresh must not reach the dialog as a failed
       // create — resubmitting would 400 on the (real) name clash.
@@ -2106,7 +2114,7 @@ export default function App() {
     async (name: string) => {
       try {
         await unregisterVault(name)
-        notify(`Unregistered vault “${name}”.`, 'success')
+        notify(getT().browse.app.vaultUnregistered(name), 'success')
         await fetchVaults().then(setVaults)
       } catch (err) {
         notify(err instanceof Error ? err.message : String(err), 'error')
@@ -2125,7 +2133,7 @@ export default function App() {
   const onRelocateVault = useCallback(
     async (name: string, path: string) => {
       await setVaultPath(name, path)
-      notify(`Re-pointed vault “${name}” to ${path}.`, 'success')
+      notify(getT().browse.app.vaultRelocated(name, path), 'success')
       await doResync()
     },
     [notify, doResync],
@@ -2149,22 +2157,19 @@ export default function App() {
       setRestoringEntry(entry.entryName)
       try {
         const res = await restorePaper(entry.entryName)
-        const parts: string[] = []
-        if (res.reverseEdgesRebuilt.length)
-          parts.push(`${res.reverseEdgesRebuilt.length} reverse edge(s)`)
-        if (res.reposRebound.length)
-          parts.push(`${res.reposRebound.length} repo(s)`)
-        if (res.projectsRebuilt.length)
-          parts.push(`${res.projectsRebuilt.length} project(s)`)
-        let msg = `Restored “${res.paperId}”`
-        if (parts.length) msg += ` · rebuilt ${parts.join(', ')}`
         const missing = Object.keys(res.missingRepos)
+        const msg = getT().browse.app.restored({
+          id: res.paperId,
+          reverseEdges: res.reverseEdgesRebuilt.length,
+          repos: res.reposRebound.length,
+          projects: res.projectsRebuilt.length,
+          missingRepos: missing,
+        })
         if (missing.length) {
           // The 1:1 code repo(s) were hard-deleted on rm and the GUI deliberately
           // does NOT re-clone (decision b). The restore put each one's record
           // (upstream included) back, so one CLI command clones them all —
           // warn prominently and don't auto-dismiss until it has been run.
-          msg += ` · ⚠ code not cloned again: ${missing.join(', ')} — run lit code restore-all`
           notify(msg, 'warning', { sticky: true })
         } else {
           notify(msg, 'success')
@@ -2241,7 +2246,7 @@ export default function App() {
   const onPaperAdded = useCallback(
     (id: string) => {
       setAddUpload(null)
-      notify(`Added ${id}`, 'success')
+      notify(getT().browse.app.paperAdded(id), 'success')
       loadList(listMode)
       fetchPapers()
         .then(setAllPapers)
@@ -2334,7 +2339,7 @@ export default function App() {
         cockpitHandle.triggerRead()
         // Modifiers spelled out, per the cheat sheet's own convention: a glyph
         // is an extra decode step, and ⌥ names a key Windows keyboards lack.
-        notify('Marked read · Alt+Shift+R to undo')
+        notify(getT().browse.app.markedRead)
       },
     }
   }, [cockpitHandle, notify])
@@ -2395,7 +2400,7 @@ export default function App() {
   // mirrors the ⌥-curation convention (subtle feedback, never a write).
   const togglePinSelected = useCallback(() => {
     if (!selectedId) {
-      notify('No paper selected')
+      notify(getT().browse.noPaperSelected)
       return
     }
     togglePin(selectedId)
@@ -2406,7 +2411,7 @@ export default function App() {
   const openSelectedDoc = useCallback(
     (doc: 'notes' | 'discussion') => {
       if (!selectedId) {
-        notify('No paper selected')
+        notify(getT().browse.noPaperSelected)
         return
       }
       openDoc(selectedId, doc)
@@ -2470,16 +2475,16 @@ export default function App() {
         <div className="fixed left-1/2 top-3 z-50 flex max-w-[min(44rem,92vw)] -translate-x-1/2 items-center gap-3 rounded-full bg-red-100 py-1.5 pl-4 pr-1.5 text-sm text-red-900 shadow-md ring-1 ring-red-200 dark:bg-red-950/80 dark:text-red-100 dark:ring-red-900">
           <span className="h-2 w-2 shrink-0 rounded-full bg-red-500" />
           <span className="truncate">
-            This library is no longer at{' '}
-            <span className="font-mono text-[0.8em]">{served}</span> — it was moved,
-            renamed or deleted.
+            {rich(T.browse.app.vaultGone, {
+              path: <span className="font-mono text-[0.8em]">{served}</span>,
+            })}
           </span>
           <button
             type="button"
             onClick={() => openVaultManager?.()}
             className="shrink-0 rounded-full bg-white/80 px-3 py-1 text-xs font-medium text-red-900 shadow-sm ring-1 ring-red-200 transition duration-200 ease-fluid hover:bg-white dark:bg-red-900/60 dark:text-red-50 dark:ring-red-800 dark:hover:bg-red-900"
           >
-            Find it
+            {T.browse.app.findIt}
           </button>
         </div>
       ) : (
@@ -2490,7 +2495,7 @@ export default function App() {
         disconnected && (
           <div className="fixed left-1/2 top-3 z-50 flex -translate-x-1/2 items-center gap-2 rounded-full bg-amber-100 px-4 py-1.5 text-sm text-amber-800 shadow-md ring-1 ring-amber-200 dark:bg-amber-950/70 dark:text-amber-200 dark:ring-amber-900">
             <span className="h-2 w-2 animate-pulse rounded-full bg-amber-500" />
-            Can't reach the litman server — retrying…
+            {T.browse.app.disconnected}
           </div>
         )
       )}
@@ -2507,23 +2512,23 @@ export default function App() {
         <div className="fixed left-1/2 top-14 z-40 flex max-w-[min(46rem,92vw)] -translate-x-1/2 items-start gap-3 rounded-2xl bg-stone-100 py-2 pl-4 pr-2 text-sm text-stone-700 shadow-md ring-1 ring-stone-200 dark:bg-stone-800 dark:text-stone-200 dark:ring-stone-700">
           <div className="min-w-0 py-0.5">
             <span>
-              This drive can't hold folder links, so{' '}
-              <span className="font-mono text-[0.85em]">views/</span> and the
-              project shortcuts aren't being made.{' '}
-              <span className="text-stone-500 dark:text-stone-400">
-                Your library is fine — every command, this app and the agent
-                workflow all work normally.
-              </span>
+              {rich(T.browse.app.linkNotice, {
+                views: <span className="font-mono text-[0.85em]">views/</span>,
+                reassurance: (
+                  <span className="text-stone-500 dark:text-stone-400">
+                    {T.browse.app.linkNoticeFine}
+                  </span>
+                ),
+              })}
             </span>
             <div className="mt-1 text-xs text-stone-500 dark:text-stone-400">
-              Usual on USB sticks (FAT32 / exFAT) and network drives; a library
-              on an internal drive gets the shortcuts automatically.
+              {T.browse.app.linkNoticeDetail}
             </div>
           </div>
           <div className="flex shrink-0 items-center gap-1">
             <button
               type="button"
-              aria-label="Dismiss"
+              aria-label={T.browse.app.dismiss}
               onClick={() => {
                 localStorage.setItem(LINK_NOTICE_DISMISSED, '1')
                 setLinkNotice(false)
@@ -2662,13 +2667,12 @@ export default function App() {
       </div>
       {pendingClose && (
         <SaveDialog
-          label={pendingTab?.label ?? pendingClose}
+          label={pendingTab ? tabLabel(T, pendingTab) : pendingClose}
           saving={savingClose}
           onSave={confirmSave}
           onDiscard={confirmDiscard}
           onCancel={cancelClose}
-          title={pendingIsMd ? 'Save edits?' : undefined}
-          bodyNoun={pendingIsMd ? 'unsaved edits' : undefined}
+          kind={pendingIsMd ? 'md' : 'pdf'}
         />
       )}
       {pendingVault && (

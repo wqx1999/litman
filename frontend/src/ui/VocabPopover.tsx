@@ -1,10 +1,14 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import type { SimilarPair } from '../api'
+import { useT } from '../i18n'
 import { useEscapeLayer } from './escapeStack'
 
 /** One value in a VocabPopover. */
 export interface VocabItem {
   value: string
+  /** What the row shows when it differs from the value: a fixed enum's label
+   * (status / type). The value is still what a click toggles. */
+  label?: string
   /** Papers using it; null = no count on the row (projects). */
   count: number | null
   /** Ticked: attached to the paper, or a selected filter. */
@@ -20,7 +24,8 @@ export interface VocabItem {
 interface Props {
   /** The field's display name, for the dialog's accessible name. */
   label: string
-  /** The field in running text: "Search topics…", "Manage topics…". */
+  /** The field in running text, already in the UI language: "Search
+   * topics…", "Manage topics…". */
   noun: string
   /** Every value, already in display order. */
   values: VocabItem[]
@@ -84,6 +89,7 @@ export default function VocabPopover({
   renderRow,
   onClose,
 }: Props) {
+  const m = useT().cockpit.vocabPopover
   const [draft, setDraft] = useState('')
   const [viewportH, setViewportH] = useState(() => window.innerHeight)
   const rootRef = useRef<HTMLDivElement | null>(null)
@@ -113,7 +119,11 @@ export default function VocabPopover({
     !values.some((v) => v.value.toLowerCase() === lower) &&
     !taken.some((v) => v.toLowerCase() === lower)
   const shown = typed
-    ? values.filter((v) => v.value.toLowerCase().includes(lower))
+    ? values.filter(
+        (v) =>
+          v.value.toLowerCase().includes(lower) ||
+          (v.label ?? '').toLowerCase().includes(lower),
+      )
     : values
 
   // The layout follows the rows actually listed: one column while they fit in
@@ -252,8 +262,8 @@ export default function VocabPopover({
         <input
           ref={inputRef}
           type="text"
-          aria-label={`Search ${noun}`}
-          placeholder={`Search ${noun}…`}
+          aria-label={m.searchAria(noun)}
+          placeholder={m.searchPlaceholder(noun)}
           value={draft}
           // Read-only rather than disabled while a write runs: a disabled
           // input drops focus, and the next keys would reach the app.
@@ -279,7 +289,7 @@ export default function VocabPopover({
         >
           {shown.length === 0 && !isNew && (
             <div className="px-2 py-1 text-xs text-stone-400">
-              {n === 0 ? 'No values yet.' : 'No match.'}
+              {n === 0 ? m.noValues : m.noMatch}
             </div>
           )}
           {shown.map((item, i) =>
@@ -307,7 +317,7 @@ export default function VocabPopover({
           className="flex w-full items-center gap-2 rounded-md px-2 py-1 text-left text-sm text-accent-700 transition-colors hover:bg-accent-50 disabled:opacity-50"
         >
           <span className="w-3 shrink-0 text-accent-600">+</span>
-          <span className="truncate">Create “{typed}”</span>
+          <span className="truncate">{m.create(typed)}</span>
         </button>
       )}
       {onManage && (
@@ -318,16 +328,14 @@ export default function VocabPopover({
             onClick={onManage}
             className="flex flex-1 items-center gap-1.5 rounded-md px-2 py-1 text-left text-xs text-stone-500 transition-colors hover:bg-stone-100 hover:text-stone-700 disabled:opacity-50"
           >
-            <span className="text-stone-400">⚙</span> Manage {noun}…
+            <span className="text-stone-400">⚙</span> {m.manage(noun)}
           </button>
           {/* The size of the vocabulary, not a paper count: the rows above
               already end in those, so this one names its noun. While a search
               narrows the list it reads "3 of 8". */}
           {n > 0 && (
             <span className="shrink-0 px-2 text-[11px] tabular-nums text-stone-400">
-              {typed
-                ? `${shown.length} of ${n}`
-                : `${n} ${n === 1 ? noun.replace(/s$/, '') : noun}`}
+              {typed ? m.filtered(shown.length, n) : m.size(n, noun)}
             </span>
           )}
         </div>
@@ -369,8 +377,8 @@ function VocabRow({
       {item.dotClass && (
         <span className={`h-1.5 w-1.5 shrink-0 rounded-full ${item.dotClass}`} />
       )}
-      <span title={item.value} className="truncate">
-        {item.value}
+      <span title={item.label ?? item.value} className="truncate">
+        {item.label ?? item.value}
       </span>
       {item.count !== null && (
         <span

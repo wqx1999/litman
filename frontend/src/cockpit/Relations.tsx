@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import type { PaperMeta } from '../types'
+import { enumLabel, useT } from '../i18n'
 import { useEscapeLayer } from '../ui/escapeStack'
 import { modalBackdropProps } from '../ui/modalShell'
 
@@ -53,6 +54,8 @@ export function Relations({
   /** A structured write is in flight — the × stops taking clicks. */
   busy?: boolean
 }) {
+  const t = useT()
+  const m = t.cockpit.relations
   // Groups unfolded past REL_PREVIEW. The call sites key this component by
   // paper id, so the next paper starts folded again.
   const [unfolded, setUnfolded] = useState<ReadonlySet<RelField>>(new Set())
@@ -76,7 +79,9 @@ export function Relations({
         const folded = ids!.length - shown.length
         return (
           <div key={rel}>
-            <div className="text-[11px] text-stone-500">{rel}</div>
+            <div className="text-[11px] text-stone-500">
+              {enumLabel(t.common.relation, rel)}
+            </div>
             <ul className="mt-0.5 border-l border-stone-200 pl-2">
               {shown.map((id) => (
                 // The × is a SIBLING of the link, never nested inside it (buttons
@@ -95,8 +100,8 @@ export function Relations({
                   {onRemove && (
                     <button
                       type="button"
-                      aria-label={`Remove ${rel} link to ${id}`}
-                      title="Remove link"
+                      aria-label={m.removeAria(enumLabel(t.common.relation, rel), id)}
+                      title={m.removeTitle}
                       disabled={busy}
                       onClick={(e) => {
                         e.stopPropagation()
@@ -116,7 +121,7 @@ export function Relations({
                 onClick={() => toggle(rel)}
                 className="mt-0.5 pl-2.5 text-[11px] text-stone-500 transition-colors hover:text-stone-800"
               >
-                {folded > 0 ? `+ ${folded} more` : 'Show less'}
+                {folded > 0 ? m.more(folded) : m.showLess}
               </button>
             )}
           </div>
@@ -155,6 +160,8 @@ export function RelationRemoveConfirm({
   onCancel: () => void
   onConfirm: () => void
 }) {
+  const t = useT()
+  const m = t.cockpit.relations
   useEscapeLayer(true, onCancel)
   return (
     <div
@@ -165,9 +172,9 @@ export function RelationRemoveConfirm({
         onClick={(e) => e.stopPropagation()}
         className="w-[22rem] animate-grow-in rounded-2xl bg-white p-5 shadow-xl ring-1 ring-stone-200"
       >
-        <h2 className="text-sm font-semibold text-stone-900">Remove this link?</h2>
+        <h2 className="text-sm font-semibold text-stone-900">{m.confirmTitle}</h2>
         <p className="mt-1.5 font-mono text-xs leading-relaxed text-stone-600">
-          {rel} → {id}
+          {enumLabel(t.common.relation, rel)} → {id}
         </p>
         <div className="mt-5 flex justify-end gap-2">
           <button
@@ -176,14 +183,14 @@ export function RelationRemoveConfirm({
             disabled={busy}
             className="rounded-lg px-3 py-1.5 text-xs text-stone-600 transition-colors hover:bg-stone-100 disabled:opacity-40"
           >
-            Cancel
+            {t.common.cancel}
           </button>
           <button
             onClick={onConfirm}
             disabled={busy}
             className="rounded-lg bg-rose-500 px-3 py-1.5 text-xs font-medium text-white transition-colors hover:bg-rose-600 disabled:opacity-60"
           >
-            Remove
+            {m.confirm}
           </button>
         </div>
       </div>

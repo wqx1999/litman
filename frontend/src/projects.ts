@@ -1,3 +1,4 @@
+import { getT } from './i18n'
 import type { ProjectStatus } from './types'
 
 /** What a project's `status` means to the user, and how loudly to say it.
@@ -19,19 +20,14 @@ export type ProjectHealth = {
 }
 
 export function projectHealth(status: ProjectStatus): ProjectHealth | null {
+  const t = getT().browse.projectHealth
   switch (status) {
     case 'path-missing':
       // The common one, and the only one a user reaches by accident: the folder
       // was moved, renamed or deleted behind litman's back. The manager row's
       // re-point button fixes it in place, which is why this marker sits beside
       // it rather than in a warning the user has to remember to act on.
-      return {
-        tone: 'missing',
-        badge: 'missing',
-        title:
-          'No folder at this path — it was moved, renamed or deleted. ' +
-          'Re-point the project at its new location.',
-      }
+      return { tone: 'missing', ...t.missing }
     // The two halves of a split registration. A project lives in two truth
     // sources at once (invariant #2 writes them together, so neither state can
     // arise from litman's own writes) — but lit-config.yaml has no `lit config
@@ -43,22 +39,9 @@ export function projectHealth(status: ProjectStatus): ProjectHealth | null {
     // only, never TAXONOMY) and quietly deepens the split — so the config-only
     // title must not claim tagging is blocked.
     case 'config-only':
-      return {
-        tone: 'incomplete',
-        badge: 'incomplete',
-        title:
-          'Has a folder in lit-config.yaml but is not listed in TAXONOMY.md. ' +
-          'Tagging still works, but the tag lands outside the taxonomy — ' +
-          'list it in TAXONOMY.md to repair.',
-      }
+      return { tone: 'incomplete', ...t.configOnly }
     case 'taxonomy-only':
-      return {
-        tone: 'incomplete',
-        badge: 'incomplete',
-        title:
-          'Listed in TAXONOMY.md but has no folder in lit-config.yaml. ' +
-          'It points nowhere until one is set.',
-      }
+      return { tone: 'incomplete', ...t.taxonomyOnly }
     default:
       return null
   }

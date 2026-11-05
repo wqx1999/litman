@@ -6,6 +6,7 @@ import type { PdfHandle } from '../pdf/PdfView'
 import MdView from '../md/MdView'
 import type { MdDraft } from '../md/MdView'
 import { useEscapeLayer } from '../ui/escapeStack'
+import { useT, type Messages } from '../i18n'
 
 interface Props {
   tabs: Tab[]
@@ -53,6 +54,14 @@ const EDGE_SCROLL_STEP = 8
  * carried tab takes to settle on release. */
 const SLIDE_MS = 160
 
+/** A tab's display label: the paper id, plus the doc kind for a notes /
+ * discussion tab. Built at render, never stored on the tab, so an open tab
+ * follows a language switch. */
+export function tabLabel(msg: Messages, tab: Pick<Tab, 'kind' | 'paperId'>): string {
+  if (tab.kind === 'pdf') return tab.paperId
+  return msg.browse.docTab[tab.kind](tab.paperId)
+}
+
 export default function TabArea({
   tabs,
   activeKey,
@@ -73,6 +82,8 @@ export default function TabArea({
   onMdEndEdit,
   onMdSaved,
 }: Props) {
+  const msg = useT()
+  const tx = msg.reader.tabArea
   const active = tabs.find((t) => t.key === activeKey) ?? null
 
   const stripRef = useRef<HTMLDivElement | null>(null)
@@ -337,7 +348,7 @@ export default function TabArea({
       >
         {tabs.length === 0 && (
           <div className="px-2 py-2 text-xs text-stone-400">
-            Open a paper from the list.
+            {tx.noTabs}
           </div>
         )}
         {tabs.map((t) => {
@@ -398,12 +409,12 @@ export default function TabArea({
                 }}
                 className="max-w-48 truncate"
               >
-                {t.label}
+                {tabLabel(msg, t)}
               </button>
               <button
                 data-tab-close
                 onClick={() => onClose(t.key)}
-                title="Close tab"
+                title={tx.closeTab}
                 className={`rounded p-0.5 leading-none text-stone-400 transition-colors hover:bg-stone-300 hover:text-stone-700 ${
                   isActive ? '' : 'opacity-0 group-hover:opacity-100'
                 }`}
@@ -438,7 +449,7 @@ export default function TabArea({
                 disabled={tabs.length < 2}
                 className={menuItem}
               >
-                Close other tabs
+                {tx.closeOthers}
               </button>
               <button
                 onClick={() => {
@@ -447,7 +458,7 @@ export default function TabArea({
                 }}
                 className={menuItem}
               >
-                Close all tabs
+                {tx.closeAll}
               </button>
             </div>
           </div>,
@@ -460,7 +471,7 @@ export default function TabArea({
       <div className="min-h-0 flex-1" onPointerDownCapture={onContentPress}>
         {active === null && (
           <div className="flex h-full items-center justify-center text-sm text-stone-400">
-            No document open.
+            {tx.noDocument}
           </div>
         )}
         {active && active.kind === 'pdf' && (

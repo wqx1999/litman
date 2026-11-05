@@ -36,9 +36,13 @@
   --color-status-dropped: #c7c7cc;
 
   /* System font stacks — San Francisco on macOS, graceful fallbacks elsewhere.
-     The native look wants the system faces, not a bundled webfont. */
+     The native look wants the system faces, not a bundled webfont. The Chinese
+     faces sit AFTER system-ui: the browser picks per glyph, so Latin text keeps
+     the system face and only Chinese characters fall through to them (Windows
+     would otherwise reach for SimSun). */
   --font-sans: -apple-system, BlinkMacSystemFont, "SF Pro Text",
-    "Helvetica Neue", system-ui, sans-serif;
+    "Helvetica Neue", system-ui, "PingFang SC", "Microsoft YaHei",
+    "Noto Sans CJK SC", sans-serif;
   --font-mono: ui-monospace, "SF Mono", SFMono-Regular, Menlo, "Cascadia Mono",
     Consolas, "Liberation Mono", monospace;
 

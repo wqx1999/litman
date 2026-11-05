@@ -1,6 +1,7 @@
 import { useState } from 'react'
 
 import type { FsAnchor } from '../api'
+import { enumLabel, getT, useT } from '../i18n'
 import DirectoryPicker from './DirectoryPicker'
 import type { PickerMode } from './DirectoryPicker'
 import { basename } from './path'
@@ -47,6 +48,7 @@ export default function PathField({
   selectOnFocus,
   className,
 }: PathFieldProps) {
+  const t = useT()
   const [picking, setPicking] = useState(false)
 
   return (
@@ -71,7 +73,7 @@ export default function PathField({
         onClick={() => setPicking(true)}
         className="shrink-0 rounded-md border border-stone-300 bg-white px-3 py-1.5 text-sm text-stone-600 shadow-sm transition-colors hover:bg-stone-50 disabled:opacity-50"
       >
-        Browse…
+        {t.topbar.pathField.browse}
       </button>
       {picking && (
         <DirectoryPicker
@@ -100,6 +102,7 @@ export interface LocationLabel {
 export function describeLocation(parentDir: string, anchors: FsAnchor[]): LocationLabel {
   const clean = parentDir.trim().replace(/[\\/]+$/, '')
   const hit = anchors.find((a) => a.path === clean)
-  if (hit) return { kind: hit.label, label: hit.label }
+  // Called during render: the caller's useT() re-renders it on a switch.
+  if (hit) return { kind: hit.label, label: enumLabel(getT().topbar.places, hit.label) }
   return { kind: 'folder', label: basename(clean) || clean || '~' }
 }

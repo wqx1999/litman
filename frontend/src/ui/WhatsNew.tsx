@@ -1,5 +1,6 @@
 import { createPortal } from 'react-dom'
 import type { WhatsNewInfo } from '../api'
+import { useLang, useT } from '../i18n'
 import { useEscapeLayer } from './escapeStack'
 import { modalBackdropProps } from './modalShell'
 
@@ -24,6 +25,11 @@ export default function WhatsNew({
   info: WhatsNewInfo
   onClose: () => void
 }) {
+  const t = useT()
+  const w = t.reader.whatsNew
+  // The Chinese digest when there is one for this version, else English.
+  const bullets =
+    useLang() === 'zh' && (info.bulletsZh ?? []).length > 0 ? info.bulletsZh : info.bullets
   useEscapeLayer(true, onClose)
   return createPortal(
     <div
@@ -33,19 +39,19 @@ export default function WhatsNew({
       <div
         onClick={(e) => e.stopPropagation()}
         role="dialog"
-        aria-label={`What's new in litman ${info.version}`}
+        aria-label={w.title(info.version)}
         className="max-h-[85vh] w-[28rem] max-w-[94vw] animate-grow-in overflow-y-auto rounded-2xl bg-white p-6 shadow-xl ring-1 ring-stone-200"
       >
         <div className="text-[11px] font-semibold uppercase tracking-wider text-accent-600">
-          Updated
+          {w.updated}
         </div>
         <h2 className="mt-0.5 text-sm font-semibold text-stone-900">
-          What&apos;s new in litman {info.version}
+          {w.title(info.version)}
         </h2>
 
-        {info.bullets.length > 0 ? (
+        {bullets.length > 0 ? (
           <ul className="mt-3 space-y-2">
-            {info.bullets.map((b) => (
+            {bullets.map((b) => (
               <li key={b} className="flex gap-2 text-xs leading-5 text-stone-700">
                 <span aria-hidden="true" className="mt-px select-none text-accent-500">
                   •
@@ -58,7 +64,7 @@ export default function WhatsNew({
           // Manual reopen on a version with no digest recorded (should not
           // happen for released builds — the release gate requires one).
           <p className="mt-3 text-xs leading-5 text-stone-500">
-            No highlights recorded for this version.
+            {w.noHighlights}
           </p>
         )}
 
@@ -69,14 +75,14 @@ export default function WhatsNew({
             rel="noreferrer"
             className="text-xs font-medium text-accent-600 transition duration-200 ease-fluid hover:text-accent-700"
           >
-            Read the full changelog →
+            {w.changelog}
           </a>
           <button
             type="button"
             onClick={onClose}
             className="rounded-lg bg-accent-500 px-3 py-1.5 text-sm font-medium text-white transition duration-200 ease-fluid hover:bg-accent-600"
           >
-            Done
+            {t.common.done}
           </button>
         </div>
       </div>

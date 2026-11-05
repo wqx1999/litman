@@ -11,6 +11,7 @@ import {
   type SiRow,
   type SiSnapshot,
 } from '../api'
+import { useT } from '../i18n'
 import { formatBytes } from './bytes'
 import { useEscapeLayer } from './escapeStack'
 import { modalBackdropProps, useModalCardFocus } from './modalShell'
@@ -41,8 +42,6 @@ import { modalBackdropProps, useModalCardFocus } from './modalShell'
 // browser knows the size before sending a byte. Core's LARGE_FILE_BYTES.
 const LARGE_FILE_BYTES = 100 * 1024 * 1024
 
-const FOLDER_MESSAGE = "Folders can't be added — drop the files inside."
-
 // For this long after the window popped on its own, Esc does not cancel it:
 // the key may have been meant for whatever the person was doing a moment before.
 const ESC_GRACE_MS = 1000
@@ -60,6 +59,8 @@ interface LocalRow {
   fid?: string
   server?: SiRow
   error?: string
+  /** A dropped folder: failed before any upload, with a message of our own. */
+  folder?: true
   /** Removed while its upload was on the wire: shown as removing, taken out
    * on the server once the upload answers (see `removeRow`). */
   discard?: boolean
@@ -127,6 +128,8 @@ export default function AddSi({
    * or the paper left the library) — App may replace this window. */
   onGone: (id: string) => void
 }) {
+  const t = useT()
+  const m = t.cockpit.addSi
   const rid = seed.id
   const link = seed.link
   const [phase, setPhase] = useState<'intro' | 'files'>('intro')
@@ -323,7 +326,7 @@ export default function AddSi({
       if (!file) continue
       const key = `drop-${nextKey.current++}`
       if (entry?.isDirectory) {
-        picked.push({ key, name: file.name, bytes: 0, state: 'failed', error: FOLDER_MESSAGE })
+        picked.push({ key, name: file.name, bytes: 0, state: 'failed', folder: true })
       } else {
         picked.push({
           key,
@@ -508,7 +511,7 @@ export default function AddSi({
         onClick={() => setPhase('files')}
         className={className}
       >
-        Open website ↗
+        {m.openWebsite}
       </a>
     )
 
@@ -544,13 +547,13 @@ export default function AddSi({
         {...cardFocus}
         onClick={(e) => e.stopPropagation()}
         role="dialog"
-        aria-label="Supplementary files"
+        aria-label={m.heading}
         className={`flex max-h-[85vh] w-[28rem] max-w-[94vw] animate-grow-in flex-col rounded-2xl bg-white p-6 shadow-xl transition-shadow duration-300 ease-fluid focus:outline-none ${
           intro && dragOver ? 'ring-2 ring-accent-500' : 'ring-1 ring-stone-200'
         }`}
       >
         <div className="text-[11px] font-semibold uppercase tracking-wider text-accent-600">
-          Supplementary files
+          {m.heading}
         </div>
         <h2
           className="mt-0.5 truncate text-sm font-semibold text-stone-900"
@@ -566,14 +569,10 @@ export default function AddSi({
                 {pageLink(
                   'inline-flex rounded-lg px-2.5 py-1.5 text-xs font-medium text-accent-600 ring-1 ring-stone-200 transition duration-200 ease-fluid hover:bg-stone-50',
                 )}
-                <p className="mt-2 text-xs leading-5 text-stone-600">
-                  Download the SI there, then drop the files here.
-                </p>
+                <p className="mt-2 text-xs leading-5 text-stone-600">{m.downloadThere}</p>
               </>
             ) : (
-              <p className="text-xs leading-5 text-stone-600">
-                No link on record — drop the files you downloaded.
-              </p>
+              <p className="text-xs leading-5 text-stone-600">{m.noLink}</p>
             )}
           </div>
         ) : (
@@ -588,10 +587,8 @@ export default function AddSi({
                   : 'bg-white ring-1 ring-stone-200'
               }`}
             >
-              <div className="text-sm font-semibold text-stone-900">Drop SI files here</div>
-              <div className="mt-1 text-xs text-stone-600">
-                Checked on drop, added when you press Done
-              </div>
+              <div className="text-sm font-semibold text-stone-900">{m.dropHere}</div>
+              <div className="mt-1 text-xs text-stone-600">{m.dropHint}</div>
             </div>
             {rows.length > 0 && (
               <ul className="-mx-2 mt-3 min-h-0 space-y-0.5 overflow-y-auto">
@@ -631,7 +628,7 @@ export default function AddSi({
               disabled={busy}
               className="rounded-lg px-3 py-1.5 text-sm font-medium text-stone-600 transition duration-200 ease-fluid hover:bg-stone-100 hover:text-stone-800 disabled:opacity-40 disabled:hover:bg-transparent"
             >
-              Cancel
+              {t.common.cancel}
             </button>
             {!intro && (
               <button
@@ -640,7 +637,7 @@ export default function AddSi({
                 disabled={!canDone}
                 className="rounded-lg bg-accent-500 px-3 py-1.5 text-sm font-medium text-white transition duration-200 ease-fluid hover:bg-accent-600 disabled:opacity-40 disabled:hover:bg-accent-500"
               >
-                {busy ? 'Adding…' : 'Done'}
+                {busy ? m.adding : t.common.done}
               </button>
             )}
           </div>
@@ -675,17 +672,18 @@ function RowLine({
   onUpload: (row: LocalRow) => void
   onRemove: (row: LocalRow) => void
 }) {
+  const m = useT().cockpit.addSi
   const s = row.server
   // A failed upload was never checked: no mark, like a large file not sent yet.
   const verdict = row.state === 'failed' ? undefined : s?.verdict
   const mark = verdict === 'ok' ? '✓' : verdict === 'unverified' ? '?' : verdict ? '✕' : ''
   const removing = row.state === 'removing' || row.discard === true
   const status = removing
-    ? 'Removing…'
+    ? m.removing
     : row.state === 'queued'
-      ? 'Waiting…'
+      ? m.waiting
       : row.state === 'uploading'
-        ? 'Checking…'
+        ? m.checking
         : s && s.verdict !== 'rejected'
           ? formatBytes(s.bytes)
           : null
@@ -695,19 +693,20 @@ function RowLine({
   if (row.state === 'large') {
     detail = (
       <>
-        <span className="min-w-0 flex-1">Large file ({formatBytes(row.bytes)}) — upload?</span>
+        <span className="min-w-0 flex-1">{m.large(formatBytes(row.bytes))}</span>
         <button
           type="button"
           disabled={disabled}
           onClick={() => onUpload(row)}
           className="shrink-0 rounded-md px-2 py-0.5 text-[11px] font-medium text-accent-600 ring-1 ring-stone-200 transition duration-200 ease-fluid hover:bg-stone-50 disabled:opacity-40"
         >
-          Upload
+          {m.upload}
         </button>
       </>
     )
   } else if (row.state === 'failed') {
-    detail = row.error ? <span className="min-w-0 flex-1">{row.error}</span> : null
+    const failure = row.folder ? m.folder : row.error
+    detail = failure ? <span className="min-w-0 flex-1">{failure}</span> : null
   } else if (s?.verdict === 'unverified') {
     detail = (
       <>
@@ -720,7 +719,7 @@ function RowLine({
             onChange={() => onTick(s.id)}
             className="h-3 w-3 accent-accent-500"
           />
-          add anyway
+          {m.addAnyway}
         </label>
       </>
     )
@@ -752,8 +751,8 @@ function RowLine({
         )}
         <button
           type="button"
-          aria-label={`Remove ${row.name}`}
-          title="Remove"
+          aria-label={m.removeAria(row.name)}
+          title={m.removeTitle}
           disabled={disabled || removing}
           onClick={() => onRemove(row)}
           className="grid h-5 w-5 shrink-0 place-items-center rounded-md text-sm leading-none text-stone-400 transition-colors hover:bg-stone-100 hover:text-rose-600 disabled:opacity-40"

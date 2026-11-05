@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
+import { getT, useT } from '../i18n'
 
 /** Window-level PDF drag catcher for the drag-in ingest (task-gui-doi-add).
  *
@@ -40,6 +41,7 @@ export default function DropZone({
   onPdf: (file: File) => void
   onReject: (message: string) => void
 }) {
+  const t = useT().browse.dropZone
   const [active, setActive] = useState(false)
   const depth = useRef(0)
 
@@ -95,7 +97,7 @@ export default function DropZone({
       )
       if (pdfs.length === 0) return
       if (files.length > 1) {
-        onReject('One paper at a time.')
+        onReject(getT().browse.dropZone.onePaperOnly)
         return
       }
       onPdf(pdfs[0])
@@ -124,10 +126,10 @@ export default function DropZone({
     <div className="pointer-events-none fixed inset-0 z-50 flex items-center justify-center bg-black/20 backdrop-blur-sm">
       <div className="animate-grow-in rounded-2xl bg-white px-8 py-6 text-center shadow-xl ring-1 ring-stone-200">
         <div className="text-sm font-semibold text-stone-900">
-          {busy ? 'Reading PDF…' : 'Drop PDF to add'}
+          {busy ? t.reading : t.drop}
         </div>
         <div className="mt-1 text-xs text-stone-500">
-          {busy ? 'Looking for a DOI' : 'One paper at a time'}
+          {busy ? t.lookingForDoi : t.onePaperHint}
         </div>
       </div>
     </div>,

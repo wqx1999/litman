@@ -1,6 +1,7 @@
 import { useRef, useState } from 'react'
 import type { ProjectHealth } from '../projects'
 import type { SimilarPair } from '../api'
+import { useT } from '../i18n'
 import VocabPopover from '../ui/VocabPopover'
 import { EnumSelect } from './fields'
 import { useEscapeLayer } from '../ui/escapeStack'
@@ -12,6 +13,9 @@ import { modalBackdropProps } from '../ui/modalShell'
  * Three letters that only change with a code release, so the list is written
  * out here. */
 const PROJECT_GRADES = ['A', 'B', 'C']
+
+/** The four fields of the Tags group. */
+export type TagFieldKey = 'topics' | 'methods' | 'data' | 'projects'
 
 /** One pill in the Tags group: the field name plus a count badge when the field
  * has values. Clicking toggles the field's value popover open/closed; `ref` is
@@ -33,12 +37,13 @@ function TagPill({
   onClick: () => void
   ref?: React.Ref<HTMLButtonElement>
 }) {
+  const m = useT().cockpit.tags
   const filled = count > 0
   return (
     <button
       ref={ref}
       type="button"
-      aria-label={`${label} (${count} selected)`}
+      aria-label={m.pillAria(label, count)}
       aria-haspopup="dialog"
       aria-expanded={active}
       disabled={disabled}
@@ -98,6 +103,7 @@ function TagPanelRow({
   onToggle: () => void
   onGrade: (value: string, grade: string) => void
 }) {
+  const t = useT()
   const selectRef = useRef<HTMLSelectElement>(null)
   const badge = health && (
     <span
@@ -125,7 +131,7 @@ function TagPanelRow({
         disabled={busy}
         title={
           health?.title ??
-          (on ? `Unlink ${value}` : `Grade to link this paper to ${value}`)
+          (on ? t.cockpit.tags.unlink(value) : t.cockpit.tags.gradeToLink(value))
         }
         onClick={() => {
           if (on) {
@@ -151,7 +157,7 @@ function TagPanelRow({
       {gradable ? (
         <div className="ml-auto shrink-0">
           <EnumSelect
-            field={`priority-${value}`}
+            label={t.cockpit.enumSelect.gradeAria(value)}
             value={grade}
             options={PROJECT_GRADES}
             // A linked row cannot go back to ungraded from here; an unlinked
@@ -201,7 +207,7 @@ function TagPanel({
   onClose,
   anchor,
 }: {
-  field: string
+  field: TagFieldKey
   label: string
   values: string[] | undefined
   vocabulary: string[]
@@ -230,6 +236,7 @@ function TagPanel({
   /** The pill this panel opened from. */
   anchor: () => HTMLElement | null
 }) {
+  const noun = useT().cockpit.tags.nouns[field]
   // A create the server refused as too close to registered values, waiting on
   // CreateSimilarConfirm; `settle` resumes the popover's pending create with
   // whether the dialog ended in a write.
@@ -257,7 +264,7 @@ function TagPanel({
     <>
       <VocabPopover
         label={label}
-        noun={field}
+        noun={noun}
         values={items}
         anchor={anchor}
         align="right"
@@ -285,7 +292,7 @@ function TagPanel({
       />
       {refusal && onCreate && (
         <CreateSimilarConfirm
-          field={field}
+          noun={noun}
           value={refusal.value}
           pairs={refusal.pairs}
           taken={attached}
@@ -307,7 +314,7 @@ function TagPanel({
 
 /** Config for one field in the Tags group. */
 type TagFieldConfig = {
-  key: string
+  key: TagFieldKey
   label: string
   values: string[] | undefined
   vocabulary: string[]
@@ -345,13 +352,14 @@ export function TagGroup({
   onOpenKey: (key: string | null) => void
   busy: boolean
 }) {
+  const t = useT()
   const pills = useRef<Record<string, HTMLButtonElement | null>>({})
   const openCfg = fields.find((f) => f.key === openKey) ?? null
 
   return (
     <div className="mb-3.5">
       <div className="mb-1 text-[11px] font-semibold uppercase tracking-wider text-stone-600">
-        Tags
+        {t.cockpit.fields.tags}
       </div>
       <div className="flex flex-wrap gap-1.5">
         {fields.map((f) => (
@@ -404,7 +412,7 @@ export function TagGroup({
  * window and only the list scrolls, so the title and both buttons stay in
  * reach. Matches already on the paper carry the popover's tick. */
 function CreateSimilarConfirm({
-  field,
+  noun,
   value,
   pairs,
   taken,
@@ -413,7 +421,8 @@ function CreateSimilarConfirm({
   onCancel,
   onConfirm,
 }: {
-  field: string
+  /** The field's name in running text. */
+  noun: string
   value: string
   pairs: SimilarPair[]
   /** Values already on the paper. */
@@ -423,6 +432,8 @@ function CreateSimilarConfirm({
   onCancel: () => void
   onConfirm: () => void
 }) {
+  const t = useT()
+  const m = t.cockpit.createSimilar
   useEscapeLayer(true, busy ? null : onCancel)
   return (
     <div
@@ -433,20 +444,18 @@ function CreateSimilarConfirm({
         onClick={(e) => e.stopPropagation()}
         role="dialog"
         aria-modal="true"
-        aria-label={`Create “${value}”?`}
+        aria-label={m.title(value)}
         className="flex w-[22rem] animate-grow-in flex-col rounded-2xl bg-white p-5 shadow-xl ring-1 ring-stone-200"
         style={{ maxHeight: 'calc(100vh - 32px)' }}
       >
-        <h2 className="text-sm font-semibold text-stone-900">Create “{value}”?</h2>
-        <p className="mt-1.5 text-xs leading-relaxed text-stone-600">
-          Similar {field} already exist:
-        </p>
+        <h2 className="text-sm font-semibold text-stone-900">{m.title(value)}</h2>
+        <p className="mt-1.5 text-xs leading-relaxed text-stone-600">{m.similarExist(noun)}</p>
         <ul className="-mx-2 mt-2 min-h-0 overflow-y-auto overscroll-contain">
           {pairs.map(([v, why]) => (
             <li key={v}>
               <button
                 type="button"
-                title={`Use ${v}`}
+                title={m.use(v)}
                 disabled={busy}
                 onClick={() => onUse(v)}
                 className="flex w-full items-center gap-2 rounded-md px-2 py-1 text-left text-xs text-stone-700 transition-colors hover:bg-stone-100 disabled:opacity-50"
@@ -469,14 +478,14 @@ function CreateSimilarConfirm({
             disabled={busy}
             className="rounded-lg px-3 py-1.5 text-xs text-stone-600 transition-colors hover:bg-stone-100 disabled:opacity-40"
           >
-            Cancel
+            {t.common.cancel}
           </button>
           <button
             onClick={onConfirm}
             disabled={busy}
             className="rounded-lg bg-accent-500 px-3 py-1.5 text-xs font-medium text-white transition-colors hover:bg-accent-600 disabled:opacity-60"
           >
-            Create anyway
+            {m.confirm}
           </button>
         </div>
       </div>

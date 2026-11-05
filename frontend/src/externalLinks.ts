@@ -10,6 +10,7 @@
  * fallback included) never routes a click and keeps its links as they were.
  */
 import { ApiError, openUrlOutside } from './api'
+import { getT } from './i18n'
 
 const QUERY_KEY = 'window'
 const QUERY_VALUE = 'app'
@@ -104,7 +105,7 @@ export function routeExternalLinks(notify: (message: string, variant: 'error') =
         notify(
           err instanceof ApiError
             ? err.message
-            : 'litman did not answer — opening the link in this window instead',
+            : getT().reader.externalLinks.noAnswer,
           'error',
         )
         // Opened with 'noopener' it would come back null, so the tie is cut by hand.

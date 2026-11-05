@@ -29,6 +29,7 @@ import {
   type ViewPos,
 } from './view-history'
 import { pdfUrl, putPdfAnnotations } from '../api'
+import { useT } from '../i18n'
 import { isEditingTarget } from '../useKeyboardShortcuts'
 
 // pdf.js needs its worker registered once, before any document is parsed. The
@@ -254,12 +255,8 @@ const MODE_TO_EDIT: Record<number, EditMode> = {
   [AnnotationEditorType.FREETEXT]: 'freetext',
   [AnnotationEditorType.INK]: 'ink',
 }
-const EDIT_MODES: { mode: EditMode; label: string; title: string }[] = [
-  { mode: 'none', label: 'Cursor', title: 'Select text / follow links (double-click an annotation to edit)' },
-  { mode: 'highlight', label: 'Highlight', title: 'Highlight text' },
-  { mode: 'freetext', label: 'Text', title: 'Add a text note' },
-  { mode: 'ink', label: 'Draw', title: 'Freehand ink' },
-]
+// Toolbar order. Each tool's label and hover title: reader.pdfView.tool.
+const EDIT_MODES: EditMode[] = ['none', 'highlight', 'freetext', 'ink']
 
 // pdf.js's highlight editor is NOT self-sufficient: its UIManager.getNonHCMColorName()
 // does `highlightColorNames.get(color)` with NO null guard, and that map is null
@@ -408,6 +405,8 @@ export default function PdfView({
   readOnly = false,
   pdfSrc,
 }: Props) {
+  const t = useT()
+  const tx = t.reader.pdfView
   // The absolutely-positioned scroll container pdf_viewer attaches to.
   const containerRef = useRef<HTMLDivElement>(null)
   // The inner `.pdfViewer` div pdf_viewer fills with pages.
@@ -1726,7 +1725,7 @@ export default function PdfView({
     return () => el.removeEventListener('scroll', onScroll)
   }, [clearHover, tabKey, syncPill])
 
-  const saveLabel = saving ? 'Saving…' : savedFlash && !dirty ? 'Saved ✓' : 'Save'
+  const saveLabel = saving ? tx.saving : savedFlash && !dirty ? tx.saved : tx.save
 
   return (
     <div className="flex h-full flex-col">
@@ -1734,7 +1733,7 @@ export default function PdfView({
         <button
           onClick={() => zoomBy(-ZOOM_STEP)}
           disabled={scale <= MIN_SCALE}
-          title="Zoom out"
+          title={tx.zoomOut}
           className="rounded-md px-2 py-0.5 text-sm text-stone-600 transition-colors hover:bg-stone-200 disabled:text-stone-300 disabled:hover:bg-transparent"
         >
           −
@@ -1759,8 +1758,8 @@ export default function PdfView({
               }
             }}
             inputMode="numeric"
-            aria-label="Zoom percentage"
-            title="Type a zoom %, then Enter"
+            aria-label={tx.zoomPercentLabel}
+            title={tx.zoomPercentTitle}
             className="w-9 rounded bg-transparent text-right text-xs tabular-nums text-stone-600 hover:bg-stone-200 focus:bg-white focus:outline-none focus:ring-1 focus:ring-stone-300"
           />
           <span className="text-xs text-stone-500">%</span>
@@ -1768,7 +1767,7 @@ export default function PdfView({
         <button
           onClick={() => zoomBy(ZOOM_STEP)}
           disabled={scale >= MAX_SCALE}
-          title="Zoom in"
+          title={tx.zoomIn}
           className="rounded-md px-2 py-0.5 text-sm text-stone-600 transition-colors hover:bg-stone-200 disabled:text-stone-300 disabled:hover:bg-transparent"
         >
           +
@@ -1781,13 +1780,13 @@ export default function PdfView({
             <div className="mx-1 h-4 w-px bg-stone-300" />
 
             <div className="flex items-center gap-1">
-              {EDIT_MODES.map(({ mode, label, title }) => {
+              {EDIT_MODES.map((mode) => {
                 const active = editMode === mode
                 return (
                   <button
                     key={mode}
                     onClick={() => selectMode(mode)}
-                    title={title}
+                    title={tx.tool[mode].title}
                     aria-pressed={active}
                     className={
                       'rounded-md border px-2 py-0.5 text-xs transition-colors ' +
@@ -1796,7 +1795,7 @@ export default function PdfView({
                         : 'border-transparent text-stone-600 hover:bg-stone-200')
                     }
                   >
-                    {label}
+                    {tx.tool[mode].label}
                   </button>
                 )
               })}
@@ -1829,11 +1828,7 @@ export default function PdfView({
             <button
               onClick={() => void saveNow()}
               disabled={!dirty || saving}
-              title={
-                dirty
-                  ? 'Save annotations into the PDF (⌘/Ctrl+S)'
-                  : 'No unsaved changes'
-              }
+              title={dirty ? tx.saveTitle : tx.noChanges}
               className={
                 'rounded-md px-2.5 py-0.5 text-xs font-medium transition-colors ' +
                 (dirty && !saving
@@ -1848,7 +1843,7 @@ export default function PdfView({
           )}
           {pageCount > 0 && (
             <span className="text-xs text-stone-500">
-              {pageCount} page{pageCount === 1 ? '' : 's'}
+              {tx.pageCount(pageCount)}
             </span>
           )}
         </div>
@@ -1868,12 +1863,12 @@ export default function PdfView({
       >
         {error && (
           <div className="absolute inset-x-0 top-0 z-10 p-6 text-sm text-red-700">
-            Failed to load PDF: {error}
+            {tx.loadFailed(error)}
           </div>
         )}
         {!error && pageCount === 0 && (
           <div className="absolute inset-x-0 top-0 z-10 p-6 text-sm text-stone-500">
-            Loading PDF…
+            {tx.loading}
           </div>
         )}
         <div ref={containerRef} className="absolute inset-0 overflow-auto p-6">
@@ -1954,18 +1949,18 @@ export default function PdfView({
                   }
                 }}
                 rows={2}
-                placeholder="Add a note…"
+                placeholder={tx.notePlaceholder}
                 className="w-52 resize-none rounded-lg border border-stone-200 bg-stone-50 p-2 text-xs text-stone-800 placeholder:text-stone-400 focus:border-accent-500 focus:bg-white focus:outline-none focus:ring-1 focus:ring-accent-500"
               />
             )}
             <button
               onClick={deleteSelected}
-              title="Delete annotation"
-              aria-label="Delete annotation"
+              title={tx.deleteAnnotation}
+              aria-label={tx.deleteAnnotation}
               className="flex items-center justify-center gap-1.5 rounded-lg px-2 py-1 text-xs text-red-600 transition-colors hover:bg-red-50"
             >
               <TrashIcon />
-              Delete
+              {t.common.delete}
             </button>
           </div>
         )}

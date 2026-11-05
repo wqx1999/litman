@@ -3,6 +3,7 @@ import { createPortal } from 'react-dom'
 
 import { listDir, mkdir } from '../api'
 import type { FsListing } from '../api'
+import { enumLabel, useT } from '../i18n'
 import {
   anchorIcon,
   ArrowUpIcon,
@@ -51,6 +52,8 @@ export default function DirectoryPicker({
   onPick: (path: string) => void
   onCancel: () => void
 }) {
+  const t = useT()
+  const d = t.topbar.directoryPicker
   const [listing, setListing] = useState<FsListing | null>(null)
   const [address, setAddress] = useState(initial)
   const [error, setError] = useState<string | null>(null)
@@ -272,7 +275,7 @@ export default function DirectoryPicker({
         className="flex max-h-[80vh] w-[34rem] max-w-[92vw] animate-grow-in flex-col rounded-2xl bg-white p-5 shadow-xl ring-1 ring-stone-200"
       >
         <div className="flex items-center justify-between gap-3">
-          <h2 className="text-sm font-semibold text-stone-900">Choose a folder</h2>
+          <h2 className="text-sm font-semibold text-stone-900">{d.title}</h2>
           <label className="flex select-none items-center gap-1.5 text-[11px] text-stone-500">
             <input
               type="checkbox"
@@ -280,7 +283,7 @@ export default function DirectoryPicker({
               onChange={(e) => toggleHidden(e.target.checked)}
               className="h-3.5 w-3.5 rounded border-stone-300 text-accent-500 focus:ring-accent-500"
             />
-            Show hidden
+            {d.showHidden}
           </label>
         </div>
 
@@ -294,7 +297,7 @@ export default function DirectoryPicker({
                 className={CHIP}
               >
                 {anchorIcon(a.label, 'h-4 w-4 text-stone-400')}
-                {a.label}
+                {enumLabel(t.topbar.places, a.label)}
               </button>
             ))}
             {drives.length > 0 && (
@@ -302,22 +305,22 @@ export default function DirectoryPicker({
               // plain one-click buttons without the roving arrow-key focus a
               // radio group promises, and aria-current is exactly "the item
               // in this set that reflects where you are".
-              <div className={DRIVE_TRACK} role="group" aria-label="Drives">
-                {drives.map((d) => (
+              <div className={DRIVE_TRACK} role="group" aria-label={d.drivesLabel}>
+                {drives.map((drive) => (
                   <button
-                    key={d.path}
+                    key={drive.path}
                     type="button"
                     aria-current={
-                      d.label.toUpperCase() === currentDrive ? 'true' : undefined
+                      drive.label.toUpperCase() === currentDrive ? 'true' : undefined
                     }
-                    onClick={() => go(d.path)}
+                    onClick={() => go(drive.path)}
                     className={`${DRIVE} ${
-                      d.label.toUpperCase() === currentDrive
+                      drive.label.toUpperCase() === currentDrive
                         ? 'bg-white text-stone-900 shadow-sm'
                         : 'text-stone-500 hover:text-stone-800'
                     }`}
                   >
-                    {d.label}
+                    {drive.label}
                   </button>
                 ))}
               </div>
@@ -328,8 +331,8 @@ export default function DirectoryPicker({
         <div className="mt-3 flex items-center gap-1.5">
           <button
             type="button"
-            aria-label="Up one level"
-            title="Up one level"
+            aria-label={d.up}
+            title={d.up}
             disabled={!parent}
             onClick={() => parent && go(parent)}
             className="grid h-8 w-8 shrink-0 place-items-center rounded-md border border-stone-300 bg-white text-stone-600 shadow-sm transition-colors hover:bg-stone-50 disabled:opacity-40"
@@ -359,7 +362,7 @@ export default function DirectoryPicker({
             // expert paste is the same single click as focusing the box today.
             <div
               onClick={enterAddressEdit}
-              title="Click to edit the path"
+              title={d.editPathTitle}
               className="flex min-w-0 flex-1 cursor-text items-center gap-0.5 overflow-x-auto rounded-md border border-stone-300 bg-white px-2 py-1.5 shadow-sm"
             >
               {crumbs.map((c, i) => (
@@ -381,8 +384,8 @@ export default function DirectoryPicker({
               ))}
               <button
                 type="button"
-                aria-label="Edit path"
-                title="Edit path"
+                aria-label={d.editPath}
+                title={d.editPath}
                 onClick={(e) => {
                   e.stopPropagation()
                   enterAddressEdit()
@@ -404,7 +407,7 @@ export default function DirectoryPicker({
                   type="text"
                   value={newName ?? ''}
                   spellCheck={false}
-                  placeholder="New folder name"
+                  placeholder={d.newFolderPlaceholder}
                   onChange={(e) => setNewName(e.target.value)}
                   onKeyDown={(e) => {
                     if (e.key === 'Enter') {
@@ -420,14 +423,14 @@ export default function DirectoryPicker({
                   onClick={submitNewFolder}
                   className="shrink-0 rounded-md border border-stone-300 bg-white px-2.5 py-1.5 text-xs font-medium text-stone-700 shadow-sm transition-colors hover:bg-stone-50 disabled:opacity-50"
                 >
-                  Create
+                  {d.create}
                 </button>
                 <button
                   type="button"
                   onClick={() => setNewName(null)}
                   className="shrink-0 rounded-md px-2 py-1.5 text-xs text-stone-500 transition-colors hover:bg-stone-100"
                 >
-                  Cancel
+                  {t.common.cancel}
                 </button>
               </div>
             ) : (
@@ -437,7 +440,7 @@ export default function DirectoryPicker({
                 className="inline-flex items-center gap-1.5 rounded-md border border-stone-300 py-1 pl-2 pr-2.5 text-xs text-stone-500 transition-colors hover:border-stone-400 hover:bg-stone-50 hover:text-stone-700"
               >
                 <PlusIcon className="h-3.5 w-3.5 text-stone-400" />
-                New folder
+                {d.newFolder}
               </button>
             )}
           </div>
@@ -451,14 +454,14 @@ export default function DirectoryPicker({
 
         <div className="mt-3 min-h-[8rem] flex-1 overflow-y-auto rounded-lg border border-stone-200">
           {loading && !listing ? (
-            <div className="px-3 py-6 text-center text-xs text-stone-400">Loading…</div>
+            <div className="px-3 py-6 text-center text-xs text-stone-400">{d.loading}</div>
           ) : listing?.denied ? (
             <div className="px-3 py-6 text-center text-xs text-stone-400">
-              Can’t open this folder.
+              {d.denied}
             </div>
           ) : entries.length === 0 ? (
             <div className="px-3 py-6 text-center text-xs text-stone-400">
-              No subfolders here.
+              {d.empty}
             </div>
           ) : (
             entries.map((entry, i) => {
@@ -469,7 +472,7 @@ export default function DirectoryPicker({
                 return (
                   <div
                     key={`undecodable-${i}`}
-                    title="This folder’s name is not UTF-8 text. Rename it to open it here."
+                    title={d.undecodableTitle}
                     className="flex w-full cursor-not-allowed items-center gap-2.5 border-b border-stone-100 px-3 py-2 last:border-b-0"
                   >
                     <FolderIcon className="h-[18px] w-[18px] shrink-0 text-stone-300" />
@@ -493,7 +496,7 @@ export default function DirectoryPicker({
                   {entry.is_vault && (
                     <span className="flex shrink-0 items-center gap-1 rounded-full bg-emerald-100 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-emerald-700">
                       <CheckIcon className="h-3 w-3 text-emerald-600" />
-                      litman library
+                      {d.vaultBadge}
                     </span>
                   )}
                 </button>
@@ -504,7 +507,7 @@ export default function DirectoryPicker({
 
         <div className="mt-4 flex items-center justify-between gap-3">
           <span className="min-w-0 flex-1 truncate text-[11px] text-stone-400">
-            {vaultBlocked ? 'This folder isn’t a litman library.' : ''}
+            {vaultBlocked ? d.notVault : ''}
           </span>
           <div className="flex shrink-0 items-center gap-2">
             <button
@@ -512,7 +515,7 @@ export default function DirectoryPicker({
               onClick={onCancel}
               className="rounded-lg px-3 py-1.5 text-xs text-stone-600 transition-colors hover:bg-stone-100"
             >
-              Cancel
+              {t.common.cancel}
             </button>
             <button
               type="button"
@@ -520,7 +523,7 @@ export default function DirectoryPicker({
               onClick={() => listing && onPick(listing.path)}
               className="rounded-lg bg-accent-500 px-3 py-1.5 text-xs font-medium text-white transition-colors hover:bg-accent-600 disabled:opacity-50"
             >
-              Select this folder
+              {d.select}
             </button>
           </div>
         </div>

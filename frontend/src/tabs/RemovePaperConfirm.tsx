@@ -1,6 +1,8 @@
 import { useEffect, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { fetchRmPreview, type RmPreview } from '../api'
+import { useT } from '../i18n'
+import { rich } from '../i18n/rich'
 import { useEscapeLayer } from '../ui/escapeStack'
 import { modalBackdropProps } from '../ui/modalShell'
 
@@ -28,6 +30,8 @@ export default function RemovePaperConfirm({
   onCancel: () => void
   onConfirm: () => void
 }) {
+  const t = useT()
+  const tx = t.reader.removePaper
   const [preview, setPreview] = useState<RmPreview | null>(null)
   const [error, setError] = useState<string | null>(null)
 
@@ -64,34 +68,14 @@ export default function RemovePaperConfirm({
       projects,
       notes,
     } = preview
-    if (references.length)
-      lines.push(
-        `Clears it from ${count(references.length, 'paper')}: ${references.join(', ')}`,
-      )
-    if (reposRemoved.length)
-      lines.push(
-        `Deletes ${count(reposRemoved.length, 'cloned repo')} no other paper uses: ${reposRemoved.join(', ')}`,
-      )
-    if (reposUnbound.length)
-      lines.push(
-        `Unbinds ${count(reposUnbound.length, 'repo')} (kept — still used elsewhere): ${reposUnbound.join(', ')}`,
-      )
-    if (reposKept.length)
-      lines.push(
-        `Unbinds ${count(reposKept.length, 'repo')} (kept — no copy to clone it again): ${reposKept.join(', ')}`,
-      )
-    if (reposEdited.length)
-      lines.push(
-        `Unbinds ${count(reposEdited.length, 'repo')} (kept — has your own changes): ${reposEdited.join(', ')}`,
-      )
-    if (reposUnchecked.length)
-      lines.push(
-        `Unbinds ${count(reposUnchecked.length, 'repo')} (kept — could not check it for changes): ${reposUnchecked.map((r) => `${r.name} (${r.reason})`).join(', ')}`,
-      )
-    if (projects.length)
-      lines.push(`Unlinks from ${count(projects.length, 'project')}: ${projects.join(', ')}`)
-    if (notes.length)
-      lines.push(`Tags ${count(notes.length, 'referencing note')} with “(deleted)”`)
+    if (references.length) lines.push(tx.references(references))
+    if (reposRemoved.length) lines.push(tx.reposRemoved(reposRemoved))
+    if (reposUnbound.length) lines.push(tx.reposUnbound(reposUnbound))
+    if (reposKept.length) lines.push(tx.reposKept(reposKept))
+    if (reposEdited.length) lines.push(tx.reposEdited(reposEdited))
+    if (reposUnchecked.length) lines.push(tx.reposUnchecked(reposUnchecked))
+    if (projects.length) lines.push(tx.projects(projects))
+    if (notes.length) lines.push(tx.notes(notes.length))
   }
 
   return createPortal(
@@ -102,34 +86,34 @@ export default function RemovePaperConfirm({
       <div
         onClick={(e) => e.stopPropagation()}
         role="dialog"
-        aria-label="Remove paper from library"
+        aria-label={tx.dialogLabel}
         className="w-[26rem] max-w-[92vw] animate-grow-in rounded-2xl bg-white p-5 shadow-xl ring-1 ring-stone-200"
       >
         <h2 className="text-sm font-semibold text-stone-900">
-          Remove “{paperId}” from the library?
+          {tx.title(paperId)}
         </h2>
         <p className="mt-1.5 text-xs leading-relaxed text-stone-600">
-          Moves the paper to <code className="text-stone-500">.trash/</code> and
-          drops it from INDEX and every smart list. Recoverable from the in-app
-          Trash 🗑.
+          {rich(tx.body, {
+            trash: <code className="text-stone-500">.trash/</code>,
+          })}
         </p>
 
         {/* Cascade preview: which external links the delete breaks. */}
         <div className="mt-3 rounded-lg border border-stone-200 bg-stone-50 px-3 py-2.5">
           {error ? (
             <p className="text-xs text-rose-600">
-              Could not load the impact preview: {error}
+              {tx.previewFailed(error)}
             </p>
           ) : !preview ? (
-            <p className="text-xs text-stone-400">Checking what this affects…</p>
+            <p className="text-xs text-stone-400">{tx.checking}</p>
           ) : lines.length === 0 ? (
             <p className="text-xs text-stone-500">
-              Nothing else links to this paper.
+              {tx.nothingLinks}
             </p>
           ) : (
             <>
               <p className="mb-1 text-[11px] font-semibold uppercase tracking-wider text-stone-600">
-                This also breaks
+                {tx.alsoBreaks}
               </p>
               <ul className="space-y-1">
                 {lines.map((line, i) => (
@@ -153,7 +137,7 @@ export default function RemovePaperConfirm({
             disabled={busy}
             className="rounded-lg px-3 py-1.5 text-xs text-stone-600 transition-colors hover:bg-stone-100 disabled:opacity-40"
           >
-            Cancel
+            {t.common.cancel}
           </button>
           <button
             onClick={onConfirm}
@@ -163,16 +147,11 @@ export default function RemovePaperConfirm({
             disabled={busy || preview === null}
             className="rounded-lg bg-rose-500 px-3 py-1.5 text-xs font-medium text-white transition-colors hover:bg-rose-600 disabled:opacity-50"
           >
-            {busy ? 'Removing…' : 'Remove to trash'}
+            {busy ? tx.removing : tx.remove}
           </button>
         </div>
       </div>
     </div>,
     document.body,
   )
-}
-
-/** "1 paper" / "3 papers" — singular/plural noun with its count. */
-function count(n: number, noun: string): string {
-  return `${n} ${noun}${n === 1 ? '' : 's'}`
 }

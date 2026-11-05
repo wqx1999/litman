@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import { useT } from '../i18n'
 import HelpHint from '../ui/HelpHint'
 import { IconTrash, PencilIcon } from '../ui/icons'
 import { useEscapeLayer } from '../ui/escapeStack'
@@ -6,6 +7,9 @@ import {
   modalBackdropProps,
   useModalCardFocus,
 } from '../ui/modalShell'
+
+/** A controlled-vocab field: the ones with a dictionary to manage. */
+type VocabField = 'topics' | 'methods' | 'data'
 
 /** Dictionary editor for one controlled-vocab field (problem 2). Lists every
  * registered value with its in-use count (from the loaded INDEX) and a delete
@@ -21,7 +25,7 @@ export function ManageDialog({
   onRename,
   onClose,
 }: {
-  field: string
+  field: VocabField
   vocabulary: string[]
   countFor: (value: string) => number
   busy: boolean
@@ -29,6 +33,9 @@ export function ManageDialog({
   onRename: (old: string, next: string) => Promise<void>
   onClose: () => void
 }) {
+  const t = useT()
+  const m = t.cockpit.manage
+  const noun = t.cockpit.tags.nouns[field]
   // The value awaiting delete confirmation, or being renamed (null = list view).
   const [pending, setPending] = useState<string | null>(null)
   const [renaming, setRenaming] = useState<string | null>(null)
@@ -59,16 +66,16 @@ export function ManageDialog({
         className="flex max-h-[70vh] w-[24rem] animate-grow-in focus:outline-none flex-col rounded-2xl bg-white p-5 shadow-xl ring-1 ring-stone-200"
       >
         <h2 className="text-sm font-semibold text-stone-900">
-          Manage {field}
+          {m.title(noun)}
           {sorted.length > 0 && (
             <span className="font-normal tabular-nums text-stone-400"> · {sorted.length}</span>
           )}
-          <HelpHint text="Rename fixes a typo or merges two values everywhere they're used. Delete untags a value from every paper." />
+          <HelpHint text={m.help} />
         </h2>
         <div className="mt-3 min-h-0 flex-1 overflow-y-auto rounded-lg border border-stone-200">
           {sorted.length === 0 && (
             <div className="px-3 py-4 text-center text-xs text-stone-400">
-              No values yet.
+              {m.empty}
             </div>
           )}
           {sorted.map((v) => (
@@ -79,12 +86,12 @@ export function ManageDialog({
               <span className="truncate text-sm text-stone-800">{v}</span>
               <div className="flex shrink-0 items-center gap-2">
                 <span className="text-[11px] text-stone-400">
-                  used by {countFor(v)}
+                  {m.usedBy(countFor(v))}
                 </span>
                 <button
                   type="button"
-                  aria-label={`Rename ${field} ${v}`}
-                  title={`Rename “${v}”`}
+                  aria-label={m.renameAria(noun, v)}
+                  title={m.renameTitle(v)}
                   disabled={blocked}
                   onClick={() => setRenaming(v)}
                   className="grid h-6 w-6 place-items-center rounded-md text-stone-300 transition-colors hover:bg-accent-50 hover:text-accent-600 disabled:opacity-40"
@@ -93,8 +100,8 @@ export function ManageDialog({
                 </button>
                 <button
                   type="button"
-                  aria-label={`Delete ${field} ${v}`}
-                  title={`Delete “${v}”`}
+                  aria-label={m.deleteAria(noun, v)}
+                  title={m.deleteTitle(v)}
                   disabled={blocked}
                   onClick={() => setPending(v)}
                   className="grid h-6 w-6 place-items-center rounded-md text-stone-300 transition-colors hover:bg-rose-50 hover:text-rose-500 disabled:opacity-40"
@@ -111,7 +118,7 @@ export function ManageDialog({
             disabled={blocked}
             className="rounded-lg px-3 py-1.5 text-xs text-stone-600 transition-colors hover:bg-stone-100 disabled:opacity-40"
           >
-            Done
+            {t.common.done}
           </button>
         </div>
       </div>
@@ -162,7 +169,7 @@ function RenameValueDialog({
   onCancel,
   onConfirm,
 }: {
-  field: string
+  field: VocabField
   value: string
   count: number
   existing: string[]
@@ -170,6 +177,8 @@ function RenameValueDialog({
   onCancel: () => void
   onConfirm: (next: string) => void
 }) {
+  const t = useT()
+  const m = t.cockpit.renameValue
   const [next, setNext] = useState(value)
   const trimmed = next.trim()
   const collides = trimmed !== value && existing.includes(trimmed)
@@ -185,13 +194,9 @@ function RenameValueDialog({
         onClick={(e) => e.stopPropagation()}
         className="w-[22rem] animate-grow-in rounded-2xl bg-white p-5 shadow-xl ring-1 ring-stone-200"
       >
-        <h2 className="text-sm font-semibold text-stone-900">Rename “{value}”?</h2>
+        <h2 className="text-sm font-semibold text-stone-900">{m.title(value)}</h2>
         <p className="mt-1.5 text-xs leading-relaxed text-stone-600">
-          Updates the {field} vocabulary
-          {count > 0
-            ? ` and re-tags ${count} paper${count === 1 ? '' : 's'}`
-            : ''}
-          . This cannot be undone.
+          {m.body(t.cockpit.tags.nouns[field], count)}
         </p>
         <input
           autoFocus
@@ -206,9 +211,7 @@ function RenameValueDialog({
           className="mt-3 w-full rounded-md border border-stone-300 bg-white px-2.5 py-1.5 text-sm text-stone-800 shadow-sm focus:outline-none focus:ring-1 focus:ring-accent-500 disabled:opacity-50"
         />
         {collides && (
-          <p className="mt-1.5 text-[11px] text-rose-500">
-            “{trimmed}” already exists — delete one instead of renaming onto it.
-          </p>
+          <p className="mt-1.5 text-[11px] text-rose-500">{m.collides(trimmed)}</p>
         )}
         <div className="mt-5 flex justify-end gap-2">
           <button
@@ -216,14 +219,14 @@ function RenameValueDialog({
             disabled={busy}
             className="rounded-lg px-3 py-1.5 text-xs text-stone-600 transition-colors hover:bg-stone-100 disabled:opacity-40"
           >
-            Cancel
+            {t.common.cancel}
           </button>
           <button
             onClick={() => onConfirm(trimmed)}
             disabled={!canSubmit}
             className="rounded-lg bg-accent-500 px-3 py-1.5 text-xs font-medium text-white transition-colors hover:bg-accent-600 disabled:opacity-60"
           >
-            {busy ? 'Renaming…' : 'Rename'}
+            {busy ? m.renaming : m.confirm}
           </button>
         </div>
       </div>
@@ -243,13 +246,15 @@ function DeleteValueConfirm({
   onCancel,
   onConfirm,
 }: {
-  field: string
+  field: VocabField
   value: string
   count: number
   busy: boolean
   onCancel: () => void
   onConfirm: () => void
 }) {
+  const t = useT()
+  const m = t.cockpit.deleteValue
   useEscapeLayer(true, onCancel)
   return (
     <div
@@ -260,12 +265,9 @@ function DeleteValueConfirm({
         onClick={(e) => e.stopPropagation()}
         className="w-[22rem] animate-grow-in rounded-2xl bg-white p-5 shadow-xl ring-1 ring-stone-200"
       >
-        <h2 className="text-sm font-semibold text-stone-900">Delete “{value}”?</h2>
+        <h2 className="text-sm font-semibold text-stone-900">{m.title(value)}</h2>
         <p className="mt-1.5 text-xs leading-relaxed text-stone-600">
-          This removes “{value}” from the {field} vocabulary
-          {count > 0
-            ? ` and untags it from ${count} paper${count === 1 ? '' : 's'}. This cannot be undone.`
-            : '. It is not attached to any paper.'}
+          {m.body(value, t.cockpit.tags.nouns[field], count)}
         </p>
         <div className="mt-5 flex justify-end gap-2">
           <button
@@ -274,14 +276,14 @@ function DeleteValueConfirm({
             disabled={busy}
             className="rounded-lg px-3 py-1.5 text-xs text-stone-600 transition-colors hover:bg-stone-100 disabled:opacity-40"
           >
-            Cancel
+            {t.common.cancel}
           </button>
           <button
             onClick={onConfirm}
             disabled={busy}
             className="rounded-lg bg-rose-500 px-3 py-1.5 text-xs font-medium text-white transition-colors hover:bg-rose-600 disabled:opacity-60"
           >
-            Delete
+            {t.common.delete}
           </button>
         </div>
       </div>

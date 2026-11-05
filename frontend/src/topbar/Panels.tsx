@@ -6,6 +6,8 @@ import type {
 } from '../types'
 import type { AgentLaunchMode, AgentStatus, AgentStatusEntry } from '../api'
 import type { ToastVariant } from '../ui/Toast'
+import { enumLabel, formatLocale, getT, useT } from '../i18n'
+import { rich } from '../i18n/rich'
 import HelpHint from '../ui/HelpHint'
 import { useEscapeLayer } from '../ui/escapeStack'
 import {
@@ -51,6 +53,8 @@ export function HealthPanel({
   onRerun: () => void
   onClose: () => void
 }) {
+  const t = useT()
+  const h = t.topbar.healthPanel
   // Focus the card on mount so Escape reaches the handler below — this is a
   // blocking dialog, so nothing else is listening (see useModalCardFocus).
   const cardFocus = useModalCardFocus()
@@ -85,24 +89,25 @@ export function HealthPanel({
         className="flex max-h-[70vh] w-[34rem] animate-grow-in focus:outline-none flex-col rounded-2xl bg-white p-5 shadow-xl ring-1 ring-stone-200"
       >
         <div className="flex items-center justify-between">
-          <h2 className="text-sm font-semibold text-stone-900">Health check</h2>
+          <h2 className="text-sm font-semibold text-stone-900">{h.title}</h2>
           <button
             type="button"
             disabled={loading}
             onClick={onRerun}
             className="rounded-md px-2 py-0.5 text-[11px] text-stone-500 transition-colors hover:bg-stone-100 hover:text-stone-700 disabled:opacity-40"
           >
-            {loading ? 'Running…' : 'Re-run'}
+            {loading ? h.running : h.rerun}
           </button>
         </div>
         <p className="mt-1.5 text-xs leading-relaxed text-stone-500">
-          Audits library consistency (read-only). Fixes still run from the CLI:
-          <span className="font-mono text-stone-600"> lit health-check --fix</span>.
+          {rich(h.intro, {
+            command: <span className="font-mono text-stone-600"> lit health-check --fix</span>,
+          })}
         </p>
         <div className="mt-3 min-h-0 flex-1 overflow-y-auto rounded-lg border border-stone-200">
           {loading && (
             <div className="px-3 py-6 text-center text-xs text-stone-400">
-              Running checks…
+              {h.runningChecks}
             </div>
           )}
           {!loading && error && (
@@ -112,7 +117,7 @@ export function HealthPanel({
           )}
           {!loading && !error && issues && issues.length === 0 && (
             <div className="px-3 py-6 text-center text-sm font-medium text-emerald-600">
-              ✓ No issues
+              {h.noIssues}
             </div>
           )}
           {!loading &&
@@ -139,7 +144,7 @@ export function HealthPanel({
                         <span
                           className={`font-semibold uppercase ${SEVERITY_STYLE[issue.severity].text}`}
                         >
-                          {issue.severity}
+                          {enumLabel(h.severity, issue.severity)}
                         </span>
                         {issue.paper_id && (
                           <span className="font-mono text-stone-400">
@@ -164,7 +169,7 @@ export function HealthPanel({
             onClick={onClose}
             className="rounded-lg px-3 py-1.5 text-xs text-stone-600 transition-colors hover:bg-stone-100"
           >
-            Done
+            {t.common.done}
           </button>
         </div>
       </div>
@@ -182,7 +187,7 @@ const LOG_GLYPH: Record<ToastVariant, { ch: string; cls: string }> = {
 }
 
 function _logTime(ts: number): string {
-  return new Date(ts).toLocaleTimeString(undefined, {
+  return new Date(ts).toLocaleTimeString(formatLocale(), {
     hour: '2-digit',
     minute: '2-digit',
     second: '2-digit',
@@ -201,6 +206,8 @@ export function ActivityLogPanel({
   entries: ActivityLogEntry[]
   onClose: () => void
 }) {
+  const t = useT()
+  const l = t.topbar.activityLog
   // Focus the card on mount so Escape reaches the handler below — this is a
   // blocking dialog, so nothing else is listening (see useModalCardFocus).
   const cardFocus = useModalCardFocus()
@@ -217,14 +224,14 @@ export function ActivityLogPanel({
         onClick={(e) => e.stopPropagation()}
         className="flex max-h-[70vh] w-[30rem] animate-grow-in focus:outline-none flex-col rounded-2xl bg-white p-5 shadow-xl ring-1 ring-stone-200"
       >
-        <h2 className="text-sm font-semibold text-stone-900">Activity log</h2>
+        <h2 className="text-sm font-semibold text-stone-900">{l.title}</h2>
         <p className="mt-1.5 text-xs leading-relaxed text-stone-500">
-          Recent actions this session (newest first). Cleared on refresh.
+          {l.intro}
         </p>
         <div className="mt-3 min-h-0 flex-1 overflow-y-auto rounded-lg border border-stone-200">
           {ordered.length === 0 && (
             <div className="px-3 py-6 text-center text-xs text-stone-400">
-              No activity yet.
+              {l.empty}
             </div>
           )}
           {ordered.map((e, i) => {
@@ -251,7 +258,7 @@ export function ActivityLogPanel({
             onClick={onClose}
             className="rounded-lg px-3 py-1.5 text-xs text-stone-600 transition-colors hover:bg-stone-100"
           >
-            Done
+            {t.common.done}
           </button>
         </div>
       </div>
@@ -290,14 +297,16 @@ export function AgentPanel({
   onClose: () => void
   notify: (msg: string, variant?: ToastVariant) => void
 }) {
+  const t = useT()
+  const c = t.topbar.agentCopy
   // Focus the card on mount so Escape reaches the handler below — this is a
   // blocking dialog, so nothing else is listening (see useModalCardFocus).
   const cardFocus = useModalCardFocus()
   const copyCommand = (command: string) => {
     navigator.clipboard
       .writeText(command)
-      .then(() => notify('Command copied', 'success'))
-      .catch(() => notify('Copy failed — select the text and copy it', 'error'))
+      .then(() => notify(getT().topbar.agentCopy.copied, 'success'))
+      .catch(() => notify(getT().topbar.agentCopy.copyFailed, 'error'))
   }
   useEscapeLayer(true, onClose)
   if (ui.kind === 'setup') {
@@ -337,12 +346,10 @@ export function AgentPanel({
         className="w-[26rem] animate-grow-in focus:outline-none rounded-2xl bg-white p-5 shadow-xl ring-1 ring-stone-200"
       >
         <h2 className="text-sm font-semibold text-stone-900">
-          Run it in a terminal
+          {c.title}
         </h2>
         <p className="mt-1.5 text-xs leading-relaxed text-stone-500">
-          litman couldn't open a terminal window from here. Open one on the
-          machine running litman — if you're connected to a remote server,
-          that's the server, not this computer — then start {ui.agent} with:
+          {c.body(ui.agent)}
         </p>
         <div className="mt-3 flex items-center gap-2 rounded-lg border border-stone-200 bg-stone-50 px-3 py-2">
           <code className="min-w-0 flex-1 truncate font-mono text-sm text-stone-800">
@@ -353,7 +360,7 @@ export function AgentPanel({
             onClick={() => copyCommand(ui.command)}
             className="shrink-0 rounded-md border border-stone-300 bg-white px-2 py-1 text-xs font-medium text-stone-600 transition-colors hover:bg-stone-100 hover:text-stone-900"
           >
-            Copy
+            {c.copy}
           </button>
         </div>
         <div className="mt-4 flex justify-end">
@@ -362,7 +369,7 @@ export function AgentPanel({
             onClick={onClose}
             className="rounded-lg px-3 py-1.5 text-xs text-stone-600 transition-colors hover:bg-stone-100"
           >
-            Done
+            {t.common.done}
           </button>
         </div>
       </div>
@@ -413,9 +420,10 @@ function AgentModeControl({
   value: AgentLaunchMode
   onChange: (mode: AgentLaunchMode) => void
 }) {
+  const t = useT()
   const options: Array<[AgentLaunchMode, string]> = [
-    ['app', 'App'],
-    ['terminal', 'CLI'],
+    ['app', t.topbar.agentSetup.modeApp],
+    ['terminal', t.topbar.agentSetup.modeCli],
   ]
   const moveWith = (e: React.KeyboardEvent<HTMLDivElement>) => {
     if (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight') return
@@ -427,7 +435,7 @@ function AgentModeControl({
   return (
     <div
       role="radiogroup"
-      aria-label="Launch with"
+      aria-label={t.topbar.agentSetup.launchWith}
       onKeyDown={moveWith}
       className="relative grid w-28 shrink-0 grid-cols-2 rounded-lg bg-stone-200/70 p-0.5 dark:bg-stone-100"
     >
@@ -516,6 +524,8 @@ function AgentSetup({
   onRecheck: () => void
   onClose: () => void
 }) {
+  const t = useT()
+  const s = t.topbar.agentSetup
   const agents = status.agents
   const [selected, setSelected] = useState<string | undefined>(
     () =>
@@ -592,8 +602,8 @@ function AgentSetup({
       <div className="flex w-60 shrink-0 flex-col border-r border-stone-200 bg-stone-100/70 max-sm:max-h-[42%] max-sm:w-full max-sm:border-b max-sm:border-r-0">
         <div className="px-5 pb-3 pt-5 max-sm:pb-2 max-sm:pt-4">
           <h2 className="text-sm font-semibold text-stone-900">
-            {status.default ? 'Manage agents' : 'Set up your agent'}
-            <HelpHint text="The toolbar button and ~ open your default agent. A skill also lets it run lit without asking, where the agent allows it." />
+            {status.default ? s.titleManage : s.titleSetup}
+            <HelpHint text={s.help} />
           </h2>
         </div>
         <div
@@ -623,7 +633,7 @@ function AgentSetup({
                 </span>
                 {status.default === a.name && (
                   <span className="shrink-0 rounded-full bg-stone-200/70 px-1.5 py-0.5 text-[10px] font-medium text-stone-600">
-                    Default
+                    {s.defaultBadge}
                   </span>
                 )}
               </button>
@@ -639,7 +649,7 @@ function AgentSetup({
             onClick={onRecheck}
             className="text-xs font-medium text-stone-500 transition-colors hover:text-stone-700 disabled:opacity-50"
           >
-            Installed it just now? Recheck
+            {s.recheck}
           </button>
         </div>
       </div>
@@ -666,8 +676,10 @@ function AgentSetup({
                   className={AGENT_PRIMARY}
                 >
                   {twoWays
-                    ? `Get the ${way.mode === 'app' ? 'app' : 'CLI'} →`
-                    : `Get ${agent.display} →`}
+                    ? way.mode === 'app'
+                      ? s.getApp
+                      : s.getCli
+                    : s.getAgent(agent.display)}
                 </a>
               ) : state === 'ready' || state === 'stale' ? (
                 <button
@@ -676,15 +688,15 @@ function AgentSetup({
                   onClick={() => launch(agent.name)}
                   className={AGENT_PRIMARY}
                 >
-                  Launch
+                  {s.launch}
                 </button>
               ) : null}
             </div>
             <div className="mt-5 rounded-xl border border-stone-200 bg-stone-50">
-              {state === 'soon' && <AgentDetailRow label="Coming soon" />}
+              {state === 'soon' && <AgentDetailRow label={s.comingSoon} />}
               {state !== 'soon' && twoWays && mode && (
-                <AgentDetailRow label="Launch with">
-                  {way && !way.usable && <span>Not installed</span>}
+                <AgentDetailRow label={s.launchWith}>
+                  {way && !way.usable && <span>{s.notInstalled}</span>}
                   <AgentModeControl
                     agent={agent}
                     value={mode}
@@ -693,16 +705,16 @@ function AgentSetup({
                 </AgentDetailRow>
               )}
               {state === 'missing' && !twoWays && (
-                <AgentDetailRow label="Not installed">
-                  {way?.mode === 'app' && 'Open it once after installing.'}
+                <AgentDetailRow label={s.notInstalled}>
+                  {way?.mode === 'app' && s.openOnce}
                 </AgentDetailRow>
               )}
               {state !== 'soon' && state !== 'missing' && (
-                <AgentDetailRow label="Skill">
+                <AgentDetailRow label={s.skill}>
                   {state === 'ready' && (
                     <span className="flex items-center gap-2">
                       <AgentStateDot state="ready" />
-                      Up to date
+                      {s.upToDate}
                     </span>
                   )}
                   {state === 'stale' && (
@@ -710,14 +722,14 @@ function AgentSetup({
                        side content comparison). Same install endpoint — it
                        overwrites the bundled files and keeps the user's own. */
                     <>
-                      <span>Update available</span>
+                      <span>{s.updateAvailable}</span>
                       <button
                         type="button"
                         disabled={busy}
                         onClick={() => onInstallSkill(agent.name)}
                         className={AGENT_PRIMARY}
                       >
-                        {busy ? 'Updating…' : 'Update skill'}
+                        {busy ? s.updating : s.updateSkill}
                       </button>
                     </>
                   )}
@@ -729,18 +741,18 @@ function AgentSetup({
                       className={AGENT_PRIMARY}
                     >
                       {busy
-                        ? 'Installing…'
+                        ? s.installing
                         : isDefault
-                          ? 'Install skill'
-                          : 'Install skill & use'}
+                          ? s.installSkill
+                          : s.installSkillAndUse}
                     </button>
                   )}
                 </AgentDetailRow>
               )}
               {state === 'ready' && (
-                <AgentDetailRow label="Default agent">
+                <AgentDetailRow label={s.defaultAgent}>
                   {isDefault ? (
-                    <span>Opens with the toolbar button or the ~ key</span>
+                    <span>{s.opensWith}</span>
                   ) : (
                     <button
                       type="button"
@@ -748,7 +760,7 @@ function AgentSetup({
                       onClick={() => onChooseAgent(agent.name)}
                       className={status.default ? AGENT_SECONDARY : AGENT_PRIMARY}
                     >
-                      Set default
+                      {s.setDefault}
                     </button>
                   )}
                 </AgentDetailRow>
@@ -762,7 +774,7 @@ function AgentSetup({
             onClick={onClose}
             className="rounded-lg px-3 py-1.5 text-xs text-stone-600 transition-colors hover:bg-stone-100"
           >
-            Done
+            {t.common.done}
           </button>
         </div>
       </div>

@@ -15,6 +15,7 @@ import type {
   TrashEntry,
   VaultsPayload,
 } from './types'
+import type { LangPref } from './i18n'
 
 /** An HTTP failure, carrying the status code so callers can branch on it.
  *
@@ -433,6 +434,9 @@ export function fetchVersion(): Promise<VersionInfo> {
 export interface WhatsNewInfo {
   version: string
   bullets: string[]
+  /** The Chinese twin of `bullets` (whatsnew.zh.md); [] when this version has
+   * none, and a Chinese UI then shows `bullets`. */
+  bulletsZh: string[]
   changelogUrl: string
   seen: string | null
 }
@@ -446,6 +450,16 @@ export function fetchWhatsNew(): Promise<WhatsNewInfo> {
  * was never shown. Idempotent. */
 export function markWhatsNewSeen(): Promise<{ seen: string }> {
   return mutateJSON<{ seen: string }>('/api/whatsnew/seen', 'PUT')
+}
+
+/** The GUI language preference: `auto` (follow the system), `en` or `zh`.
+ * Kept in the machine-level ui-state.json for the reason fetchWhatsNew gives:
+ * the app window and a browser tab must agree. */
+export function fetchUiLang(): Promise<{ lang: string }> {
+  return getJSON<{ lang: string }>('/api/ui-lang')
+}
+export function saveUiLang(lang: LangPref): Promise<{ lang: string }> {
+  return mutateJSON<{ lang: string }>('/api/ui-lang', 'PUT', { lang })
 }
 
 /** Drag-in ingest (three steps, one shared `lit add` write path server-side).
