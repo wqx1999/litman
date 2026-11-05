@@ -940,6 +940,127 @@ def require_bisync_rclone() -> tuple[int, int, int]:
     return found
 
 
+# -- the names of rclone's records --------------------------------------------
+
+#: The longest name a folder entry may have: 255 bytes on Linux and macOS,
+#: 255 UTF-16 units on Windows.
+_NAME_MAX = 255
+
+#: The longest ending rclone bisync puts after the session name of a record
+#: file; ``.path1.lst-old`` and ``.path1.lst-err`` are as long.
+_LONGEST_RECORD_SUFFIX = ".path1.lst-new"
+
+#: What rclone turns into ``_`` in a session name: Go's ``\s``, which is ASCII
+#: whitespace only (Python's is not), and ``\ / : ? *``.
+_SESSION_NAME_UNSAFE_RE = re.compile(r"[\t\n\f\r \\/:?*]")
+
+
+def _session_name_half(name: str, root: str, *, windows: bool) -> str:
+    """One side of the session name: rclone's ``FsPath``, ``CanonicalPath``, ``StripHexString``."""
+    if name == "local":
+        path = root.replace("/", "\\").removeprefix("\\\\?\\") if windows else root
+    else:
+        path = f"{name}:{root}"
+    half = _SESSION_NAME_UNSAFE_RE.sub("_", path.strip("\\/"))
+    # A remote whose options were set in its name carries a {hash} rclone drops.
+    opening, closing = half.find("{"), half.find("}")
+    if opening >= 0 and closing > opening:
+        half = half[:opening] + half[closing + 1 :]
+    return half
+
+
+def bisync_session_name(
+    path1: tuple[str, str], path2: tuple[str, str], *, windows: bool
+) -> str:
+    """The name rclone bisync gives the records of a sync between ``path1`` and ``path2``.
+
+    Each path is the ``(name, root)`` of its rclone file system, as ``rclone
+    backend features`` reports them: ``local`` and the folder for a plain
+    path; for a remote, its name and the folder in it (for an alias, those of
+    the file system it points at). rclone's rules: on Windows a plain path
+    loses its ``\\\\?\\`` and takes backslashes, a remote is written
+    ``name:root``, each side is trimmed of slashes at both ends, and spaces
+    and ``\\ / : ? *`` become ``_``.
+    """
+    return (
+        _session_name_half(*path1, windows=windows)
+        + ".."
+        + _session_name_half(*path2, windows=windows)
+    )
+
+
+def name_length(name: str, *, windows: bool) -> int:
+    """How long ``name`` is as a folder entry: UTF-16 units on Windows, UTF-8 bytes elsewhere."""
+    if windows:
+        return len(name.encode("utf-16-le", "surrogatepass")) // 2
+    return len(name.encode("utf-8", "surrogatepass"))
+
+
+def _rclone_fs_info(remote: str) -> tuple[str, str] | None:
+    """``(name, root)`` of the rclone file system ``remote`` names; ``None`` if rclone cannot tell.
+
+    ``rclone backend features`` builds the file system as ``rclone bisync``
+    does. For a cloud remote that may take the network.
+    """
+    try:
+        result = subprocess.run(
+            [RCLONE_BIN, "backend", "features", remote],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            env=_bisync_env(),
+            timeout=60,
+            check=False,
+        )
+        info = json.loads(result.stdout) if result.returncode == 0 else None
+    except (OSError, subprocess.SubprocessError, ValueError):
+        return None
+    if not isinstance(info, dict):
+        return None
+    name, root = info.get("Name"), info.get("Root")
+    if not isinstance(name, str) or not isinstance(root, str):
+        return None
+    return name, root
+
+
+def require_bisync_names_fit(vault: Path, target_url: str) -> None:
+    """Refuse, before rclone runs, a two-way sync whose record names would be too long.
+
+    rclone bisync names its record files after both synced paths
+    (:func:`bisync_session_name`). A name the file system refuses stops
+    rclone partway, possibly after it copied the library across but before
+    it saved its records; every later run then stops the same way. Skipped
+    when rclone cannot report a path (a cloud remote while offline, say).
+
+    Raises:
+        SyncError: the names would be too long. The message says by how much,
+            and whether a shorter cloud path is enough or the library must move.
+    """
+    local = _rclone_fs_info(str(vault))
+    cloud = _rclone_fs_info(target_url) if local is not None else None
+    if local is None or cloud is None:
+        return
+    windows = sys.platform == "win32"
+    room = _NAME_MAX - len(_LONGEST_RECORD_SUFFIX)
+
+    def length(path2: tuple[str, str]) -> int:
+        return name_length(bisync_session_name(local, path2, windows=windows), windows=windows)
+
+    over = length(cloud) - room
+    if over <= 0:
+        return
+    verdict = (
+        f"This library path plus the cloud path is {over} "
+        f"character{'' if over == 1 else 's'} too long for rclone."
+    )
+    # The shortest cloud path this remote takes: a one-letter folder in it.
+    shortest = _rclone_fs_info(f"{target_url.partition(':')[0]}:x")
+    if shortest is not None and length(shortest) <= room:
+        raise SyncError(f"{verdict} Pick a shorter cloud path: `lit sync setup`.")
+    raise SyncError(f"{verdict} Move the library, then run `lit vault set-path`.")
+
+
 # -- what is synced, seen from the local side --------------------------------
 
 
@@ -1944,7 +2065,8 @@ def two_way_sync(
     """Sync ``vault`` with ``target_url`` both ways through ``rclone bisync``.
 
     1. Check that rclone is new enough, and work out the state and backup
-       folders (:func:`bisync_paths`).
+       folders (:func:`bisync_paths`). On a first sync, check that rclone's
+       record names fit (:func:`require_bisync_names_fit`).
     2. Decide the run. On the first sync of this (vault, remote) pair: an
        empty or missing remote folder → this machine's library wins; a fresh
        local vault (:func:`local_vault_is_fresh`) → the cloud's wins; both
@@ -1968,19 +2090,24 @@ def two_way_sync(
 
     Raises:
         SyncChoiceRequiredError: the run needs the user's ``--first-from``.
-        SyncError: rclone is missing or too old, the remote cannot be listed,
-            or bisync failed (its last log lines are in the message).
+        SyncError: rclone is missing or too old, its record names would be
+            too long, the remote cannot be listed, or bisync failed (its last
+            log lines are in the message).
     """
     vault = vault.resolve()
     require_bisync_rclone()
     paths = bisync_paths(vault, target_url)
+    initialised = bisync_initialised(paths.workdir)
+    if not initialised:
+        # rclone has not written these record names yet; nothing is written
+        # before they are known to fit.
+        require_bisync_names_fit(vault, target_url)
     paths.workdir.mkdir(parents=True, exist_ok=True)
     paths.local_backup_root.mkdir(parents=True, exist_ok=True)
 
     # rclone keeps a hash of the filters file from the last full comparison and
     # stops once the file changes; until then the old file must stay as it is.
     rules = two_way_filter_rules().encode("utf-8")
-    initialised = bisync_initialised(paths.workdir)
     try:
         rules_unchanged = paths.filters_file.read_bytes() == rules
     except OSError:

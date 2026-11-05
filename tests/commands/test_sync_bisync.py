@@ -380,6 +380,221 @@ def test_first_from_picks_the_winner_and_keeps_the_loser_in_the_backup(
 
 
 # ---------------------------------------------------------------------------
+# rclone's record names, checked before a first sync
+# ---------------------------------------------------------------------------
+
+#: The platform the tests run on, read once at import (dev_docs/ci.md, trap 1).
+_WINDOWS = sys.platform == "win32"
+
+
+@pytest.mark.parametrize(
+    ("path1", "path2", "windows", "expected"),
+    [
+        pytest.param(
+            ("local", "/home/me/literature_vault"),
+            ("gdrive", "litman/vault"),
+            False,
+            "home_me_literature_vault..gdrive_litman_vault",
+            id="posix",
+        ),
+        pytest.param(
+            ("local", "//?/C:/Users/me/literature_vault"),
+            ("fake-cloud", "//?/C:/Users/me/cloud/lib"),
+            True,
+            "C__Users_me_literature_vault..fake-cloud_____C__Users_me_cloud_lib",
+            id="windows-a-local-type-remote-keeps-its-prefix",
+        ),
+        pytest.param(
+            ("local", "//?/UNC/server/share/vault"),
+            ("gdrive", "lib"),
+            True,
+            "UNC_server_share_vault..gdrive_lib",
+            id="windows-network-share",
+        ),
+        pytest.param(
+            ("local", "/home/a b/v/"),
+            ("gdrive{b6816}", "/My Library/lit/"),
+            False,
+            "home_a_b_v..gdrive__My_Library_lit",
+            id="spaces-slashes-and-an-options-hash",
+        ),
+        pytest.param(
+            ("local", "/home/a\u3000b/v*?:"),
+            ("gdrive", "x"),
+            False,
+            "home_a\u3000b_v___..gdrive_x",
+            id="only-ascii-whitespace",
+        ),
+    ],
+)
+def test_the_session_name_follows_rclones_rules(
+    path1: tuple[str, str], path2: tuple[str, str], windows: bool, expected: str
+) -> None:
+    """rclone's cmd/bisync/bilib/canonical.go; the Windows rows are names seen on CI."""
+    assert core_sync.bisync_session_name(path1, path2, windows=windows) == expected
+
+
+@pytest.mark.parametrize(
+    ("name", "posix", "windows"),
+    [("abc", 3, 3), ("\u00e9", 2, 1), ("\u6587\u732e", 6, 2), ("\U0001f600", 4, 2)],
+)
+def test_a_name_is_measured_in_bytes_off_windows_and_utf16_units_on_it(
+    name: str, posix: int, windows: int
+) -> None:
+    assert core_sync.name_length(name, windows=False) == posix
+    assert core_sync.name_length(name, windows=True) == windows
+
+
+_TOO_LONG = "This library path plus the cloud path is {} too long for rclone."
+_SHORTER_CLOUD_PATH = " Pick a shorter cloud path: `lit sync setup`."
+_MOVE_THE_LIBRARY = " Move the library, then run `lit vault set-path`."
+
+
+@pytest.mark.parametrize(
+    ("library", "cloud_folder", "shortest_known", "message"),
+    [
+        # The session name, "v…v..gdrive_c…c", is library + 9 + cloud_folder long,
+        # 241 at most; with the folder "x" it is library + 10.
+        pytest.param(100, 132, True, None, id="fits"),
+        pytest.param(
+            100, 133, True, _TOO_LONG.format("1 character") + _SHORTER_CLOUD_PATH,
+            id="a-shorter-cloud-path-is-enough",
+        ),
+        pytest.param(
+            231, 10, True, _TOO_LONG.format("9 characters") + _SHORTER_CLOUD_PATH,
+            id="a-one-letter-cloud-folder-is-just-enough",
+        ),
+        pytest.param(
+            232, 10, True, _TOO_LONG.format("10 characters") + _MOVE_THE_LIBRARY,
+            id="the-library-must-move",
+        ),
+        pytest.param(
+            100, 133, False, _TOO_LONG.format("1 character") + _MOVE_THE_LIBRARY,
+            id="the-shortest-cloud-path-is-unknown",
+        ),
+    ],
+)
+def test_record_names_too_long_are_refused_with_a_way_out_that_is_enough(
+    monkeypatch: pytest.MonkeyPatch,
+    library: int,
+    cloud_folder: int,
+    shortest_known: bool,
+    message: str | None,
+) -> None:
+    infos = {
+        "vault": ("local", "/" + "v" * library),
+        "gdrive:lib": ("gdrive", "c" * cloud_folder),
+        "gdrive:x": ("gdrive", "x") if shortest_known else None,
+    }
+    monkeypatch.setattr(core_sync, "_rclone_fs_info", infos.get)
+
+    if message is None:
+        core_sync.require_bisync_names_fit(Path("vault"), "gdrive:lib")
+    else:
+        with pytest.raises(SyncError) as refused:
+            core_sync.require_bisync_names_fit(Path("vault"), "gdrive:lib")
+        assert str(refused.value) == message
+
+
+@needs_rclone
+def test_the_record_name_check_steps_aside_when_rclone_cannot_reach_the_remote(
+    tmp_path: Path, cloud: Path
+) -> None:
+    """The real ``rclone backend features`` behind the ``_rclone_fs_info`` seam fails here."""
+    assert core_sync._rclone_fs_info("no-such-remote:lib") is None
+    core_sync.require_bisync_names_fit(tmp_path, "no-such-remote:" + "x" * 300)
+
+
+@needs_rclone
+def test_the_record_name_check_asks_rclone_only_before_the_first_sync(
+    tmp_path: Path, cloud: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    a = _machine(tmp_path, cloud, "a")
+    asked: list[str] = []
+    real = core_sync._rclone_fs_info
+
+    def asking(remote: str) -> tuple[str, str] | None:
+        asked.append(remote)
+        return real(remote)
+
+    monkeypatch.setattr(core_sync, "_rclone_fs_info", asking)
+
+    assert _sync(a).exit_code == 0
+    assert asked == [str(a.resolve()), _target(cloud)]
+    asked.clear()
+    assert _sync(a).exit_code == 0
+    assert asked == []
+
+
+def _machine_with_record_name(tmp_path: Path, cloud: Path, length: int) -> tuple[Path, Path]:
+    """Machine A with a paper, set to sync with a cloud folder that makes rclone's
+    session name for the pair ``length`` long, as litman measures it.
+
+    Returns the vault and that cloud folder, which does not exist yet.
+    """
+    vault = _machine(tmp_path, cloud, "a").resolve()
+    _write_paper(vault, "p1")
+    local = core_sync._rclone_fs_info(str(vault))
+    assert local is not None
+
+    def session_length(folder: Path) -> int:
+        remote = core_sync._rclone_fs_info(f"fake-cloud:{folder}")
+        assert remote is not None
+        name = core_sync.bisync_session_name(local, remote, windows=_WINDOWS)
+        return core_sync.name_length(name, windows=_WINDOWS)
+
+    folder = cloud / ("x" * (length - session_length(cloud / "x") + 1))
+    assert session_length(folder) == length
+    write_sync_to_config(
+        vault / "lit-config.yaml", SetupPayload(remote="fake-cloud", path=str(folder))
+    )
+    return vault, folder
+
+
+@needs_rclone
+def test_a_library_whose_record_names_just_fit_syncs(tmp_path: Path, cloud: Path) -> None:
+    vault, folder = _machine_with_record_name(tmp_path, cloud, 241)
+
+    first = _sync(vault)
+    again = _sync(vault)
+
+    assert first.exit_code == 0, first.output
+    assert again.exit_code == 0, again.output
+    assert _tree(folder) == _tree(vault)
+    # The longest record, <session name>.path1.lst-old, is as long as a name can be.
+    workdir = bisync_paths(vault, f"fake-cloud:{folder}").workdir
+    lengths = [core_sync.name_length(name, windows=_WINDOWS) for name in os.listdir(workdir)]
+    assert max(lengths) == 255
+
+
+@needs_rclone
+def test_a_library_one_character_over_is_refused_before_anything_is_touched(
+    tmp_path: Path, cloud: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    vault, folder = _machine_with_record_name(tmp_path, cloud, 242)
+    workdir = bisync_paths(vault, f"fake-cloud:{folder}").workdir
+    tree, state = _tree(vault), read_sync_state(vault)
+
+    refused = _sync(vault)
+
+    assert refused.exit_code == 1
+    assert isinstance(refused.exception, SyncError)
+    assert str(refused.exception) == _TOO_LONG.format("1 character") + _SHORTER_CLOUD_PATH
+    # Nothing went up and nothing was written, on either side.
+    assert not folder.exists()
+    assert not workdir.exists()
+    assert _tree(vault) == tree
+    assert read_sync_state(vault) == state
+
+    # The limit is rclone's: without the check, rclone itself cannot save its
+    # records for this pair.
+    monkeypatch.setattr(core_sync, "require_bisync_names_fit", lambda *args: None)
+    unchecked = _sync(vault)
+    assert unchecked.exit_code != 0, unchecked.output
+    assert not core_sync.bisync_initialised(workdir)
+
+
+# ---------------------------------------------------------------------------
 # Conflicts, deletions, safety stops
 # ---------------------------------------------------------------------------
 
@@ -973,7 +1188,8 @@ def test_a_code_folder_deleted_on_one_machine_wins_and_its_checkout_is_left_alon
     checkout.mkdir()
     (checkout / "README").write_text("work in progress\n", encoding="utf-8")
     locking.rmtree(tool_a)
-    (b / "codes" / "tool" / "notes.md").write_text("# tool\nedited\n", encoding="utf-8")
+    # Bytes, compared as bytes below: write_text would end lines with \r\n on Windows.
+    (b / "codes" / "tool" / "notes.md").write_bytes(b"# tool\nedited\n")
     _touch(b / "codes" / "tool" / "notes.md", time.time() - 50)
 
     settler, result = _sync_in_order(a, b, deleter_first)

@@ -956,6 +956,9 @@ down. It syncs with a folder inside the remote (the `--path` of
   copied up. If this library is new (no papers, nothing under `codes/`), the
   cloud's library is copied down, and the local files it replaces go to the
   backup. If both hold a library, nothing changes and the command exits `20`.
+  If this library's path and the cloud path together are too long for
+  rclone's records, nothing is synced and the command exits `1`, saying
+  which one to shorten.
 - **Never synced:** `INDEX.json` and `views/` (rebuilt after every sync),
   `lit-config.yaml` and `codes/*/repo/` checkouts. Each machine keeps its own
   project folders: a project added on another machine arrives without a folder
