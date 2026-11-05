@@ -11,6 +11,7 @@ import type { FsAnchor } from '../api'
 import { useT } from '../i18n'
 import type { VaultsPayload } from '../types'
 import { anchorIcon } from '../ui/icons'
+import { LangMenu } from '../ui/LangSwitch'
 import PathField, { describeLocation } from '../ui/PathField'
 import logoUrl from '../assets/logo.svg'
 
@@ -145,7 +146,12 @@ export default function WelcomePage({
 
   return (
     <div className="flex h-full w-full items-center justify-center overflow-y-auto bg-stone-100 px-4 py-10 text-stone-800 antialiased">
-      <div className="w-full max-w-md animate-grow-in rounded-2xl bg-white p-8 shadow-xl ring-1 ring-stone-200">
+      <div className="relative w-full max-w-md animate-grow-in rounded-2xl bg-white p-8 shadow-xl ring-1 ring-stone-200">
+        {/* Choosing the UI language is part of first-run setup; there is no
+         * `?` panel here. A failed save reports in the card's error line. */}
+        <div className="absolute right-4 top-4">
+          <LangMenu onSaveError={setError} />
+        </div>
         <div className="flex flex-col items-center text-center">
           <img src={logoUrl} alt="litman" className="h-12 w-auto select-none" />
           <h1 className="mt-4 text-lg font-semibold text-stone-900">
