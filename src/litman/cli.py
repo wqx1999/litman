@@ -543,9 +543,11 @@ class LitGroup(click.Group):
 
         * health-check: ``last_health_check_at`` (registry) >
           :data:`HEALTH_CHECK_STALE_DAYS` → "run ``lit health-check``".
-        * sync push: ``.litman-sync-state.yaml`` ``last_push`` >
-          :data:`SYNC_STALE_DAYS`, AND only when a remote is configured
-          (``lit-config.yaml`` ``sync`` set) → "run ``lit sync push``".
+        * sync: ``.litman-sync-state.yaml`` ``last_push`` and ``last_sync``
+          both > :data:`SYNC_STALE_DAYS`, AND only when a remote is configured
+          (``lit-config.yaml`` ``sync`` set) → "run ``lit sync``" once this
+          machine uses two-way sync (``last_sync`` set), else "run
+          ``lit sync push``". Either command within the window silences it.
 
         Both are stateless (recomputed every command, no "already shown" flag),
         so an ignored tip re-appears on the next command and only clears once
@@ -621,17 +623,26 @@ class LitGroup(click.Group):
                     from litman.core.config import load_config
                     from litman.core.sync import read_sync_state
 
-                    if load_config(vault).sync is not None and _timestamp_is_stale(
-                        read_sync_state(vault).last_push,
-                        now=now,
-                        stale_days=SYNC_STALE_DAYS,
-                    ):
-                        _emit(
-                            f"[dim]tip: no `lit sync push` in "
-                            f"{SYNC_STALE_DAYS}+ days. "
-                            "Run it to back up your vault to the configured "
-                            "remote.[/dim]"
+                    state = read_sync_state(vault)
+                    if load_config(vault).sync is not None and all(
+                        _timestamp_is_stale(
+                            stamp, now=now, stale_days=SYNC_STALE_DAYS
                         )
+                        for stamp in (state.last_push, state.last_sync)
+                    ):
+                        if state.last_sync is not None:
+                            _emit(
+                                f"[dim]tip: no `lit sync` in {SYNC_STALE_DAYS}+ "
+                                "days. Run it to sync this library with the "
+                                "configured remote.[/dim]"
+                            )
+                        else:
+                            _emit(
+                                f"[dim]tip: no `lit sync push` in "
+                                f"{SYNC_STALE_DAYS}+ days. "
+                                "Run it to back up your vault to the configured "
+                                "remote.[/dim]"
+                            )
                 except Exception:
                     pass
         except Exception:

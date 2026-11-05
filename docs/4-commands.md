@@ -916,16 +916,68 @@ lit trash empty [--dry-run] [-y]
 
 ### `lit sync`
 
-rclone-backed one-way cloud sync. `push` mirrors the vault to your remote;
-`pull` reverses it for cross-machine restore. The vault's per-machine sync-state
-file and the transient `.litman-staging/` directory are always excluded.
+Sync the library with a cloud folder through [rclone](https://rclone.org/). With
+no subcommand, `lit sync` syncs both ways, for one library used on several
+machines. The subcommands are one-way: `push` mirrors the vault to your remote
+as a backup, and `pull` restores it from there. The vault's per-machine
+sync-state file and the transient `.litman-staging/` directory are always
+excluded.
 
 ```
+lit sync [--first-from cloud|local] [--force]
 lit sync setup [--remote NAME] [--path PATH]
 lit sync push [--dry-run] [-y] [-f] [--exclude-repos]
 lit sync pull [--dry-run] [--exclude-repos]
 lit sync status
 ```
+
+**Two-way sync** runs `rclone bisync` and needs rclone 1.74.2 or newer. What
+changed on this machine goes up, and what changed on your other machines comes
+down. It syncs with a folder inside the remote (the `--path` of
+`lit sync setup`), never with the remote's top level.
+
+- **Conflicts.** When both sides changed the same file since the last sync, the
+  newer copy is kept and the older one is moved out of the library into the
+  backup. The summary names each file, whose copy was kept and both copies'
+  times. When the file is `TAXONOMY.md`, the values only the older copy had
+  are added back to the kept one, so no tag on a paper is left unregistered.
+- **Deleted on one machine, changed on the other.** A paper or code folder
+  deleted (or renamed) on one machine while the other changed some of its files
+  is deleted everywhere: the changed files go to the backup, and the summary
+  names the folder and the files. A paper still in the trash comes back with
+  `lit trash restore`. A code folder's `repo/` checkout is never touched.
+- **Backups.** Every file a sync replaces or deletes is kept, one folder per
+  sync, named by its time. On this machine they are under `sync-backup/` in
+  litman's data folder: `~/.local/share/litman/` on Linux,
+  `~/Library/Application Support/litman/` on macOS,
+  `%LOCALAPPDATA%\litman\litman\` on Windows. In the cloud they are in the
+  folder next to the synced one, `<path>-litman-backup/`.
+- **First sync on a machine.** If the cloud folder is empty, this library is
+  copied up. If this library is new (no papers, nothing under `codes/`), the
+  cloud's library is copied down, and the local files it replaces go to the
+  backup. If both hold a library, nothing changes and the command exits `20`.
+- **Never synced:** `INDEX.json` and `views/` (rebuilt after every sync),
+  `lit-config.yaml` and `codes/*/repo/` checkouts. Each machine keeps its own
+  project folders: a project added on another machine arrives without a folder
+  here, and the summary prints the `lit project set-path` that gives it one.
+- **After every sync** the read-only lock on `metadata.yaml`, `paper.pdf`, SI
+  files and `TAXONOMY.md` is put back, and `INDEX.json`, `views/` and the
+  project links are rebuilt.
+- **Safety stop.** rclone stops a sync that would delete more than half of the
+  files on one side, before anything is deleted. If the deletions are intended,
+  run `lit sync --force`.
+
+| Flag | What it does |
+|---|---|
+| `--first-from cloud\|local` | Compare both sides afresh, with that side winning every difference. The other side's differing files go to the backup; files found on one side only are kept and copied across. Needed when a first sync finds a library on both sides, or after the set of never-synced files changed. |
+| `--force` | Go on past rclone's safety stop (more than half of the files deleted on one side, or every file changed). Replaced and deleted files still go to the backup. |
+
+| Exit code | Meaning |
+|---|---|
+| `0` | Synced. |
+| `1` | Failed, with rclone's last lines. What was not synced is picked up by the next `lit sync`. |
+| `20` | Nothing was synced: pick the side that wins with `--first-from cloud` or `--first-from local`. |
+| `21` | Synced, with conflicts: the newer copy of each file was kept and the older one is in the backup, or a folder deleted on one machine won over changes made to it on the other. |
 
 | Subcommand | What it does |
 |---|---|

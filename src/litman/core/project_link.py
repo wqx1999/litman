@@ -1431,25 +1431,32 @@ def set_project_path(vault: Path, name: str, new_path: Path) -> dict[str, Any]:
 
     ``new_path`` has to pass :func:`checked_project_path`.
 
+    A project listed in TAXONOMY.md with no folder in lit-config.yaml gets its
+    first folder here. That is how a project added on another machine arrives
+    through two-way sync, which carries TAXONOMY.md but never lit-config.yaml
+    (each machine keeps its own project paths).
+
     Returns:
         ``{"name": ..., "path": str(new_path), "changed": bool}`` — ``changed``
         is ``False`` when the project already points at that path (no-op).
 
     Raises:
-        TaxonomyError: ``name`` not registered in lit-config.yaml; ``new_path``
-            not absolute / missing / not a directory.
+        TaxonomyError: ``name`` is in neither lit-config.yaml nor TAXONOMY.md;
+            ``new_path`` not absolute / missing / not a directory.
     """
     name = name.strip()
     config = load_config(vault)
 
-    if name not in config.projects:
+    if name not in config.projects and name not in parse_taxonomy(
+        read_taxonomy_text(vault)
+    )[_PROJECTS_DICT]:
         raise TaxonomyError(
             f"Project {name!r} is not registered in lit-config.yaml. "
             "Run `lit project list` to inspect, or "
             f'`lit project add {shell_arg(name)} --path "<abs-path>"` to register it.'
         )
     new_path_str = str(checked_project_path(new_path))
-    if config.projects[name] == new_path_str:
+    if config.projects.get(name) == new_path_str:
         return {"name": name, "path": new_path_str, "changed": False}
 
     new_projects = dict(config.projects)

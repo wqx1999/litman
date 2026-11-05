@@ -141,3 +141,29 @@ def test_sync_nudge_does_not_fire_for_help(tmp_path: Path) -> None:
     result = CliRunner().invoke(cli, ["help"])
     assert result.exit_code == 0, result.output
     assert _SYNC_NUDGE not in result.output
+
+
+def test_sync_nudge_silent_after_a_recent_two_way_sync(tmp_path: Path) -> None:
+    """A two-way `lit sync` within the window counts as much as a push."""
+    vault = _seed_active_vault(
+        tmp_path, configure_remote=True, last_push=_iso_days_ago(30)
+    )
+    write_sync_state(
+        vault, SyncState(last_push=_iso_days_ago(30), last_sync=_iso_days_ago(1))
+    )
+
+    result = CliRunner().invoke(cli, ["list"])
+    assert result.exit_code == 0, result.output
+    assert "no `lit sync" not in result.output
+
+
+def test_sync_nudge_names_lit_sync_once_two_way_sync_is_in_use(
+    tmp_path: Path,
+) -> None:
+    vault = _seed_active_vault(tmp_path, configure_remote=True, last_push=None)
+    write_sync_state(vault, SyncState(last_sync=_iso_days_ago(9)))
+
+    result = CliRunner().invoke(cli, ["list"])
+    assert result.exit_code == 0, result.output
+    assert "no `lit sync` in 7+ days" in result.stderr
+    assert _SYNC_NUDGE not in result.stderr

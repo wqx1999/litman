@@ -1,6 +1,8 @@
-"""``lit sync`` command group (M6.1).
+"""``lit sync`` command group (M6.1, ADR-030).
 
-Four subcommands wired thinly over ``litman.core.sync``:
+``lit sync`` with no subcommand is the two-way sync (``rclone bisync``,
+:func:`litman.core.sync.two_way_sync`) of one library used on several
+machines. Four subcommands wired thinly over ``litman.core.sync``:
 
 - ``setup`` — hand the TTY to ``rclone config`` so the user can register
   a remote, then persist the chosen remote name + path into
@@ -20,9 +22,12 @@ being exercised.
 from __future__ import annotations
 
 import sys
+from datetime import datetime
 from pathlib import Path
+from typing import cast
 
 import click
+from click.core import ParameterSource
 from rich.console import Console
 from rich.markup import escape
 from rich.panel import Panel
@@ -34,9 +39,13 @@ from litman.core.config import CONFIG_FILENAME, load_config
 from litman.core.confirm import refuse_without_terminal
 from litman.core.document import list_papers
 from litman.core.library import find_vault, resolve_library_or_vault
+from litman.core.shell import shell_arg
 from litman.core.sync import (
     DEFAULT_EXCLUDES,
+    FileChanges,
+    FirstFrom,
     SetupPayload,
+    TwoWayResult,
     codes_ignore_patterns_to_rclone,
     compute_status,
     format_iso,
@@ -48,26 +57,323 @@ from litman.core.sync import (
     push,
     read_sync_state,
     remote_exists,
+    two_way_sync,
     write_sync_to_config,
 )
-from litman.exceptions import SyncError
+from litman.exceptions import SyncChoiceRequiredError, SyncError
 
 console = Console()
+# rclone's own log lines go to stderr, as they do when rclone runs by itself.
+_rclone_console = Console(stderr=True)
+
+# Exit codes of two-way `lit sync` beyond 0 (synced) and 1 (failed); documented
+# in docs/4-commands.md. Clear of every other litman command's codes.
+EXIT_SYNC_NEEDS_CHOICE = 20
+EXIT_SYNC_CONFLICTS = 21
 
 
-@click.group("sync")
-def sync_group() -> None:
-    """rclone-backed cloud sync for the vault.
+@click.group("sync", invoke_without_command=True)
+@click.option(
+    "--first-from",
+    "first_from",
+    type=click.Choice(["cloud", "local"]),
+    default=None,
+    help=(
+        "Two-way sync only. Compare both sides afresh, with this side winning "
+        "every difference; the other side's differing files go to the backup, "
+        "and files found on one side only are kept and copied across. Needed "
+        "when the first sync finds a library on both sides."
+    ),
+)
+@click.option(
+    "--force",
+    "force",
+    is_flag=True,
+    default=False,
+    help=(
+        "Two-way sync only. Go on past rclone's safety stop (more than half of "
+        "the files deleted on one side, or every file changed); replaced and "
+        "deleted files still go to the backup."
+    ),
+)
+@library_option
+@vault_option
+@click.pass_context
+def sync_group(
+    ctx: click.Context,
+    first_from: str | None,
+    force: bool,
+    library: Path | None,
+    vault_name: str | None,
+) -> None:
+    """Sync the library with a cloud folder through rclone.
 
-    One-way mirror: push copies the vault to your configured cloud
-    remote, pull reverses the direction for cross-machine restore.
-    setup walks you through registering a remote in rclone config
-    and writes the chosen target into lit-config.yaml.
+    With no subcommand, lit sync syncs both ways, for one library used on
+    several machines: what changed here goes up, what changed on your other
+    machines comes down. When both changed the same file, the newer copy is
+    kept and the older one goes to a backup folder; a paper deleted on one
+    machine stays deleted even if the other changed it, and those changes go
+    to the backup. Every file a sync replaces or deletes is kept in a backup
+    folder, here and in the cloud.
 
-    The vault root file .litman-sync-state.yaml and the transient
-    .litman-staging/ directory are excluded by default and never travel
-    between machines.
+    The first sync on a machine copies this library up when the cloud folder
+    is empty, and copies the cloud's library down when this one is new and
+    empty. When both already hold a library it changes nothing and asks you
+    to pick one with --first-from.
+
+    Never synced: INDEX.json and views/ (rebuilt after every sync),
+    lit-config.yaml (each machine keeps its own project folders) and
+    codes/*/repo/ checkouts.
+
+    Exit codes: 0 synced, 1 failed, 20 waiting for your --first-from
+    choice, 21 synced with conflicts.
+
+    The subcommands are one-way: push mirrors the vault to the cloud as a
+    backup, pull restores it from there, setup points litman at an rclone
+    remote, status compares the two sides.
     """
+    if ctx.invoked_subcommand is not None:
+        _refuse_group_options_before(ctx, ctx.invoked_subcommand)
+        return
+    _run_two_way(
+        first_from=cast("FirstFrom | None", first_from),
+        force=force,
+        library=library,
+        vault_name=vault_name,
+    )
+
+
+def _refuse_group_options_before(ctx: click.Context, sub: str) -> None:
+    """Refuse two-way options typed before a subcommand instead of dropping them.
+
+    ``lit sync --library X push`` would otherwise push the active vault, not X.
+    Only options typed on the command line count: ``$LIT_LIBRARY`` also fills
+    ``--library`` and is meant for the subcommand.
+    """
+
+    def typed(name: str) -> bool:
+        return ctx.get_parameter_source(name) is ParameterSource.COMMANDLINE
+
+    two_way_only = [
+        flag for name, flag in (("first_from", "--first-from"), ("force", "--force")) if typed(name)
+    ]
+    if two_way_only:
+        verb = "belongs" if len(two_way_only) == 1 else "belong"
+        raise click.UsageError(
+            f"{' and '.join(two_way_only)} {verb} to two-way `lit sync`, not to "
+            f"`lit sync {sub}`. Run `lit sync {sub} --help` for its own options."
+        )
+    misplaced = [
+        flag for name, flag in (("library", "--library"), ("vault_name", "--vault")) if typed(name)
+    ]
+    if misplaced:
+        raise click.UsageError(
+            f"Put {' / '.join(misplaced)} after the subcommand, so it reaches it: "
+            f"`lit sync {sub} {misplaced[0]} ...`."
+        )
+
+
+# ---------------------------------------------------------------------------
+# lit sync (two-way)
+# ---------------------------------------------------------------------------
+
+
+def _echo_rclone_line(line: str) -> None:
+    _rclone_console.print(f"[dim]{escape(line)}[/]", highlight=False, soft_wrap=True)
+
+
+def _describe_changes(changes: FileChanges | None) -> str:
+    if changes is None:
+        return "[dim]not counted on a full comparison[/]"
+    if changes.total == 0:
+        return "nothing"
+    parts = [
+        f"{len(paths)} {label}"
+        for paths, label in (
+            (changes.added, "new"),
+            (changes.changed, "changed"),
+            (changes.deleted, "deleted"),
+        )
+        if paths
+    ]
+    n = changes.total
+    return f"{n} file{'s' if n != 1 else ''} ({', '.join(parts)})"
+
+
+def _when(timestamp: float | None) -> str:
+    if timestamp is None:
+        return "?"
+    return datetime.fromtimestamp(timestamp).strftime("%Y-%m-%d %H:%M")
+
+
+def _render_two_way_summary(result: TwoWayResult) -> None:
+    if result.mode == "sync":
+        lines = ["[bold green]Synced.[/]"]
+    elif result.chosen:
+        winner = "this machine's" if result.mode == "first-local" else "the cloud's"
+        lines = [f"[bold green]Started over:[/] {winner} copy won every difference."]
+    elif result.mode == "first-local":
+        lines = [
+            "[bold green]First sync:[/] the cloud folder was empty, so this "
+            "library was copied up."
+        ]
+    else:
+        lines = [
+            "[bold green]First sync:[/] this library was new, so the cloud's "
+            "library was copied down."
+        ]
+    lines.append(f"[bold]Came down:[/] {_describe_changes(result.came_down)}")
+    lines.append(f"[bold]Went up:[/] {_describe_changes(result.went_up)}")
+
+    if result.conflicts:
+        n = len(result.conflicts)
+        lines.append(
+            f"[bold yellow]{n} conflict{'s' if n != 1 else ''}:[/] the same file "
+            "changed on both sides; the newer copy was kept, the older one moved "
+            "to the backup."
+        )
+        for c in result.conflicts:
+            where = f"{c.paper_id} · {c.path.rsplit('/', 1)[-1]}" if c.paper_id else c.path
+            kept, other = (
+                ("this machine's", "the cloud's")
+                if c.kept == "local"
+                else ("the cloud's", "this machine's")
+            )
+            lines.append(
+                f"  • {escape(where)}: kept {kept} copy ({_when(c.kept_mtime)}); "
+                f"{other} ({_when(c.moved_mtime)}) → backup"
+            )
+            if c.restored:
+                lines.append(
+                    "    [dim]rclone could not tell which copy was newer and kept "
+                    "neither; litman put the newer one back.[/]"
+                )
+    if result.taxonomy_restored:
+        added = "; ".join(
+            f"{name} {', '.join(values)}" for name, values in result.taxonomy_restored.items()
+        )
+        lines.append(
+            f"[bold]TAXONOMY.md:[/] added back what only the older copy had: {escape(added)}."
+        )
+    if result.taxonomy_restore_error is not None:
+        lines.append(
+            "[yellow]TAXONOMY.md values only the older copy had were not added back:[/] "
+            f"{escape(result.taxonomy_restore_error)}. That copy is in the backup."
+        )
+    if result.deleted_folders:
+        n = len(result.deleted_folders)
+        lines.append(
+            f"[bold yellow]{n} folder{'s' if n != 1 else ''} deleted on one machine and "
+            "changed on the other:[/] the deletion won, and the changed files are in "
+            "the backup."
+        )
+        for d in result.deleted_folders:
+            kind, name = d.folder.split("/", 1)
+            label = name if kind == "papers" else d.folder
+            where = "here" if d.deleted_here else "on another machine"
+            whose = "the other machine's" if d.deleted_here else "this machine's"
+            lines.append(
+                f"  • {escape(label)}: deleted or renamed {where}; {whose} changes "
+                f"({escape(', '.join(d.moved) or 'none')}) → backup"
+            )
+            if d.in_trash:
+                lines.append(
+                    "    [dim]It is in the trash: "
+                    f"`lit trash restore {escape(shell_arg(name))}` brings it back.[/]"
+                )
+            if d.left_behind:
+                lines.append(
+                    f"    [dim]{escape(', '.join(d.left_behind))} stays on this machine: "
+                    "code checkouts are not synced.[/]"
+                )
+    if result.deletions_unchecked:
+        lines.append(
+            "[yellow]Could not read rclone's per-file report:[/] a paper deleted on one "
+            "machine and changed on another may be left incomplete. "
+            "`lit health-check` finds it."
+        )
+    if result.projects_without_folder:
+        names = result.projects_without_folder
+        lines.append(
+            f"[yellow]No folder on this machine for project{'s' if len(names) != 1 else ''}"
+            f":[/] {escape(', '.join(names))}. Set one with "
+            f'`lit project set-path {escape(shell_arg(names[0]))} "<folder>"`.'
+        )
+    if result.rebuild_error is not None:
+        lines.append(
+            f"[yellow]INDEX.json and views/ were not rebuilt:[/] "
+            f"{escape(result.rebuild_error)}. Run `lit refresh-views` once it is fixed."
+        )
+    elif result.rebuild is not None and result.rebuild.get("link_errors"):
+        lines.append(
+            "[yellow]Some project folders could not be brought up to date;[/] "
+            "`lit refresh-views` tries again."
+        )
+    console.print(
+        Panel.fit(
+            "\n".join(lines),
+            title=f"lit sync — {escape(result.target_url)}",
+            border_style=(
+                "yellow"
+                if result.conflicts or result.deleted_folders or result.deletions_unchecked
+                else "green"
+            ),
+        )
+    )
+    _print_backups(result)
+
+
+def _print_backups(result: TwoWayResult) -> None:
+    """List the run's backups under the summary, each path whole on one line to copy.
+
+    Inside the panel a long path would be folded at the border, mid-name.
+    """
+    paths = [
+        *(c.backup for c in result.conflicts),
+        *(d.backup for d in result.deleted_folders),
+        *result.local_backups,
+    ]
+    if not paths:
+        return
+    console.print("[dim]Backups of this sync:[/]")
+    for path in paths:
+        console.print(f"  {escape(str(path))}", soft_wrap=True, highlight=False)
+
+
+def _run_two_way(
+    *,
+    first_from: FirstFrom | None,
+    force: bool,
+    library: Path | None,
+    vault_name: str | None,
+) -> None:
+    """Two-way sync of the vault with its configured remote."""
+    vault = find_vault(resolve_library_or_vault(library, vault_name))
+    target, _codes_patterns, _exclude_repos = _require_sync_configured(vault)
+    banner = f"[bold]Syncing[/] [dim]{escape(str(vault))}[/] ⇄ [bold]{escape(target)}[/]"
+    if first_from is not None:
+        banner += f" [dim](--first-from {first_from})[/]"
+    console.print(banner, soft_wrap=True)
+    try:
+        result = two_way_sync(
+            vault,
+            target,
+            first_from=first_from,
+            force=force,
+            on_log=_echo_rclone_line,
+        )
+    except SyncChoiceRequiredError as err:
+        console.print(
+            Panel.fit(
+                escape(str(err)),
+                title="lit sync — nothing was synced",
+                border_style="yellow",
+            )
+        )
+        sys.exit(EXIT_SYNC_NEEDS_CHOICE)
+    _render_two_way_summary(result)
+    if result.conflicts or result.deleted_folders:
+        sys.exit(EXIT_SYNC_CONFLICTS)
 
 
 # ---------------------------------------------------------------------------

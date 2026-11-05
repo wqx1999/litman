@@ -244,6 +244,17 @@ class SyncError(LitmanError):
     """
 
 
+class SyncChoiceRequiredError(SyncError):
+    """Two-way sync cannot go on until the user picks which side wins.
+
+    Nothing has been synced when it is raised: on a first sync where both this
+    machine and the cloud already hold a library, after the sync filters
+    changed, or when rclone can no longer continue from its last sync records.
+    The way out is ``lit sync --first-from cloud|local``, which only the user
+    may choose.
+    """
+
+
 class ExportError(LitmanError):
     """`lit export` (M12.1) rejected an op: mutually-exclusive flags missing
     or doubled, target file is hand-edited (no litman sentinel) and `--force`

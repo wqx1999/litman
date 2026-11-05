@@ -473,6 +473,38 @@ def test_project_path_refusals_read_the_same_on_every_platform(
     assert str(missing.value) == f"Path {str(ghost)!r} does not exist. Create it first."
 
 
+def test_project_set_path_gives_a_taxonomy_only_project_its_folder(
+    vault: Path, tmp_path: Path
+) -> None:
+    """A project that came from another machine (TAXONOMY.md only) gets a folder.
+
+    Two-way sync carries TAXONOMY.md but never lit-config.yaml, so this is
+    the state every project added on the other machine arrives in. Before,
+    set-path sent it to `project add` and `project add` sent it back.
+    """
+    folder = tmp_path / "here"
+    folder.mkdir()
+    runner = CliRunner()
+    added = runner.invoke(
+        cli, ["project", "add", "p", "--path", str(folder), "--library", str(vault)]
+    )
+    assert added.exit_code == 0, added.output
+    config = vault / "lit-config.yaml"
+    yaml = YAML()
+    data = yaml.load(config.read_text(encoding="utf-8"))
+    data["projects"] = {}
+    with config.open("w", encoding="utf-8") as f:
+        yaml.dump(data, f)
+    assert _config_projects(vault) == {}
+
+    result = runner.invoke(
+        cli, ["project", "set-path", "p", str(folder), "--library", str(vault)]
+    )
+
+    assert result.exit_code == 0, result.output
+    assert _config_projects(vault) == {"p": str(folder)}
+
+
 def test_project_set_path_unregistered_rejected(vault: Path) -> None:
     runner = CliRunner()
     result = runner.invoke(
