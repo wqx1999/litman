@@ -8,13 +8,17 @@ recorded commit from the upstream.
 
 * Before the file sync, :func:`record_repo_versions` writes into
   ``repo-meta.yaml`` the commit of each checkout the user moved since this
-  machine's last sync (a pull, a commit, a checkout), and of each with no
-  commit recorded yet.
+  machine's last sync (a pull, a commit, a checkout).
 * After it, :func:`bring_repos_in` fetches each missing checkout at the
   recorded commit and moves each one that is at another, unless it holds work
   of the user's. It reports what it could not do and why, which checkouts hold
   changes no other machine gets, and which were left behind by a repo removed
   from the library. It deletes nothing.
+* A ``repo-meta.yaml`` that still records no commit after the file sync gets
+  this machine's (:attr:`RepoSyncReport.unrecorded`), and the sync takes it up
+  at once: the first machine to sync records the commit and the others follow
+  it. Written before the file sync, by each machine for itself, the commits
+  would meet as a conflict.
 
 A checkout that could not follow (offline, say) is still at its old commit at
 the next sync, which must not take that for a move of the user's and write
@@ -99,6 +103,9 @@ class RepoSyncReport:
     left_behind: tuple[str, ...] = ()
     #: The commit each checkout is at now, for :func:`write_last_heads`.
     heads: dict[str, str] = field(default_factory=dict)
+    #: Checkouts whose ``repo-meta.yaml`` records no commit yet, with the
+    #: ``(commit, branch)`` they are at: for the sync to record and take up.
+    unrecorded: dict[str, tuple[str, str | None]] = field(default_factory=dict)
 
     @property
     def mismatched(self) -> bool:
@@ -129,10 +136,13 @@ def record_repo_versions(vault: Path, last_heads: Mapping[str, str] | None) -> l
     """Write into ``repo-meta.yaml`` the commit of each checkout the user moved here.
 
     A checkout counts as moved when it is at another commit than when this
-    machine's last sync ended (``last_heads``), or was not there then. One
-    whose ``repo-meta.yaml`` records no commit yet has it written too. With
+    machine's last sync ended (``last_heads``), or was not there then. With
     ``last_heads`` ``None`` no checkout counts as moved: one that differs from
-    its record is brought to it after the file sync instead.
+    its record is brought to it after the file sync instead. A checkout that
+    did not move is never written here, even when its ``repo-meta.yaml``
+    records no commit yet: that waits until after the file sync
+    (:attr:`RepoSyncReport.unrecorded`), when another machine may have
+    recorded one.
 
     Returns the repos written.
 
@@ -143,11 +153,7 @@ def record_repo_versions(vault: Path, last_heads: Mapping[str, str] | None) -> l
     for meta in list_repos(vault):
         folder: Path = meta["_path"]
         head = read_head(folder / REPO_DIRNAME)
-        if head is None:
-            continue
-        if valid_commit(meta.get("commit")) is not None and (
-            last_heads is None or last_heads.get(folder.name) == head[0]
-        ):
+        if head is None or last_heads is None or last_heads.get(folder.name) == head[0]:
             continue
         heads[folder.name] = head
     if not heads:
@@ -167,13 +173,15 @@ def bring_repos_in(vault: Path, *, depth: int, progress: bool = False) -> RepoSy
       user's (a tracked change, or a commit no remote has).
 
     A failure is reported and the next repo tried; nothing is deleted.
-    ``progress`` shows git's progress on the terminal.
+    ``progress`` shows git's progress on the terminal. A checkout whose
+    ``repo-meta.yaml`` records no commit is listed in ``unrecorded``.
     """
     restored: list[RepoRestored] = []
     not_restored: list[RepoNotRestored] = []
     uncommitted: list[str] = []
     unpushed: list[str] = []
     heads: dict[str, str] = {}
+    unrecorded: dict[str, tuple[str, str | None]] = {}
     for meta in list_repos(vault):
         folder: Path = meta["_path"]
         name = folder.name
@@ -191,6 +199,8 @@ def bring_repos_in(vault: Path, *, depth: int, progress: bool = False) -> RepoSy
                 continue
             restored.append(outcome)
             heads[name] = outcome.commit
+            if commit is None and outcome.commit:
+                unrecorded[name] = (outcome.commit, outcome.branch)
             continue
 
         head = read_head(repo_dir)
@@ -206,6 +216,8 @@ def bring_repos_in(vault: Path, *, depth: int, progress: bool = False) -> RepoSy
                 )
             continue
         heads[name] = head[0]
+        if commit is None:
+            unrecorded[name] = head
         state = checkout_state(repo_dir)
         if commit is not None and head[0] != commit:
             if state is None or state.has_work:
@@ -237,6 +249,7 @@ def bring_repos_in(vault: Path, *, depth: int, progress: bool = False) -> RepoSy
         unpushed=tuple(unpushed),
         left_behind=tuple(_left_behind(vault)),
         heads=heads,
+        unrecorded=unrecorded,
     )
 
 

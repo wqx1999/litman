@@ -11,10 +11,12 @@ files after both synced paths.
 
 from __future__ import annotations
 
+import itertools
 import shutil
 import tempfile
 import time
 from collections.abc import Iterator
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
@@ -22,7 +24,9 @@ from rich.console import Console
 from ruamel.yaml import YAML
 
 from litman.commands import sync as sync_cmd
+from litman.core import code as code_mod
 from litman.core import locking
+from litman.core import sync as core_sync
 from litman.core.checks.maintenance import check_code_clone_integrity
 from litman.core.code import code_folder_kind, read_head
 from litman.core.document import list_papers
@@ -33,6 +37,7 @@ from tests.commands.test_sync_bisync import (
     _lit,
     _machine,
     _sync,
+    _tree,
     _write_paper,
     needs_rclone,
 )
@@ -133,11 +138,11 @@ def test_a_missing_checkout_is_fetched_at_the_recorded_commit_and_still_updates(
     assert _head(b) == (c4, "main")
 
 
-def test_a_repo_meta_written_before_records_the_commit_at_the_next_sync(
+def test_a_repo_meta_with_no_commit_gets_the_commit_of_the_first_machine_to_sync(
     tmp_path: Path, cloud: Path, upstream: Upstream
 ) -> None:
     """A repo-meta.yaml with no commit (written before there was one) gets
-    the checkout's: B fetches that commit, not the upstream's newer tip."""
+    A's checkout's in A's sync: B fetches that commit, not the newer tip."""
     a = _machine(tmp_path, cloud, "a")
     assert _lit("code", "add", upstream.url, "--name", "tool", vault=a).exit_code == 0
     meta = a / "codes" / "tool" / "repo-meta.yaml"
@@ -152,6 +157,92 @@ def test_a_repo_meta_written_before_records_the_commit_at_the_next_sync(
     assert _recorded(a) == (c3, "main")
     assert result.exit_code == 0, result.output
     assert _head(b) == (c3, "main")
+
+
+def _old_repo_meta(vault: Path, upstream: Upstream) -> None:
+    """``codes/tool/repo-meta.yaml`` as written before commits were recorded."""
+    folder = vault / "codes" / "tool"
+    folder.mkdir(parents=True)
+    (folder / "repo-meta.yaml").write_bytes(
+        b"name: tool\nupstream: " + upstream.url.encode() + b"\npapers: []\n"
+    )
+
+
+def test_repo_metas_with_no_commit_get_one_commit_and_no_conflict(
+    tmp_path: Path, cloud: Path, upstream: Upstream, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Neither machine has the checkout and repo-meta.yaml names no commit.
+    The first machine to sync records the commit it fetched, in that same
+    sync; the other fetches that one. Recorded by each machine for itself,
+    the two copies of repo-meta.yaml would meet as a conflict: the machines
+    sync at different times, so the copies differ in `updated-at` at least."""
+    minutes = itertools.count()
+    start = datetime(2026, 1, 1, tzinfo=UTC)
+    monkeypatch.setattr(
+        code_mod,
+        "now_iso",
+        lambda: (start + timedelta(minutes=next(minutes))).isoformat(timespec="seconds"),
+    )
+    a = _machine(tmp_path, cloud, "a")
+    _write_paper(a, "p1")
+    _old_repo_meta(a, upstream)
+    b = _machine(tmp_path, cloud, "b")
+    c3 = upstream.commits[2]
+
+    runs = [_sync(a), _sync(b), _sync(a), _sync(b)]
+
+    for run in runs:
+        assert run.exit_code == 0, run.output
+        assert "conflict" not in run.output
+    assert (
+        f"tool: fetched at {c3[:7]} (on main) — recorded for your other machines to follow"
+    ) in runs[0].output
+    assert "Came down: nothing" in runs[0].output
+    assert f"tool: fetched at {c3[:7]} (on main)" in runs[1].output
+    assert "recorded for your other machines" not in runs[1].output
+    assert _recorded(a) == _recorded(b) == (c3, "main")
+    assert _head(a) == _head(b) == (c3, "main")
+    assert _tree(a) == _tree(b) == _tree(cloud / "lib")
+
+
+def test_old_checkouts_at_different_commits_follow_the_first_machine_to_sync(
+    tmp_path: Path, cloud: Path, upstream: Upstream
+) -> None:
+    """Each machine had its own checkout before commits were recorded, at
+    different commits, and no record of where they were. The first to sync
+    records its commit; the other moves there, with no conflict."""
+    a = _machine(tmp_path, cloud, "a")
+    _write_paper(a, "p1")
+    _old_repo_meta(a, upstream)
+    away = upstream.bare.rename(upstream.bare.with_name("away.git"))
+    assert _sync(a).exit_code == sync_cmd.EXIT_SYNC_REPOS_DIFFER
+    b = _machine(tmp_path, cloud, "b")
+    assert _sync(b).exit_code == sync_cmd.EXIT_SYNC_REPOS_DIFFER
+    away.rename(upstream.bare)
+    c2, c3 = upstream.commits[1:]
+    repo_a, repo_b = (v / "codes" / "tool" / "repo" for v in (a, b))
+    git("clone", "-q", "--depth", "1", upstream.url, str(repo_a), cwd=tmp_path)
+    git("clone", "-q", upstream.url, str(repo_b), cwd=tmp_path)
+    git("checkout", "-q", c2, cwd=repo_b)
+    # As before commits were recorded: no machine knows where its checkouts were.
+    records = list(core_sync.sync_data_dir().glob("bisync/*/repo-heads.json"))
+    assert len(records) == 2
+    for record in records:
+        record.unlink()
+
+    runs = [_sync(a), _sync(b), _sync(a)]
+
+    for run in runs:
+        assert run.exit_code == 0, run.output
+        assert "conflict" not in run.output
+    assert (
+        f"tool: at {c3[:7]} (on main) — recorded for your other machines to follow"
+    ) in runs[0].output
+    assert "Came down: nothing" in runs[0].output
+    assert f"tool: moved to {c3[:7]} (on main)" in runs[1].output
+    assert _recorded(a) == _recorded(b) == (c3, "main")
+    assert _head(a) == _head(b) == (c3, "main")
+    assert _tree(a) == _tree(b) == _tree(cloud / "lib")
 
 
 def test_a_checkout_behind_is_moved_to_the_commit_another_machine_recorded(

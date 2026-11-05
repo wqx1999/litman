@@ -2064,6 +2064,8 @@ class TwoWayResult:
     ``repos`` is what bringing the code checkouts to their recorded commits
     did (:func:`litman.core.code_sync.bring_repos_in`); ``repos_error`` says
     why recording or bringing them failed, the file sync having gone through.
+    ``repos_recorded`` names the repos whose commit this sync recorded for the
+    first time, and took up for the other machines to follow.
     """
 
     target_url: str
@@ -2083,6 +2085,7 @@ class TwoWayResult:
     deletions_unchecked: bool = False
     repos: RepoSyncReport | None = None
     repos_error: str | None = None
+    repos_recorded: tuple[str, ...] = ()
 
 
 def two_way_sync(
@@ -2115,12 +2118,14 @@ def two_way_sync(
        TAXONOMY.md conflict, once a pass settles nothing new, add back the
        values only the older copy had and run one more pass to take them up.
        Re-lock TRUTH in a ``finally``.
-    4. Record the result in the sync-state file. Bring each code checkout to
-       the commit its ``repo-meta.yaml`` records, fetching it from the
-       upstream (:func:`litman.core.code_sync.bring_repos_in`; git's progress
-       shows with ``git_progress``). A repo that cannot follow is reported,
-       never a reason to fail the sync. Then rebuild INDEX.json, views/ and
-       the project links from TRUTH (none of them travels).
+    4. Bring each code checkout to the commit its ``repo-meta.yaml``
+       records, fetching it from the upstream
+       (:func:`litman.core.code_sync.bring_repos_in`; git's progress shows
+       with ``git_progress``). A repo that cannot follow is reported, never a
+       reason to fail the sync. A ``repo-meta.yaml`` still without a commit
+       gets this machine's, and one more pass takes it up.
+    5. Record the result in the sync-state file, then rebuild INDEX.json,
+       views/ and the project links from TRUTH (none of them travels).
 
     Every file a run replaces or deletes goes to a backup folder: on this
     machine under ``<data dir>/sync-backup/<vault-key>/``, in the cloud under
@@ -2295,6 +2300,27 @@ def two_way_sync(
             ensure_truth_locked(vault)
             for name in backups:
                 _drop_if_empty(paths.local_backup_root / name)
+
+        # Code checkouts follow the commits their repo-meta.yaml records; git
+        # runs with TRUTH locked again, and before the rebuild, which links
+        # the checkouts into their projects.
+        repos, recorded, repos_error = _bring_repos_in(
+            vault, paths, progress=git_progress, error=repos_error
+        )
+        if recorded:
+            # A commit recorded here for the first time goes up in this same
+            # sync: a machine syncing next finds it and follows, instead of
+            # recording its own, which would conflict.
+            try:
+                ensure_truth_unlocked(vault)
+                run_pass(None)
+                found = sweep_conflicts(vault, paths.conflicts_root / backups[-1])
+                conflicts.extend(found)
+                _changed, error = _restore_taxonomy(vault, found, restored)
+                restore_error = restore_error or error
+            finally:
+                ensure_truth_locked(vault)
+                _drop_if_empty(paths.local_backup_root / backups[-1])
     except SyncChoiceRequiredError:
         _stamp_quietly(vault, "needs-choice")
         raise
@@ -2313,7 +2339,9 @@ def two_way_sync(
         [c.path for c in conflicts]
         + [f"{d.folder}/{rel}" for d in deleted_folders for rel in d.moved]
     )
-    came_down = diff_snapshots(before, after, ignore=conflict_paths)
+    # A repo-meta.yaml this sync recorded a commit in changed here, not there.
+    recorded_paths = frozenset(f"codes/{name}/repo-meta.yaml" for name in recorded)
+    came_down = diff_snapshots(before, after, ignore=conflict_paths | recorded_paths)
     went_up: FileChanges | None
     if mode == "sync":
         went_up = (
@@ -2330,17 +2358,8 @@ def two_way_sync(
     else:
         went_up = None
         remote_changed = True
+    remote_changed = remote_changed or bool(recorded)
     _stamp_quietly(vault, "conflicts" if conflicts or deleted_folders else "ok")
-
-    # Before the rebuild, which links the checkouts into their projects.
-    repos: RepoSyncReport | None = None
-    try:
-        repos = code_sync.bring_repos_in(
-            vault, depth=_clone_depth(vault), progress=git_progress
-        )
-        code_sync.write_last_heads(paths.repo_heads_file, repos.heads)
-    except (LitmanError, OSError) as err:
-        repos_error = repos_error or str(err)
 
     rebuild: dict[str, Any] | None = None
     rebuild_error: str | None = None
@@ -2374,7 +2393,33 @@ def two_way_sync(
         deletions_unchecked=deletions_unchecked,
         repos=repos,
         repos_error=repos_error,
+        repos_recorded=tuple(recorded),
     )
+
+
+def _bring_repos_in(
+    vault: Path, paths: BisyncPaths, *, progress: bool, error: str | None
+) -> tuple[RepoSyncReport | None, list[str], str | None]:
+    """Bring the code checkouts to their recorded commits; record the commits missing.
+
+    Returns the report, the repos whose commit was recorded here for the first
+    time, and the first error met (``error``, when there was one already).
+    """
+    from litman.core import code_sync
+    from litman.core.code import record_repo_heads
+
+    try:
+        repos = code_sync.bring_repos_in(vault, depth=_clone_depth(vault), progress=progress)
+        code_sync.write_last_heads(paths.repo_heads_file, repos.heads)
+    except (LitmanError, OSError) as err:
+        return None, [], error or str(err)
+    if not repos.unrecorded:
+        return repos, [], error
+    try:
+        recorded = record_repo_heads(vault, repos.unrecorded, op_id="sync-record-commits")
+    except (LitmanError, OSError) as err:
+        return repos, [], error or str(err)
+    return repos, recorded, error
 
 
 def _clone_depth(vault: Path) -> int:

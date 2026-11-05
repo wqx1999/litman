@@ -342,10 +342,18 @@ def _repo_lines(result: TwoWayResult) -> list[str]:
     report = result.repos
     if report is not None:
         rows: list[str] = []
+        recorded = " — recorded for your other machines to follow"
         for done in report.restored:
             verb = "fetched at" if done.action == "cloned" else "moved to"
             on = f"on {escape(done.branch)}" if done.branch else "detached"
-            rows.append(f"  • {escape(done.name)}: {verb} {done.commit[:7]} ({on})")
+            note = recorded if done.name in result.repos_recorded else ""
+            rows.append(f"  • {escape(done.name)}: {verb} {done.commit[:7]} ({on}){note}")
+        fetched = {done.name for done in report.restored}
+        for name in result.repos_recorded:
+            if name not in fetched:
+                commit, branch = report.unrecorded[name]
+                on = f"on {escape(branch)}" if branch else "detached"
+                rows.append(f"  • {escape(name)}: at {commit[:7]} ({on}){recorded}")
         for missed in report.not_restored:
             rows.append(
                 f"  • [yellow]{escape(missed.name)}:[/] {escape(missed.what)}. "

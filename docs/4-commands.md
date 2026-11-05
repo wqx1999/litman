@@ -971,7 +971,9 @@ down. It syncs with a folder inside the remote (the `--path` of
   checkout you moved on this machine (`lit code update`, or a pull, commit or
   checkout of your own) are written to its `repo-meta.yaml`. After it, a missing
   checkout is fetched from the repo's upstream at the commit `repo-meta.yaml`
-  records, and one at another commit is moved there. A checkout with changes of
+  records, and one at another commit is moved there. A `repo-meta.yaml` that
+  records no commit yet gets the commit of the first machine that syncs it, and
+  the other machines follow that one. A checkout with changes of
   yours (a changed tracked file, or a commit no remote has) is left where it is;
   untracked files alone do not stop the move. The summary lists what moved, what
   did not and why, and the checkouts whose uncommitted changes stay on this
