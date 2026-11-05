@@ -14,6 +14,11 @@ Release discipline: the running version needs a section here too
 (tests/core/test_whatsnew.py, and release.sh refuses to publish without one).
 -->
 
+## 1.3.12
+
+- 界面有中文了，默认跟随系统语言。
+- 想换语言，按 ? 打开快捷键面板，在右上角切换。
+
 ## 1.3.11
 
 - Claude Code 可以直接用桌面版打开了；Windows 上的 Codex 也一样。

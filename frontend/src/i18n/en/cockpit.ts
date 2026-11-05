@@ -103,7 +103,7 @@ export const cockpit = {
   dropConfirm: {
     title: 'Drop this paper?',
     body: (title: string) =>
-      `Sets the status of “${title}” to dropped, removing it from the active reading lists. You can restore it later by changing the status back.`,
+      `Sets the status of “${title}” to dropped. It stays in the lists, greyed out; change the status back to undo.`,
     confirm: 'Drop',
   },
 
@@ -176,7 +176,7 @@ export const cockpit = {
   /** Dictionary editor for one controlled-vocab field (cockpit/ManageVocab.tsx). */
   manage: {
     title: (noun: string) => `Manage ${noun}`,
-    help: "Rename fixes a typo or merges two values everywhere they're used. Delete untags a value from every paper.",
+    help: "Rename fixes a typo everywhere the value is used. Delete untags a value from every paper.",
     empty: 'No values yet.',
     // Papers tagged with the value.
     usedBy: (n: number) => `used by ${n}`,

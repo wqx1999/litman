@@ -2693,7 +2693,7 @@ export default function App() {
           onConfirm={confirmRemove}
         />
       )}
-      {cheatSheetOpen && <CheatSheet onClose={closeCheatSheet} />}
+      {cheatSheetOpen && <CheatSheet onClose={closeCheatSheet} notify={notify} />}
       {whatsNew && <WhatsNew info={whatsNew} onClose={closeWhatsNew} />}
       {/* Drag-in ingest: the drop catcher is the ONLY GUI add entry (no
           button by design). Parked while the confirm dialog is up so a

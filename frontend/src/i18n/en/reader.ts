@@ -5,6 +5,20 @@ export const reader = {
   // Esc / Enter / single keys) are not here: they match the printed key.
   cheatSheet: {
     title: 'Keyboard shortcuts',
+    // The UI-language switch in the header (ui/LangSwitch.tsx). The two
+    // language names are not here: each is written in its own language in
+    // every UI (LANG_NAMES in ../index.ts).
+    lang: {
+      // Screen-reader name of the three-way switch.
+      label: 'Interface language',
+      auto: 'Auto',
+      // Hover title of "Auto"; `system` is what the system language resolves to.
+      autoTitle: (system: 'en' | 'zh') =>
+        `Follow the system language (now ${system === 'zh' ? 'Chinese' : 'English'})`,
+      // Toast when the choice could not be stored on the server.
+      saveFailed: (detail: string) =>
+        `Couldn't save the language setting: ${detail}. It applies to this window until a reload.`,
+    },
     // Between two alternative chords for one action: "V or Esc".
     or: 'or',
     // Muted tags after an action: where the shortcut works.
@@ -211,7 +225,7 @@ export const reader = {
     title: (id: string) => `Remove “${id}” from the library?`,
     // {trash} is the folder name `.trash/`. INDEX is the vault's index file.
     // "Trash 🗑" is the app's Trash view.
-    body: 'Moves the paper to {trash} and drops it from INDEX and every smart list. Recoverable from the in-app Trash 🗑.',
+    body: 'Moves the paper to {trash} and drops it from INDEX and every list. Recoverable from the in-app Trash 🗑.',
     // `detail` is the server's reason.
     previewFailed: (detail: string) => `Could not load the impact preview: ${detail}`,
     checking: 'Checking what this affects…',
@@ -219,7 +233,7 @@ export const reader = {
     // Heading over the list of links the removal breaks (one line each below).
     alsoBreaks: 'This also breaks',
     references: (papers: string[]) =>
-      `Clears it from ${papers.length === 1 ? '1 paper' : `${papers.length} papers`}: ${papers.join(', ')}`,
+      `Drops it from the relations of ${papers.length === 1 ? '1 paper' : `${papers.length} papers`}: ${papers.join(', ')}`,
     reposRemoved: (repos: string[]) =>
       `Deletes ${repos.length === 1 ? '1 cloned repo' : `${repos.length} cloned repos`} no other paper uses: ${repos.join(', ')}`,
     reposUnbound: (repos: string[]) =>

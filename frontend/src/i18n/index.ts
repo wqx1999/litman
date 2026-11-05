@@ -10,11 +10,11 @@ export type Lang = 'en' | 'zh'
 /** What the user picked: follow the system, or pin one language. */
 export type LangPref = 'auto' | Lang
 
-const DICTS: Record<Lang, Messages> = {
-  en,
-  // An area the Chinese table does not cover yet falls back to English.
-  zh: { ...en, ...zh },
-}
+/** Each language's name, written in that language in every UI: someone who
+ * cannot read the current one still finds their own. */
+export const LANG_NAMES: Record<Lang, string> = { en: 'English', zh: '中文' }
+
+const DICTS: Record<Lang, Messages> = { en, zh }
 
 // localStorage only mirrors the preference so the first paint is already
 // right. The record is the server's ui-state.json: the app window and a
@@ -58,23 +58,31 @@ function syncHtmlLang(): void {
 }
 syncHtmlLang()
 
-function apply(next: Lang): void {
-  if (next === lang) return
+function emit(): void {
+  listeners.forEach((l) => l())
+}
+
+/** Switch the resolved language; true when it changed. */
+function apply(next: Lang): boolean {
+  if (next === lang) return false
   lang = next
   syncHtmlLang()
-  listeners.forEach((l) => l())
+  return true
 }
 
 /** Apply a preference and mirror it locally. Saving it to the server is the
  * caller's job (a preference loaded FROM the server must not echo back). */
 export function setLangPref(next: LangPref): void {
+  // 'auto' → 'zh' on a Chinese system changes the preference, not the
+  // language: the switch still has to re-render.
+  const prefChanged = next !== pref
   pref = next
   try {
     localStorage.setItem(PREF_CACHE, next)
   } catch {
     /* private mode / no storage — applies for this session only */
   }
-  apply(resolve(next))
+  if (apply(resolve(next)) || prefChanged) emit()
 }
 
 export function getLangPref(): LangPref {
@@ -89,7 +97,7 @@ export function getLang(): Lang {
 // list changes.
 if (typeof window !== 'undefined') {
   window.addEventListener('languagechange', () => {
-    if (pref === 'auto') apply(systemLang())
+    if (pref === 'auto' && apply(systemLang())) emit()
   })
 }
 
@@ -103,6 +111,12 @@ function subscribe(cb: () => void): () => void {
 /** The current language; re-renders the caller when it changes. */
 export function useLang(): Lang {
   return useSyncExternalStore(subscribe, getLang, getLang)
+}
+
+/** The stored preference (auto / en / zh); re-renders the caller when it
+ * changes, the server's value arriving after mount included. */
+export function useLangPref(): LangPref {
+  return useSyncExternalStore(subscribe, getLangPref, getLangPref)
 }
 
 /** The UI text table for the current language. Call it in EVERY component

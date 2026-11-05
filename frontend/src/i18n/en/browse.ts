@@ -265,7 +265,7 @@ export const browse = {
         .join(' · ')} — delete ${folders.length === 1 ? 'its' : 'their'} links by hand`,
     renamed: (name: string) => `Renamed project to “${name}”.`,
     repointed: (name: string, path: string) =>
-      `“${name}” now points at ${path}. If the folder wasn't moved with its links, rebuild views.`,
+      `“${name}” now points at ${path}. If the folder wasn't moved with its links, run lit refresh-views.`,
     alreadyPointed: (name: string) => `“${name}” already points there.`,
     linked: (name: string) => `Linked project “${name}”.`,
     deleteConfirmTitle: (name: string) => `Delete project “${name}”?`,

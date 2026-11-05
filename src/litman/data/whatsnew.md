@@ -19,6 +19,11 @@ until this file has a matching `## X.Y.Z` section (tests/core/test_whatsnew.py),
 and release.sh refuses to publish without one.
 -->
 
+## 1.3.12
+
+- litman now speaks Chinese, following your system language.
+- Switch the language any time in the ? panel.
+
 ## 1.3.11
 
 - Open Claude Code in its desktop app, and Codex too on Windows.

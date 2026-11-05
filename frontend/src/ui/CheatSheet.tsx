@@ -1,7 +1,9 @@
 import { createPortal } from 'react-dom'
 import { useT, type Messages } from '../i18n'
 import { useEscapeLayer } from './escapeStack'
+import LangSwitch from './LangSwitch'
 import { modalBackdropProps } from './modalShell'
+import type { ToastVariant } from './Toast'
 
 /** The keyboard-shortcut cheat sheet (Phase 4, `?` toggles it).
  *
@@ -10,7 +12,8 @@ import { modalBackdropProps } from './modalShell'
  * grow-in card); Esc and the Done button close it, a click outside does not
  * (ui/modalShell — the rule is app-wide). Esc arrives through the shared layer
  * stack (ui/escapeStack), so it closes the sheet wherever focus happens to be.
- * Pure presentation — no shortcut logic.
+ * No shortcut logic. The header also carries the UI-language switch
+ * (ui/LangSwitch) — the one setting that has no other home.
  *
  * Portaled to document.body so its `fixed inset-0` resolves against the viewport
  * regardless of any backdrop-filter ancestor (same reasoning as Toast /
@@ -157,7 +160,13 @@ function sections(c: Messages['reader']['cheatSheet']): Section[] {
   ]
 }
 
-export default function CheatSheet({ onClose }: { onClose: () => void }) {
+export default function CheatSheet({
+  onClose,
+  notify,
+}: {
+  onClose: () => void
+  notify: (msg: string, variant?: ToastVariant) => void
+}) {
   const t = useT()
   const c = t.reader.cheatSheet
   useEscapeLayer(true, onClose)
@@ -172,9 +181,10 @@ export default function CheatSheet({ onClose }: { onClose: () => void }) {
         aria-label={c.title}
         className="max-h-[85vh] w-[52rem] max-w-[94vw] animate-grow-in overflow-y-auto rounded-2xl bg-white p-6 shadow-xl ring-1 ring-stone-200"
       >
-        <h2 className="mb-4 text-sm font-semibold text-stone-900">
-          {c.title}
-        </h2>
+        <div className="mb-4 flex items-center justify-between gap-4">
+          <h2 className="text-sm font-semibold text-stone-900">{c.title}</h2>
+          <LangSwitch notify={notify} />
+        </div>
 
         {/* Column FLOW (not a grid): sections pack bottom-up, so a one-row group
          * never leaves a hole the height of its neighbour. break-inside-avoid

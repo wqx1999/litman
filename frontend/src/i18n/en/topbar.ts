@@ -77,7 +77,7 @@ export const topbar = {
     launchedInTerminal: (agent: string) => `Launched ${agent} in a terminal window`,
     openedApp: (display: string) => `Opened ${display}`,
     skillInstalledDefault: (agent: string) =>
-      `${agent} is installed and is now your default agent`,
+      `Installed the skill for ${agent}; it is now your default agent`,
     skillInstalled: 'Agent skill installed or updated',
     nowDefault: (agent: string) => `${agent} is now your default agent`,
   },
@@ -224,7 +224,7 @@ export const topbar = {
   /** The session activity-log panel. */
   activityLog: {
     title: 'Activity log',
-    intro: 'Recent actions this session (newest first). Cleared on refresh.',
+    intro: 'Recent actions this session (newest first). Cleared when the page reloads.',
     empty: 'No activity yet.',
   },
 

@@ -1,6 +1,13 @@
 import { useState } from 'react'
 import { useT } from '../i18n'
 
+/** A Chinese input method types the full-width comma "，". The family name is
+ * cut at the ASCII comma (core/id.py first_author_family), so "Zhang，San"
+ * would become one family name and a wrong id. Turn it into ", " as typed. */
+function normalizeComma(v: string): string {
+  return v.replace(/\s*，\s*/g, ', ')
+}
+
 /** The ordered author-list editor, shared by the metadata edit dialog and the
  * hand-entry half of Add paper.
  *
@@ -70,7 +77,9 @@ export default function AuthorRows({
               value={name}
               placeholder={m.placeholder}
               onChange={(e) =>
-                onChange(authors.map((a, j) => (j === i ? e.target.value : a)))
+                onChange(
+                  authors.map((a, j) => (j === i ? normalizeComma(e.target.value) : a)),
+                )
               }
               disabled={disabled}
               className="min-w-0 flex-1 rounded-md border border-stone-300 bg-white px-2 py-1 text-sm text-stone-800 focus:border-accent-500 focus:outline-none disabled:opacity-50"
