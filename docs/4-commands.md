@@ -343,6 +343,12 @@ caps an interactive table too — a terminal shows the first 30 as
 `Papers (showing 30 of N)` — while piped and `--format json` output are never
 capped.
 
+A `--topic` / `--method` / `--project` / `--data` value that no paper carries
+and `TAXONOMY.md` does not register can only match nothing. A note on stderr
+says so and names the registered values spelled like it — or, when none is, the
+whole dict — each with its paper count. stdout carries the result alone, so
+`--format json` still prints `[]`.
+
 ### `lit show`
 
 Print one paper's full metadata plus the paths of its PDF, notes, SI files, and
@@ -361,7 +367,7 @@ lit show --paper-doi 10.1038/...
 | Flag | What it does |
 |---|---|
 | `--paper-doi <doi>` | Look the paper up by DOI instead of id. Mutually exclusive with the positional id. |
-| `--format [table\|json]` | `table` (default) renders metadata + file paths; `json` emits the **full** metadata dict (every field, not the `INDEX.json` projection). |
+| `--format [table\|json]` | `table` (default) renders metadata + file paths; `json` emits the **full** metadata dict (every field, not the `INDEX.json` projection) plus `_paths`: the absolute paths of the paper folder, PDF, notes, discussion, SI files and code clones, with `missing` listing those not on disk. |
 
 Each SI file gets an `SI:` line with its path, original name and size, marked
 `(missing!)` when the file is gone:
@@ -374,8 +380,10 @@ SI:    /home/you/research/literature_vault/papers/2025_Geylan_PepINVENT/suppleme
 
 Case-insensitive substring search over your `notes.md` / `discussion.md` only —
 not the PDF full text or SI files, not trashed papers, not the `views/` links,
-and not the `<!-- -->` comments litman seeds into those two files. Each hit is
-one matched line. Defaults to JSON output (`{id, file, line, snippet}`).
+and not what litman writes into those two files: the `<!-- -->` comments, the
+heading on the first line (it follows the paper's title or id), and the notes
+placeholder line. Each hit is one matched line. Defaults to JSON output
+(`{id, file, line, snippet}`).
 
 ```
 lit search <query>
@@ -387,7 +395,7 @@ lit search <query> --format table --limit 20
 |---|---|
 | `--in <notes,discussion>` | Which files to search (comma-separated). Default: both. |
 | `--format [json\|table]` | `json` (default, agent-facing) or a human-readable `table`. |
-| `--limit <N>` | Keep only the first N hits. Default: unbounded. |
+| `--limit <N>` | Keep only the first N hits. Default: 20; a note on stderr gives the total when more matched. |
 
 ### `lit related`
 

@@ -10,6 +10,7 @@ from typing import Any
 
 import click
 from rich.console import Console
+from rich.markup import escape
 from rich.table import Table
 
 from litman.commands._options import library_option, vault_option
@@ -18,7 +19,10 @@ from litman.core.dates import validate_iso_date
 from litman.core.document import list_papers
 from litman.core.library import find_vault, resolve_library_or_vault
 from litman.core.query import matches_filters, recency_key, split_csv
+from litman.core.taxonomy import parse_taxonomy, read_taxonomy_text
+from litman.core.taxonomy_similarity import similar_values
 from litman.core.views import load_index_papers, project_paper
+from litman.exceptions import LitmanError
 
 console = Console()
 
@@ -49,6 +53,88 @@ _RECENT_TABLE_CAP = 10
 # redirected output (non-TTY = agent, `| less`, `> file`) and --format json
 # stay full-length, so agent-visible behavior is unchanged.
 _TTY_TABLE_CAP = 30
+
+
+# The list filters whose values come from a TAXONOMY.md dict:
+# (filter name, dict / metadata field, what one value is called).
+_VOCAB_FILTERS: tuple[tuple[str, str, str], ...] = (
+    ("topic", "topics", "topic"),
+    ("method", "methods", "method"),
+    ("project", "projects", "project"),
+    ("data", "data", "data value"),
+)
+
+# How many registered values the "nothing looks like it" note lists before it
+# points at `lit taxonomy list`.
+_DEAD_VALUE_LIST_CAP = 30
+
+
+def dead_filter_notes(
+    papers: list[dict[str, Any]],
+    filters: dict[str, list[str] | None],
+    registered: dict[str, list[str]],
+) -> list[str]:
+    """One note per topic / method / project / data value that can match nothing.
+
+    Such a value is neither registered in TAXONOMY.md nor carried by any of
+    ``papers``, so it filters every paper out and ``lit list`` answers ``[]``
+    as if the library held nothing on the subject. The note names the
+    registered values spelled like it; when none is, the whole dict, since a
+    value meaning the same (``gnn`` for ``graph-nn``) is beyond a spelling
+    check. Each value comes with the number of papers that carry it.
+    """
+    notes: list[str] = []
+    for filter_name, dict_name, noun in _VOCAB_FILTERS:
+        wanted = filters.get(filter_name)
+        if not wanted:
+            continue
+        counts: dict[str, int] = {}
+        for paper in papers:
+            values = paper.get(dict_name)
+            if isinstance(values, list):
+                for value in {v for v in values if isinstance(v, str)}:
+                    counts[value] = counts.get(value, 0) + 1
+        known = registered.get(dict_name, [])
+        for value in wanted:
+            if value in known or value in counts:
+                continue
+            head = f"No paper has the {noun} {value!r}, and it is not registered."
+            close = [v for v, _reason in similar_values(value, known)]
+            if close:
+                listing = ", ".join(f"{v} ({counts.get(v, 0)})" for v in close)
+                notes.append(f"{head} Registered {dict_name} like it (papers): {listing}.")
+            elif known:
+                ranked = sorted(known, key=lambda v: (-counts.get(v, 0), v))
+                shown = ranked[:_DEAD_VALUE_LIST_CAP]
+                listing = ", ".join(f"{v} ({counts.get(v, 0)})" for v in shown)
+                more = (
+                    f", and {len(ranked) - len(shown)} more "
+                    f"(`lit taxonomy list {dict_name}`)"
+                    if len(ranked) > len(shown)
+                    else ""
+                )
+                notes.append(f"{head} Registered {dict_name} (papers): {listing}{more}.")
+            else:
+                notes.append(f"{head} No {dict_name} are registered yet.")
+    return notes
+
+
+def _print_dead_filter_notes(
+    vault: Path,
+    papers: list[dict[str, Any]],
+    filters: dict[str, list[str] | None],
+) -> None:
+    """Print :func:`dead_filter_notes` on stderr: stdout stays the result alone."""
+    if not any(filters.get(name) for name, _dict, _noun in _VOCAB_FILTERS):
+        return
+    try:
+        registered = parse_taxonomy(read_taxonomy_text(vault))
+    except (LitmanError, OSError):
+        # health-check owns a TAXONOMY.md that cannot be read.
+        return
+    err = Console(stderr=True)
+    for note in dead_filter_notes(papers, filters, registered):
+        err.print(f"[yellow]{escape(note)}[/]", soft_wrap=True)
 
 
 def _stdout_isatty() -> bool:
@@ -275,6 +361,7 @@ def list_cmd(
         "title": split_csv(title_filter),
     }
     filtered = [p for p in all_papers if matches_filters(p, filters)]
+    _print_dead_filter_notes(vault, all_papers, filters)
 
     # Time filtering: a date lower-bound (>=), kept out of matches_filters
     # because its semantics differ from set-membership. --read-since reads

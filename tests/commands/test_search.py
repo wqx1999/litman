@@ -205,3 +205,56 @@ def test_search_keeps_line_numbers_when_a_comment_holds_a_form_feed(
     assert len(hits) == 1
     assert hits[0]["line"] == 4  # \x0c splits the comment line in two
     assert hits[0]["snippet"] == "TARGET after comment"
+
+
+# ---------------------------------------------------------------------------
+# What litman wrote is not a hit; output is capped by default
+# ---------------------------------------------------------------------------
+
+
+def test_search_skips_the_heading_and_placeholder_litman_seeds(tmp_path: Path) -> None:
+    """The first-line H1 follows the title / id (lit add, lit rename), so a query
+    found in an id or title would hit every such paper; the notes placeholder is
+    not the user's either. An H1 further down is the user's own and still hits."""
+    from litman.core.notes import NOTES_PLACEHOLDER, discussion_scaffold
+
+    v = create_vault(tmp_path)
+    _seed_paper(
+        v, "2024_X_Peptide-Folding",
+        notes=f"# Peptide folding\n\n{NOTES_PLACEHOLDER}\n\n# Peptide ideas of mine\n",
+        discussion=discussion_scaffold("2024_X_Peptide-Folding"),
+    )
+    hits = json.loads(_invoke(v, "peptide").stdout)
+    assert [(h["file"], h["line"]) for h in hits] == [("notes", 5)]
+    assert json.loads(_invoke(v, "personal notes").stdout) == []
+
+
+def test_search_skips_a_heading_behind_a_byte_order_mark(tmp_path: Path) -> None:
+    v = create_vault(tmp_path)
+    _seed_paper(v, "2024_X_Bom", notes="\ufeff# Bom title\nbom in prose\n")
+    hits = json.loads(_invoke(v, "bom").stdout)
+    assert [h["line"] for h in hits] == [2]
+
+
+def test_search_caps_hits_at_20_by_default_and_says_so(tmp_path: Path) -> None:
+    v = create_vault(tmp_path)
+    _seed_paper(v, "2024_X_Many", notes="".join(f"needle {i}\n" for i in range(25)))
+    result = _invoke(v, "needle")
+    assert result.exit_code == 0
+    assert len(json.loads(result.stdout)) == 20
+    assert "first 20 of 25" in result.stderr
+    assert "--limit 25" in result.stderr
+
+    full = _invoke(v, "needle", "--limit", "25")
+    assert len(json.loads(full.stdout)) == 25
+    assert full.stderr == ""
+
+    table = _invoke(v, "needle", "--format", "table")
+    assert "(20 of 25)" in table.stdout
+
+
+def test_search_under_the_cap_prints_no_note(vault: Path) -> None:
+    result = _invoke(vault, "transformer")
+    assert len(json.loads(result.stdout)) == 2
+    assert result.stderr == ""
+

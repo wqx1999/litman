@@ -40,6 +40,10 @@ from litman.core.query import recency_key
 from litman.core.views import load_index_papers
 from litman.exceptions import LitmanError, PaperNotFoundError
 
+# Ids an ambiguous-query error names before "and N more": a short query on a
+# large library would otherwise list hundreds.
+_AMBIGUOUS_LIST_CAP = 10
+
 
 def resolve_paper_id(vault: Path, query: str) -> str:
     """Resolve a fuzzy paper-id query to an exact id.
@@ -94,9 +98,15 @@ def resolve_paper_id(vault: Path, query: str) -> str:
         raise PaperNotFoundError(msg)
     if len(matches) == 1:
         return matches[0]
+    shown = matches[:_AMBIGUOUS_LIST_CAP]
+    more = (
+        f", and {len(matches) - len(shown)} more"
+        if len(matches) > len(shown)
+        else ""
+    )
     raise PaperNotFoundError(
         f"Ambiguous query {query!r} matched {len(matches)} papers: "
-        f"{', '.join(matches)}. Pass a more specific substring."
+        f"{', '.join(shown)}{more}. Pass a more specific substring."
     )
 
 

@@ -63,7 +63,7 @@ from litman.core.id import (
 )
 from litman.core.library import find_vault, resolve_library_or_vault
 from litman.core.locking import lock_truth_file, rmtree
-from litman.core.notes import WIKILINK_REMINDER, discussion_scaffold
+from litman.core.notes import NOTES_PLACEHOLDER, WIKILINK_REMINDER, discussion_scaffold
 from litman.core.paper_lookup import complete_paper_id, resolve_paper_id
 from litman.core.placeholders import is_placeholder
 from litman.core.shell import shell_arg
@@ -517,7 +517,7 @@ def _apply_add(
         (paper_dir / "notes.md").write_text(
             f"# {parsed['title']}\n\n"
             f"{WIKILINK_REMINDER}\n\n"
-            "(Personal notes go here.)\n",
+            f"{NOTES_PLACEHOLDER}\n",
             encoding="utf-8",
         )
         # The discussion log starts empty but not absent: its header carries the

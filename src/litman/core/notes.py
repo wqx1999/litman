@@ -85,6 +85,10 @@ WIKILINK_REMINDER = (
     "it tracked. -->"
 )
 
+# The line ``lit add`` seeds into a fresh notes.md where the user's own notes
+# go. Not something anyone wrote, so ``lit search`` skips it.
+NOTES_PLACEHOLDER = "(Personal notes go here.)"
+
 # Distinctive phrase used to detect the reminder regardless of exact wording or
 # position. Real notes never contain it, so a false "already present" is
 # implausible; the historical scaffold carries the identical phrase, so old

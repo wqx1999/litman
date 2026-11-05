@@ -376,10 +376,11 @@ def test_list_format_json_respects_filters(vault: Path) -> None:
 def test_list_format_json_empty_hit_is_empty_array(vault: Path) -> None:
     result = _invoke(vault, "--topic", "zzz", "--format", "json")
     assert result.exit_code == 0
-    assert result.output.strip() == "[]"
-    assert json.loads(result.output) == []
+    # stdout alone: the note about 'zzz' goes to stderr.
+    assert result.stdout.strip() == "[]"
+    assert json.loads(result.stdout) == []
     # No human-facing "No papers match" text leaks into json mode.
-    assert "No papers" not in result.output
+    assert "No papers" not in result.stdout
 
 
 def test_list_format_json_is_loads_parseable_no_markup(vault: Path) -> None:
@@ -1049,3 +1050,91 @@ def test_ac4_list_and_export_agree_on_priority_semantics(
             assert pid in content, (filters, pid)
         for pid in {"2023_Pandi_Cellfree", "2024_Smith_BERT", "2024_Doe_GNN"} - expected:
             assert pid not in content, (filters, pid)
+
+
+
+# ---------------------------------------------------------------------------
+# A filter value that can match nothing says so on stderr
+# ---------------------------------------------------------------------------
+
+
+def _register(vault: Path, dict_name: str, *values: str) -> None:
+    from litman.core.taxonomy import add_taxonomy_values
+
+    add_taxonomy_values(vault, dict_name, values, force=True)
+
+
+def test_list_unregistered_topic_names_close_registered_values(vault: Path) -> None:
+    """`--topic peptide` with only `peptide-design` registered: `[]` on stdout,
+    and stderr names the registered values spelled like it, with paper counts —
+    so an agent does not answer "nothing on peptides"."""
+    _register(vault, "topics", "peptide-design", "peptide-property-prediction", "NLP")
+    result = _invoke(vault, "--topic", "peptide", "--format", "json")
+    assert result.exit_code == 0, result.output
+    assert json.loads(result.stdout) == []
+    assert "'peptide'" in result.stderr
+    assert "peptide-design (0)" in result.stderr
+    assert "peptide-property-prediction (0)" in result.stderr
+    assert "NLP" not in result.stderr
+
+
+def test_list_unregistered_value_with_no_look_alike_lists_the_dict(vault: Path) -> None:
+    """`gnn` for `graph-nn` is a meaning, not a spelling: the note falls back to
+    the whole dict, most-used first, with counts from the papers."""
+    _register(vault, "methods", "graph-nn", "transformer")
+    result = _invoke(vault, "--method", "gnnx", "--format", "json")
+    assert json.loads(result.stdout) == []
+    note = result.stderr
+    assert "'gnnx'" in note
+    # transformer is carried by one paper, graph-nn by none.
+    assert note.index("transformer (1)") < note.index("graph-nn (0)")
+
+
+def test_list_value_carried_by_a_paper_gets_no_note(vault: Path) -> None:
+    """A value papers carry is a real filter even if TAXONOMY.md lacks it (that
+    drift is health-check's job), and a registered value is fine as well."""
+    _register(vault, "topics", "NLP")
+    for value in ("deep-learning", "NLP", "deep-learning,NLP"):
+        result = _invoke(vault, "--topic", value, "--format", "json")
+        assert result.exit_code == 0
+        assert result.stderr == "", (value, result.stderr)
+
+
+def test_list_dead_value_in_an_or_list_is_still_named(vault: Path) -> None:
+    """`--topic NLP,peptide` returns the NLP papers, but `peptide` matched
+    nothing: say so, or the agent believes it covered both."""
+    _register(vault, "topics", "NLP", "peptide-design")
+    result = _invoke(vault, "--topic", "NLP,peptide", "--format", "json")
+    assert {row["id"] for row in json.loads(result.stdout)} == {"2024_Smith_BERT"}
+    assert "'peptide'" in result.stderr
+    assert "'NLP'" not in result.stderr
+
+
+def test_list_dead_project_and_data_values_are_named(vault: Path) -> None:
+    _register(vault, "data", "PDB")
+    result = _invoke(vault, "--project", "PepForg", "--data", "pdb", "--format", "json")
+    assert json.loads(result.stdout) == []
+    assert "project 'PepForg'" in result.stderr
+    assert "data value 'pdb'" in result.stderr
+    # Same after normalisation: case is set aside.
+    assert "PDB (0)" in result.stderr
+
+
+def test_list_dead_value_note_in_table_format_too(vault: Path) -> None:
+    result = _invoke(vault, "--topic", "zzz")
+    assert result.exit_code == 0
+    assert "No papers match" in result.stdout
+    assert "'zzz'" in result.stderr
+    assert "No topics are registered yet" in result.stderr
+
+
+def test_dead_filter_notes_caps_a_long_dict() -> None:
+    from litman.commands.list import _DEAD_VALUE_LIST_CAP, dead_filter_notes
+
+    known = [f"value-{i:03d}" for i in range(_DEAD_VALUE_LIST_CAP + 5)]
+    notes = dead_filter_notes([], {"topic": ["zzz"]}, {"topics": known})
+    assert len(notes) == 1
+    assert "value-000 (0)" in notes[0]
+    assert f"value-{_DEAD_VALUE_LIST_CAP:03d}" not in notes[0]
+    assert "and 5 more (`lit taxonomy list topics`)" in notes[0]
+
