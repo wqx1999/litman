@@ -231,7 +231,7 @@ def test_sort_recent_table_caps_at_10(tmp_path: Path) -> None:
     v = create_vault(tmp_path)
     _seed_n_recent(v, 12)
 
-    result = _invoke(v, "--sort", "recent")
+    result = _invoke(v, "--sort", "recent", "--format", "table")
     assert result.exit_code == 0, result.output
     # Title surfaces the cap so the user knows the table is truncated.
     assert "recent 10 of 12" in result.output
@@ -258,7 +258,7 @@ def test_sort_id_table_is_not_capped(tmp_path: Path) -> None:
     _seed_n_recent(v, 12)
 
     # Default --sort id has "full browse" semantics; no truncation.
-    result = _invoke(v)
+    result = _invoke(v, "--format", "table")
     assert result.exit_code == 0, result.output
     assert "12 of 12" in result.output
     # All 12 ids must render.

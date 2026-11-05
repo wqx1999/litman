@@ -73,8 +73,12 @@ def vault(tmp_path: Path) -> Path:
 
 
 def _invoke(vault: Path, *args: str):
+    """``lit list`` as a person at a terminal runs it: the table, unless the
+    test picks a format. (CliRunner is not a terminal, where the default is
+    JSON; ``test_read_format_default.py`` covers that.)"""
     runner = CliRunner()
-    return runner.invoke(cli, ["list", "--library", str(vault), *args])
+    fmt = [] if "--format" in args else ["--format", "table"]
+    return runner.invoke(cli, ["list", "--library", str(vault), *fmt, *args])
 
 
 # ---------------------------------------------------------------------------
@@ -93,8 +97,7 @@ def test_list_no_filter_shows_all(vault: Path) -> None:
 
 def test_list_empty_vault(tmp_path: Path) -> None:
     empty_vault = create_vault(tmp_path)
-    runner = CliRunner()
-    result = runner.invoke(cli, ["list", "--library", str(empty_vault)])
+    result = _invoke(empty_vault)
     assert result.exit_code == 0
     assert "No papers in vault yet" in result.output
 

@@ -864,7 +864,7 @@ def test_enter_at_the_same_prompt_lets_the_command_run(
     seed(tmp_path)
     monkeypatch.setattr(_drift, "_default_tty_probe", lambda: True)
 
-    result = CliRunner().invoke(cli, ["list"], input="\n")
+    result = CliRunner().invoke(cli, ["list", "--format", "table"], input="\n")
 
     assert result.exit_code == 0, result.output
     assert "Aborted!" not in result.output
@@ -886,7 +886,7 @@ def test_answering_no_to_a_removal_lets_the_command_run(
     monkeypatch.setattr(_drift, "_default_tty_probe", lambda: True)
     monkeypatch.setattr("litman.core.confirm._stdin_is_tty", lambda: True)
 
-    result = CliRunner().invoke(cli, ["list"], input="rm\nn\n")
+    result = CliRunner().invoke(cli, ["list", "--format", "table"], input="rm\nn\n")
 
     assert result.exit_code == 0, result.output
     assert "No papers" in result.output
@@ -929,7 +929,7 @@ def test_any_other_failure_in_a_corrector_still_lets_the_command_run(
 
     monkeypatch.setattr(_drift, corrector, boom)
 
-    result = CliRunner().invoke(cli, ["list"])
+    result = CliRunner().invoke(cli, ["list", "--format", "table"])
 
     assert fired == [corrector]
     assert result.exit_code == 0, result.output

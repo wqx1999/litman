@@ -30,6 +30,12 @@ vault, target the registry, or touch no vault at all: `init`, `setup`,
 `install-completion`, `install-skill`, `uninstall`, `self-update`, `pdf-text`,
 `help`, and every `lit vault` subcommand.
 
+**Output of the read commands.** `lit list`, `lit show` and every `list`
+subcommand (`vault`, `project`, `code`, `taxonomy`, `trash`) print a table when
+you type them at a terminal and JSON anywhere else — an agent's shell, a pipe,
+a file. `--format table` or `--format json` picks one explicitly. `lit search`
+and `lit related` print JSON unless given `--format table`.
+
 **Vault discovery chain.** When a command needs a vault and you give no explicit
 override, `lit` resolves one in this order (first hit wins):
 
@@ -335,13 +341,13 @@ lit list --topic transformer --format json
 | `--unread` | Only papers with an empty `read-date`. |
 | `--sort [id\|recent]` | Order. `id` (default) ascending, matches `INDEX.json`. `recent` = most-recently-engaged first. |
 | `--limit <N>` | Keep only the first N after filtering + sorting. |
-| `--format [table\|json]` | Output format. `json` emits the same per-paper projection as `INDEX.json`. |
+| `--format [table\|json]` | Output format. `json` emits the same per-paper projection as `INDEX.json`. Default: `table` at a terminal, `json` elsewhere. |
 
 With `--sort recent` the table view shows the top 10 by default; raise it with
 `--limit`, or use `--format json` for the full ranked list. The default sort
 caps an interactive table too — a terminal shows the first 30 as
-`Papers (showing 30 of N)` — while piped and `--format json` output are never
-capped.
+`Papers (showing 30 of N)` — while a table that is piped (`--format table`) and
+JSON are never capped.
 
 A `--topic` / `--method` / `--project` / `--data` value that no paper carries
 and `TAXONOMY.md` does not register can only match nothing. A note on stderr
@@ -367,7 +373,7 @@ lit show --paper-doi 10.1038/...
 | Flag | What it does |
 |---|---|
 | `--paper-doi <doi>` | Look the paper up by DOI instead of id. Mutually exclusive with the positional id. |
-| `--format [table\|json]` | `table` (default) renders metadata + file paths; `json` emits the **full** metadata dict (every field, not the `INDEX.json` projection) plus `_paths`: the absolute paths of the paper folder, PDF, notes, discussion, SI files and code clones, with `missing` listing those not on disk. |
+| `--format [table\|json]` | `table` (the default at a terminal) renders metadata + file paths; `json` emits the **full** metadata dict (every field, not the `INDEX.json` projection) plus `_paths`: the absolute paths of the paper folder, PDF, notes, discussion, SI files and code clones, with `missing` listing those not on disk. |
 
 Each SI file gets an `SI:` line with its path, original name and size, marked
 `(missing!)` when the file is gone:

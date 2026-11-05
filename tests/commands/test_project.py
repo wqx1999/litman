@@ -241,7 +241,7 @@ def test_project_list_join_clean(vault: Path, proj_dir: Path) -> None:
          "--library", str(vault)],
     )
     result = runner.invoke(
-        cli, ["project", "list", "--library", str(vault)]
+        cli, ["project", "list", "--format", "table", "--library", str(vault)]
     )
     assert result.exit_code == 0, result.output
     assert "pepforge" in result.output
@@ -293,7 +293,7 @@ def test_project_list_drift_path_missing(
 def test_project_list_empty(vault: Path) -> None:
     runner = CliRunner()
     result = runner.invoke(
-        cli, ["project", "list", "--library", str(vault)]
+        cli, ["project", "list", "--format", "table", "--library", str(vault)]
     )
     assert result.exit_code == 0, result.output
     assert "no projects registered" in result.output

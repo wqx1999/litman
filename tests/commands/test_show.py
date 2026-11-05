@@ -34,7 +34,9 @@ def vault(tmp_path: Path) -> Path:
 
 def test_show_existing_paper_prints_metadata_and_paths(vault: Path) -> None:
     runner = CliRunner()
-    result = runner.invoke(cli, ["show", "2024_X_Foo", "--library", str(vault)])
+    result = runner.invoke(
+        cli, ["show", "2024_X_Foo", "--format", "table", "--library", str(vault)]
+    )
     assert result.exit_code == 0
     assert "2024_X_Foo" in result.output
     assert "Foo paper" in result.output
@@ -55,7 +57,9 @@ def test_show_missing_paper_raises_paper_not_found(vault: Path) -> None:
 def test_show_warns_about_missing_pdf(vault: Path) -> None:
     (vault / "papers" / "2024_X_Foo" / "paper.pdf").unlink()
     runner = CliRunner()
-    result = runner.invoke(cli, ["show", "2024_X_Foo", "--library", str(vault)])
+    result = runner.invoke(
+        cli, ["show", "2024_X_Foo", "--format", "table", "--library", str(vault)]
+    )
     assert result.exit_code == 0
     assert "missing!" in result.output
 
@@ -63,7 +67,9 @@ def test_show_warns_about_missing_pdf(vault: Path) -> None:
 def test_show_warns_about_missing_notes(vault: Path) -> None:
     (vault / "papers" / "2024_X_Foo" / "notes.md").unlink()
     runner = CliRunner()
-    result = runner.invoke(cli, ["show", "2024_X_Foo", "--library", str(vault)])
+    result = runner.invoke(
+        cli, ["show", "2024_X_Foo", "--format", "table", "--library", str(vault)]
+    )
     assert result.exit_code == 0
     assert "missing!" in result.output
 
@@ -192,13 +198,23 @@ def test_show_json_tolerates_missing_fields(vault: Path) -> None:
     assert meta == {"id": "2024_X_Foo", "year": 2024, "title": "Foo"}
 
 
-def test_show_table_is_default(vault: Path) -> None:
-    """Default (no --format) renders the Panel view, not JSON."""
+def test_show_default_format_follows_the_terminal(
+    vault: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """No --format: JSON when stdout is not a terminal (an agent's shell, a
+    pipe), the Panel view when a person is at one."""
+    import litman.commands._options as options_mod
+
     runner = CliRunner()
-    result = runner.invoke(cli, ["show", "2024_X_Foo", "--library", str(vault)])
-    assert result.exit_code == 0, result.output
-    assert "PDF:" in result.output
-    assert "Notes:" in result.output
+    piped = runner.invoke(cli, ["show", "2024_X_Foo", "--library", str(vault)])
+    assert piped.exit_code == 0, piped.output
+    assert json.loads(piped.stdout)["id"] == "2024_X_Foo"
+
+    monkeypatch.setattr(options_mod, "is_interactive", lambda _stream: True)
+    at_terminal = runner.invoke(cli, ["show", "2024_X_Foo", "--library", str(vault)])
+    assert at_terminal.exit_code == 0, at_terminal.output
+    assert "PDF:" in at_terminal.output
+    assert "Notes:" in at_terminal.output
 
 
 def test_show_ambiguous_substring_lists_candidates(vault: Path) -> None:
@@ -287,7 +303,9 @@ def test_show_paths_are_not_folded_on_an_80_column_console(
         encoding="utf-8",
     )
     monkeypatch.setattr(show_mod, "console", Console(width=80))
-    result = CliRunner().invoke(cli, ["show", "2024_X_Foo", "--library", str(vault)])
+    result = CliRunner().invoke(
+        cli, ["show", "2024_X_Foo", "--format", "table", "--library", str(vault)]
+    )
     assert result.exit_code == 0, result.output
     lines = result.output.splitlines()
     for label, path in (

@@ -12,7 +12,12 @@ from rich.markup import escape
 from rich.panel import Panel
 from rich.syntax import Syntax
 
-from litman.commands._options import library_option, vault_option
+from litman.commands._options import (
+    FORMAT_DEFAULT_HELP,
+    library_option,
+    table_or_json,
+    vault_option,
+)
 from litman.core.code import missing_code_clones
 from litman.core.document import find_paper
 from litman.core.library import find_vault, resolve_library_or_vault
@@ -49,11 +54,12 @@ console = Console()
     "--format",
     "output_format",
     type=click.Choice(["table", "json"]),
-    default="table",
-    help="Output format. 'table' (default) renders a Panel of metadata.yaml + "
+    default=None,
+    callback=table_or_json,
+    help="Output format. 'table' renders a Panel of metadata.yaml + "
     "the PDF, notes, SI and code paths; 'json' emits the FULL metadata dict "
     "(every field, not the INDEX projection) plus a '_paths' object with "
-    "those paths, for agent bounded retrieval.",
+    f"those paths, for agent bounded retrieval. {FORMAT_DEFAULT_HELP}",
 )
 @library_option
 @vault_option

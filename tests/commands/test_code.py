@@ -721,7 +721,7 @@ def test_cli_code_group_help() -> None:
 
 def test_cli_code_list_empty(vault: Path) -> None:
     runner = CliRunner()
-    result = runner.invoke(cli, ["code", "list", "--library", str(vault)])
+    result = runner.invoke(cli, ["code", "list", "--format", "table", "--library", str(vault)])
     assert result.exit_code == 0, result.output
     assert "No code repos" in result.output
 
@@ -730,7 +730,7 @@ def test_cli_code_list_shows_all_repos(vault: Path) -> None:
     _make_repo(vault, "RepoA", upstream="https://github.com/a/repo")
     _make_repo(vault, "RepoB", upstream="https://github.com/b/repo")
     runner = CliRunner()
-    result = runner.invoke(cli, ["code", "list", "--library", str(vault)])
+    result = runner.invoke(cli, ["code", "list", "--format", "table", "--library", str(vault)])
     assert result.exit_code == 0, result.output
     assert "RepoA" in result.output
     assert "RepoB" in result.output

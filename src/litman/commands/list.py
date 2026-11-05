@@ -13,7 +13,12 @@ from rich.console import Console
 from rich.markup import escape
 from rich.table import Table
 
-from litman.commands._options import library_option, vault_option
+from litman.commands._options import (
+    FORMAT_DEFAULT_HELP,
+    library_option,
+    table_or_json,
+    vault_option,
+)
 from litman.core.confirm import is_interactive
 from litman.core.dates import validate_iso_date
 from litman.core.document import list_papers
@@ -277,9 +282,10 @@ def _as_date(raw: Any) -> date | None:
 @click.option(
     "--format", "output_format",
     type=click.Choice(["table", "json"]),
-    default="table",
+    default=None,
+    callback=table_or_json,
     help="Output format. 'json' emits the same per-paper projection "
-         "as INDEX.json (for agent bounded retrieval).",
+         f"as INDEX.json (for agent bounded retrieval). {FORMAT_DEFAULT_HELP}",
 )
 @library_option
 @vault_option

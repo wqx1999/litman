@@ -244,7 +244,7 @@ def test_taxonomy_list_all(vault: Path) -> None:
 def test_taxonomy_list_single_user_dict(vault: Path) -> None:
     runner = CliRunner()
     result = runner.invoke(
-        cli, ["taxonomy", "list", "topics", "--library", str(vault)]
+        cli, ["taxonomy", "list", "--format", "table", "topics", "--library", str(vault)]
     )
     assert result.exit_code == 0, result.output
     assert "user-extensible" in result.output
@@ -254,7 +254,7 @@ def test_taxonomy_list_single_user_dict(vault: Path) -> None:
 def test_taxonomy_list_fixed_enum(vault: Path) -> None:
     runner = CliRunner()
     result = runner.invoke(
-        cli, ["taxonomy", "list", "status", "--library", str(vault)]
+        cli, ["taxonomy", "list", "--format", "table", "status", "--library", str(vault)]
     )
     assert result.exit_code == 0, result.output
     assert "fixed enum" in result.output
@@ -1110,7 +1110,9 @@ def test_list_table_shows_each_value_with_its_count(
     monkeypatch.setattr(taxonomy_cmd, "console", Console(width=200))
     _usage_library(vault)
 
-    result = CliRunner().invoke(cli, ["taxonomy", "list", "--library", str(vault)])
+    result = CliRunner().invoke(
+        cli, ["taxonomy", "list", "--format", "table", "--library", str(vault)]
+    )
 
     assert result.exit_code == 0, result.output
     assert "docking·1, peptide·2, spps·0" in result.output
@@ -1128,7 +1130,7 @@ def test_list_single_dict_shows_each_value_with_its_count(
     _usage_library(vault)
 
     result = CliRunner().invoke(
-        cli, ["taxonomy", "list", "topics", "--library", str(vault)]
+        cli, ["taxonomy", "list", "--format", "table", "topics", "--library", str(vault)]
     )
 
     assert result.exit_code == 0, result.output

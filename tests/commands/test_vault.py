@@ -377,7 +377,7 @@ def test_cli_vault_add_dead_name_points_at_set_path(
 
 def test_cli_vault_list_empty_registry(fake_home: Path) -> None:
     runner = CliRunner()
-    result = runner.invoke(cli, ["vault", "list"])
+    result = runner.invoke(cli, ["vault", "list", "--format", "table"])
     assert result.exit_code == 0, result.output
     assert "No vaults registered" in result.output
 
@@ -388,7 +388,7 @@ def test_cli_vault_list_shows_all_vaults_and_active_marker(
     runner = CliRunner()
     runner.invoke(cli, ["vault", "add", "main", str(vault_a)])
     runner.invoke(cli, ["vault", "add", "second", str(vault_b)])
-    result = runner.invoke(cli, ["vault", "list"])
+    result = runner.invoke(cli, ["vault", "list", "--format", "table"])
     assert result.exit_code == 0, result.output
     assert "main" in result.output
     assert "second" in result.output
@@ -423,7 +423,7 @@ def test_cli_vault_list_warns_when_no_active(
     save_registry(reg)
 
     runner = CliRunner()
-    result = runner.invoke(cli, ["vault", "list"])
+    result = runner.invoke(cli, ["vault", "list", "--format", "table"])
     assert result.exit_code == 0, result.output
     assert "No active vault" in result.output
 
