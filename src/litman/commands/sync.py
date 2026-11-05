@@ -778,13 +778,13 @@ def sync_push_cmd(
             )
 
     banner = (
-        f"[bold]Pushing[/] [dim]{vault}[/] → [bold]{escape(target)}[/]"
+        f"[bold]Pushing[/] [dim]{escape(str(vault))}[/] → [bold]{escape(target)}[/]"
     )
     if exclude_repos:
         banner += " [dim](codes/*/repo/ excluded)[/]"
     if dry_run:
         banner += " [dim](dry-run)[/]"
-    console.print(banner)
+    console.print(banner, soft_wrap=True)
     push(vault, target, extra_excludes=extra_excludes, dry_run=dry_run)
 
     tail = "[dim]`lit sync status` to inspect.[/]"
@@ -852,13 +852,13 @@ def sync_pull_cmd(
     )
 
     banner = (
-        f"[bold]Pulling[/] [bold]{escape(target)}[/] → [dim]{vault}[/]"
+        f"[bold]Pulling[/] [bold]{escape(target)}[/] → [dim]{escape(str(vault))}[/]"
     )
     if exclude_repos:
         banner += " [dim](codes/*/repo/ excluded)[/]"
     if dry_run:
         banner += " [dim](dry-run)[/]"
-    console.print(banner)
+    console.print(banner, soft_wrap=True)
     pull(vault, target, extra_excludes=extra_excludes, dry_run=dry_run)
 
     tail = (

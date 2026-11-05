@@ -1953,11 +1953,12 @@ def two_way_sync(
        user's explicit choice and overrides all three.
     3. Unlock TRUTH (Windows cannot replace a read-only file) and run bisync.
        Then settle what it left: move every conflict's older copy out of the
-       vault (after a TAXONOMY.md conflict, add back the values only the
-       older copy had), let a folder deleted on one machine win over changes
-       made to it on the other, and move rclone's leftover half-written files
-       out. Run bisync once more so the removals reach the cloud too. Re-lock
-       TRUTH in a ``finally``.
+       vault, let a folder deleted on one machine win over changes made to it
+       on the other, and move rclone's leftover half-written files out. Run
+       bisync once more so the removals reach the cloud too. After a
+       TAXONOMY.md conflict, once a pass settles nothing new, add back the
+       values only the older copy had and run one more pass to take them up.
+       Re-lock TRUTH in a ``finally``.
     4. Record the result in the sync-state file, then rebuild INDEX.json,
        views/ and the project links from TRUTH (none of them travels).
 
@@ -2074,11 +2075,24 @@ def two_way_sync(
                         find_deleted_folder_conflicts(deltas, local_snapshot(vault)),
                         paths.conflicts_root / run_name,
                     )
-            restored, restore_error = _restore_taxonomy(vault, found)
             sweep_partials(vault, paths.local_backup_root / run_name)
+            # Conflicts whose TAXONOMY.md values are not added back yet.
+            pending = list(found)
             needs_pass = bool(found or deleted_folders)
             extra_passes = 0
-            while needs_pass and extra_passes < 4:
+            while extra_passes < 4:
+                if not needs_pass:
+                    # Values a TAXONOMY.md conflict dropped are added back only
+                    # once a pass settles nothing new. After a conflict where
+                    # the cloud's copy won, rclone's listings leave the file
+                    # out until a pass finds both copies equal; written back
+                    # before that, it differs on both sides and comes back as
+                    # a second conflict.
+                    needs_pass, error = _restore_taxonomy(vault, pending, restored)
+                    restore_error = restore_error or error
+                    pending = []
+                    if not needs_pass:
+                        break
                 # A TAXONOMY.md written back above is locked again; Windows
                 # would refuse to replace it.
                 ensure_truth_unlocked(vault)
@@ -2086,6 +2100,7 @@ def two_way_sync(
                 extra_passes += 1
                 found = sweep_conflicts(vault, paths.conflicts_root / backups[-1])
                 conflicts.extend(found)
+                pending += found
                 # The folder of a deletion that won comes back empty: in the
                 # pass that met the deletion, rclone recorded the folder as
                 # gone on both sides while it re-created it to hold the changed
@@ -2095,6 +2110,11 @@ def two_way_sync(
                 for shell in shells:
                     _remove_empty_dirs(shell)
                 needs_pass = bool(found or shells)
+            if pending:
+                # The passes ran out first (someone kept editing): add the
+                # values back anyway; the next `lit sync` takes them up.
+                _changed, error = _restore_taxonomy(vault, pending, restored)
+                restore_error = restore_error or error
         finally:
             ensure_truth_locked(vault)
             for name in backups:
@@ -2170,16 +2190,22 @@ def two_way_sync(
 
 
 def _restore_taxonomy(
-    vault: Path, found: list[SyncConflict]
-) -> tuple[dict[str, tuple[str, ...]], str | None]:
-    """Bring back TAXONOMY.md values after a conflict on it; the error text if that failed."""
+    vault: Path, found: list[SyncConflict], restored: dict[str, tuple[str, ...]]
+) -> tuple[bool, str | None]:
+    """Bring back the TAXONOMY.md values ``found``'s conflicts dropped, into ``restored``.
+
+    Returns whether TAXONOMY.md changed, and the error text if that failed.
+    """
     older = [c.backup for c in found if c.path == "TAXONOMY.md"]
     if not older:
-        return {}, None
+        return False, None
     try:
-        return restore_dropped_taxonomy_values(vault, older), None
+        added = restore_dropped_taxonomy_values(vault, older)
     except (LitmanError, OSError) as err:
-        return {}, str(err)
+        return False, str(err)
+    for name, values in added.items():
+        restored[name] = tuple(sorted({*restored.get(name, ()), *values}))
+    return bool(added), None
 
 
 def _dir_has_entries(path: Path) -> bool:

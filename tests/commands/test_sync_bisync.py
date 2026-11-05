@@ -22,8 +22,9 @@ import re
 import shutil
 import subprocess
 import sys
+import tempfile
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from dataclasses import replace
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -89,6 +90,19 @@ def _wide_consoles(monkeypatch: pytest.MonkeyPatch) -> None:
     """Let panels and rclone lines print unwrapped, so phrases stay whole."""
     monkeypatch.setattr(sync_cmd, "console", Console(width=400))
     monkeypatch.setattr(sync_cmd, "_rclone_console", Console(stderr=True, width=400))
+
+
+@pytest.fixture
+def tmp_path() -> Iterator[Path]:
+    """A short temporary folder, in place of pytest's own.
+
+    rclone bisync names its record files after both synced paths, and one
+    file name may not pass 255 characters: pytest's folder on the macOS and
+    Windows runners is too deep for that.
+    """
+    path = Path(tempfile.mkdtemp(prefix="lt-")).resolve()
+    yield path
+    locking.rmtree(path, ignore_errors=True)
 
 
 @pytest.fixture
@@ -1518,6 +1532,18 @@ def test_a_taxonomy_conflict_adds_back_what_only_the_older_copy_had(
     assert _sync(a).exit_code == 0
 
     assert result.exit_code == 21, result.output
+    # One conflict, reported once: writing the values back must not make the
+    # next pass see the file changed on both sides again (after a conflict
+    # where the cloud's copy won, rclone leaves the file out of its listings).
+    assert "1 conflict:" in result.output, result.output
+    rows = [line for line in result.output.splitlines() if "• TAXONOMY.md:" in line]
+    kept = "the cloud's" if a_is_newer else "this machine's"
+    assert len(rows) == 1 and f"kept {kept} copy" in rows[0], result.output
+    copies = [
+        rel for rel in _local_backup_files(b, cloud)
+        if rel.startswith("TAXONOMY.md.sync-conflict")
+    ]
+    assert copies == [f"TAXONOMY.md.sync-conflict{1 if a_is_newer else 2}"]
     assert "TAXONOMY.md: added back what only the older copy had" in result.output
     restored = "quasar" if a_is_newer else "zebrafish"
     assert restored in result.output
@@ -1531,6 +1557,68 @@ def test_a_taxonomy_conflict_adds_back_what_only_the_older_copy_had(
     assert "No folder on this machine for project: homework" in result.output
     assert _conflict_leftovers(a, b, cloud / "lib") == []
     assert _tree(a) == _tree(b) == _tree(cloud / "lib")
+
+
+@needs_rclone
+@pytest.mark.parametrize(
+    ("edited_before", "local_newer"),
+    [({1, 2, 3, 4}, False), ({2}, True)],
+    ids=["before-every-pass", "after-the-first-add-back"],
+)
+def test_taxonomy_values_come_back_when_taxonomy_changes_again_during_the_sync(
+    tmp_path: Path,
+    cloud: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    edited_before: set[int],
+    local_newer: bool,
+) -> None:
+    from litman.core.taxonomy import parse_taxonomy, read_taxonomy_text
+
+    a, b = _two_synced_machines(tmp_path, cloud, n_papers=2)
+    assert _lit("taxonomy", "add", "topics", "zebrafish", vault=a).exit_code == 0
+    assert _lit("taxonomy", "add", "topics", "quasar", vault=b).exit_code == 0
+    now = time.time()
+    _touch_truth(a / "TAXONOMY.md", now - 100)
+    _touch_truth(b / "TAXONOMY.md", now - 200)
+    assert _sync(a).exit_code == 0
+
+    # Someone changes TAXONOMY.md on both sides again while B syncs, so the
+    # next pass meets a new conflict on it. Changed before every pass, the
+    # passes run out with values still to add back; changed before the pass
+    # that takes the first add-back up, values are added back a second time.
+    real = core_sync.run_bisync
+    passes: list[int] = []
+
+    def edited(
+        args: list[str], on_log: Callable[[str], None] | None = None
+    ) -> core_sync.BisyncRun:
+        n = len(passes)
+        passes.append(n)
+        if n in edited_before:
+            here, there = (30, 60) if local_newer else (60, 30)
+            for path, value, age in (
+                (b / "TAXONOMY.md", f"here-{n}", here),
+                (cloud / "lib" / "TAXONOMY.md", f"there-{n}", there),
+            ):
+                locking.unlock_truth_file(path)
+                text = path.read_text(encoding="utf-8")
+                path.write_text(
+                    text.replace("## topics\n", f"## topics\n- {value}\n", 1),
+                    encoding="utf-8",
+                )
+                _touch(path, now - age + n)
+        return real(args, on_log)
+
+    monkeypatch.setattr(core_sync, "run_bisync", edited)
+    result = _sync(b)
+
+    assert result.exit_code == 21, result.output
+    assert len(passes) == 5  # the first pass and the four that may follow
+    lost = {"quasar", *(f"{'there' if local_newer else 'here'}-{n}" for n in edited_before)}
+    assert lost <= set(parse_taxonomy(read_taxonomy_text(b))["topics"])
+    [line] = [x for x in result.output.splitlines() if "added back what only" in x]
+    assert all(value in line for value in lost), line
+    assert _conflict_leftovers(b) == []
 
 
 # ---------------------------------------------------------------------------
