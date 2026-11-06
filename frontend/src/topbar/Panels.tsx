@@ -9,6 +9,7 @@ import type { ToastVariant } from '../ui/Toast'
 import { enumLabel, formatLocale, getT, useT } from '../i18n'
 import { rich } from '../i18n/rich'
 import HelpHint from '../ui/HelpHint'
+import { withCode } from '../ui/codeSpans'
 import { useEscapeLayer } from '../ui/escapeStack'
 import {
   modalBackdropProps,
@@ -247,7 +248,7 @@ export function ActivityLogPanel({
                 <span className="shrink-0 font-mono text-[11px] tabular-nums text-stone-400">
                   {_logTime(e.ts)}
                 </span>
-                <span className="min-w-0 text-sm text-stone-700">{e.message}</span>
+                <span className="min-w-0 text-sm text-stone-700">{withCode(e.message)}</span>
               </div>
             )
           })}

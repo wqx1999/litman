@@ -26,6 +26,7 @@ import {
   uploadIngestPdf,
   discardIngest,
   pinPaper,
+  postSyncNow,
   putActiveVault,
   putDiscussion,
   putNotes,
@@ -49,6 +50,7 @@ import DropZone from './ui/DropZone'
 import AddPaper from './ui/AddPaper'
 import AddSi from './ui/AddSi'
 import { escapeLayerOpen } from './ui/escapeStack'
+import { stopCause } from './topbar/SyncButton'
 import SaveDialog from './tabs/SaveDialog'
 import RemovePaperConfirm from './tabs/RemovePaperConfirm'
 import { mergeCandidates, type Candidate } from './search'
@@ -61,6 +63,7 @@ import type {
   ProjectEntry,
   SearchHit,
   SmartListView,
+  SyncStatus,
   Tab,
   TabKind,
   Taxonomy,
@@ -1437,6 +1440,88 @@ export default function App() {
   }
   const onSiPollRef = useRef(onSiPoll)
   onSiPollRef.current = onSiPoll
+
+  // --- The auto sync's status (rides on the same poll) ----------------------
+  // The cloud button by the library selector shows it; each finished sync or
+  // stop that has something to say is told once (keyed by `seq`): one toast,
+  // plus one activity-log row per conflict / folder / repo. The first status
+  // after a load or a library switch only sets the baseline: what happened
+  // before the page was looking is in the button's popover, not a toast.
+  // `undefined` until the first poll of the served library; `null` when it
+  // has no `sync:`.
+  const [syncStatus, setSyncStatus] = useState<SyncStatus | null | undefined>(undefined)
+  const syncSeqRef = useRef<{ served: string; seq: number } | null>(null)
+  useEffect(() => {
+    setSyncStatus(undefined)
+  }, [served])
+  const onSyncPoll = (status: SyncStatus | null) => {
+    setSyncStatus(status)
+    if (!status || !served) return
+    const seen = syncSeqRef.current
+    syncSeqRef.current = { served, seq: status.seq }
+    if (!seen || seen.served !== served || status.seq <= seen.seq) return
+    const notice = status.notice
+    if (!notice) return
+    const ts = getT().sync
+    if (notice.kind === 'stopped') {
+      // A stop without a line of its own (rclone missing or too old, the
+      // config, the locks) says the popover's `other`, never the server's words.
+      const cause = stopCause(ts, notice.reason, status.remote)
+      notify(cause ? ts.toast.stopped(cause) : ts.line.other, 'error', { sticky: true })
+      return
+    }
+    const now = Date.now()
+    const rows: ActivityLogEntry[] = [
+      ...(notice.conflicts ?? []).map((c) => ({
+        ts: now,
+        variant: 'warning' as const,
+        message: ts.log.conflict(c.path, c.kept === 'local', c.backup),
+      })),
+      ...(notice.deletedFolders ?? []).map((d) => ({
+        ts: now,
+        variant: 'warning' as const,
+        message: ts.log.deletedFolder(d.folder, d.deletedHere, d.backup),
+      })),
+      ...(notice.reposNotRestored ?? []).map((r) => ({
+        ts: now,
+        variant: 'warning' as const,
+        message: ts.log.repo(r.name, r.kind),
+      })),
+    ]
+    const parts = [
+      notice.conflicts?.length ? ts.toast.conflicts(notice.conflicts.length) : null,
+      notice.deletedFolders?.length
+        ? ts.toast.deletedFolders(notice.deletedFolders.length)
+        : null,
+      notice.reposNotRestored?.length ? ts.toast.repos(notice.reposNotRestored.length) : null,
+    ].filter((x): x is string => x !== null)
+    if (parts.length === 0) return
+    appendLog(rows)
+    notify(ts.toast.synced(parts.join(ts.toast.sep)), 'warning')
+  }
+  const onSyncPollRef = useRef(onSyncPoll)
+  onSyncPollRef.current = onSyncPoll
+
+  // "Sync now" in the cloud button's popover, then look again at once so the
+  // button turns to "syncing" without waiting for the next poll.
+  const syncNow = useCallback(() => {
+    postSyncNow()
+      .then(() => pollNowRef.current?.())
+      .catch(() => notify(getT().sync.toast.syncNowFailed, 'error'))
+  }, [notify])
+
+  // A save that went over a file changed since it was read (a sync brought
+  // the other machine's copy, an agent rewrote it): the save won, and the copy
+  // it replaced is in the backup. Said once, and kept in the activity log.
+  const reportReplaced = useCallback(
+    (paperId: string, file: string, backup: string) => {
+      const ts = getT().sync
+      const name = `${paperId}/${file}`
+      appendLog([{ ts: Date.now(), variant: 'warning', message: ts.replacedLog(name, backup) }])
+      notify(ts.replaced(name), 'warning')
+    },
+    [notify, appendLog],
+  )
   // Only ever reads the key: capture, so it sees every key whoever stops it
   // later, and it never prevents or stops anything.
   useEffect(() => {
@@ -1488,7 +1573,7 @@ export default function App() {
         return
       }
       try {
-        const { version, siRequest } = await fetchVaultVersion()
+        const { version, siRequest, sync } = await fetchVaultVersion()
         if (stopped) return
         const seen = vaultVersionRef.current
         vaultVersionRef.current = { served, version }
@@ -1497,6 +1582,7 @@ export default function App() {
           void doResyncRef.current()
         }
         onSiPollRef.current(siRequest ?? null)
+        onSyncPollRef.current(sync ?? null)
       } catch {
         // Silent by design: a failed poll degrades to exactly today's behaviour
         // (resync on focus / the refresh button). It must never raise the
@@ -1620,10 +1706,10 @@ export default function App() {
   // and so the close prompt / page-unload guard can see "unsaved md edits" the
   // same way they see dirty PDF annotations.
 
-  const mdBeginEdit = useCallback((tabKey: string, seed: string) => {
+  const mdBeginEdit = useCallback((tabKey: string, seed: string, base: string | null) => {
     setMdDrafts((prev) => {
       const next = new Map(prev)
-      next.set(tabKey, { draft: seed, savedText: seed })
+      next.set(tabKey, { draft: seed, savedText: seed, base })
       return next
     })
   }, [])
@@ -1634,6 +1720,20 @@ export default function App() {
       if (!cur) return prev // not editing (stale event) — ignore
       const next = new Map(prev)
       next.set(tabKey, { ...cur, draft })
+      return next
+    })
+  }, [])
+
+  // A save of `sent` went through. The draft may have moved on while it was on
+  // its way (the textarea stays open, and a sync can hold a save for minutes):
+  // then the session goes on, from the saved text and the version it left.
+  const mdSaveSettled = useCallback((tabKey: string, sent: string, base: string | null) => {
+    setMdDrafts((prev) => {
+      const cur = prev.get(tabKey)
+      if (!cur) return prev
+      const next = new Map(prev)
+      if (cur.draft === sent) next.delete(tabKey)
+      else next.set(tabKey, { draft: cur.draft, savedText: sent, base })
       return next
     })
   }, [])
@@ -1786,7 +1886,8 @@ export default function App() {
       const entry = mdDraftsRef.current.get(key)
       if (tab && tab.kind !== 'pdf' && entry) {
         const put = tab.kind === 'notes' ? putNotes : putDiscussion
-        await put(tab.paperId, entry.draft)
+        const saved = await put(tab.paperId, entry.draft, entry.base)
+        if (saved.replaced) reportReplaced(tab.paperId, `${tab.kind}.md`, saved.replaced.backup)
         bumpDocMtime(tab.paperId, tab.kind) // D2: this is a GUI md save too
       } else {
         await handlesRef.current.get(key)?.flush()
@@ -1805,7 +1906,7 @@ export default function App() {
     setSavingClose(false)
     removeTab(key)
     advanceCloseQueue()
-  }, [pendingClose, removeTab, tabs, bumpDocMtime, advanceCloseQueue])
+  }, [pendingClose, removeTab, tabs, bumpDocMtime, advanceCloseQueue, reportReplaced])
 
   const confirmDiscard = useCallback(() => {
     const key = pendingClose
@@ -1956,12 +2057,13 @@ export default function App() {
       const tab = tabs.find((t) => t.key === key)
       if (tab && tab.kind !== 'pdf') {
         const put = tab.kind === 'notes' ? putNotes : putDiscussion
-        await put(tab.paperId, entry.draft)
+        const saved = await put(tab.paperId, entry.draft, entry.base)
+        if (saved.replaced) reportReplaced(tab.paperId, `${tab.kind}.md`, saved.replaced.backup)
         bumpDocMtime(tab.paperId, tab.kind) // D2: GUI md save (covers a switch
         // that then fails before reloadForVault resets the baseline).
       }
     }
-  }, [tabs, bumpDocMtime])
+  }, [tabs, bumpDocMtime, reportReplaced])
 
   // Reload everything for the now-active vault and reset per-vault view state
   // (the old vault's tabs / selection / filters / scope no longer apply).
@@ -2577,6 +2679,8 @@ export default function App() {
         onRegisterAgentManage={registerAgentManage}
         onRegisterVaultManagerOpen={registerVaultManagerOpen}
         trashMode={trashMode}
+        syncStatus={syncStatus}
+        onSyncNow={syncNow}
       />
       <div className="flex min-h-0 flex-1">
         {trashMode ? (
@@ -2639,7 +2743,9 @@ export default function App() {
               onMdBeginEdit={mdBeginEdit}
               onMdDraftChange={mdDraftChange}
               onMdEndEdit={mdEndEdit}
+              onMdSaveSettled={mdSaveSettled}
               onMdSaved={bumpDocMtime}
+              onSaveReplaced={reportReplaced}
             />
             <Cockpit
               paper={cockpitPaper}

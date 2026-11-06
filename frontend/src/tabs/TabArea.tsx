@@ -37,11 +37,15 @@ interface Props {
    * agent edits to notes.md / discussion.md). Forwarded to MdView. */
   mdReloadToken?: number
   /** Forwarded md edit-session callbacks (App owns the per-tab draft map). */
-  onMdBeginEdit: (tabKey: string, seed: string) => void
+  onMdBeginEdit: (tabKey: string, seed: string, base: string | null) => void
   onMdDraftChange: (tabKey: string, draft: string) => void
   onMdEndEdit: (tabKey: string) => void
+  onMdSaveSettled: (tabKey: string, sent: string, base: string | null) => void
   /** A successful md save — App advances its doc-mtime baseline (D2). */
   onMdSaved?: (paperId: string, doc: 'notes' | 'discussion') => void
+  /** A save (md or PDF) replaced a file that had changed since it was read;
+   * the other copy is at `backup`. Forwarded to both views. */
+  onSaveReplaced?: (paperId: string, file: string, backup: string) => void
 }
 
 /** Pixels of horizontal travel before a press becomes a drag. Below this a
@@ -80,7 +84,9 @@ export default function TabArea({
   onMdBeginEdit,
   onMdDraftChange,
   onMdEndEdit,
+  onMdSaveSettled,
   onMdSaved,
+  onSaveReplaced,
 }: Props) {
   const msg = useT()
   const tx = msg.reader.tabArea
@@ -480,6 +486,8 @@ export default function TabArea({
             paperId={active.paperId}
             tabKey={active.key}
             onRegister={onRegisterPdf}
+            reloadToken={mdReloadToken}
+            onSaveReplaced={onSaveReplaced}
           />
         )}
         {active && active.kind !== 'pdf' && (
@@ -498,7 +506,9 @@ export default function TabArea({
             onBeginEdit={onMdBeginEdit}
             onDraftChange={onMdDraftChange}
             onEndEdit={onMdEndEdit}
+            onSaveSettled={onMdSaveSettled}
             onSaved={onMdSaved}
+            onSaveReplaced={onSaveReplaced}
           />
         )}
       </div>

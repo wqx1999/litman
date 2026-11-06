@@ -178,6 +178,14 @@ export function IconVault() {
   )
 }
 
+export function IconCloud() {
+  return (
+    <Line>
+      <path d="M6.5 18.5h11a3.75 3.75 0 0 0 .5-7.47 5.5 5.5 0 0 0-10.72 1.1A3.2 3.2 0 0 0 6.5 18.5z" />
+    </Line>
+  )
+}
+
 export function IconTrash() {
   return (
     <Line className="h-3.5 w-3.5">

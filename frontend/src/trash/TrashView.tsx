@@ -323,6 +323,7 @@ export default function TrashView({
                 onBeginEdit={() => {}}
                 onDraftChange={() => {}}
                 onEndEdit={() => {}}
+                onSaveSettled={() => {}}
               />
             )}
           </div>

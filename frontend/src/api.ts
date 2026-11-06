@@ -6,11 +6,14 @@ import type {
   FixedEnums,
   HealthIssue,
   IndexPaper,
+  MdFile,
   PaperMeta,
   ProjectEntry,
   RestoreResult,
+  SaveResult,
   SearchPayload,
   SmartListView,
+  SyncStatus,
   Taxonomy,
   TrashEntry,
   VaultsPayload,
@@ -43,9 +46,70 @@ export class ApiError extends Error {
  * same cache key after an upgrade.  Request-side `cache: 'no-store'` makes the
  * first upgraded sweep go to the server and heal immediately after relocate.
  */
-function apiFetch(input: RequestInfo | URL, init: RequestInit = {}): Promise<Response> {
-  return fetch(input, { ...init, cache: 'no-store' })
+async function apiFetch(input: RequestInfo | URL, init: RequestInit = {}): Promise<Response> {
+  const method = (init.method ?? 'GET').toUpperCase()
+  const send = () => fetch(input, { ...init, cache: 'no-store' })
+  // A read is never turned away.
+  if (method === 'GET' || method === 'HEAD') return send()
+  const made = Date.now()
+  // Writes held for a sync go first: this one waits its turn behind them, so
+  // the library takes the writes in the order they were made.
+  if (heldWrites !== null) {
+    return behindHeldWrites(async () => sendAgainWhileHeld(input, init, made, await send()))
+  }
+  const resp = await send()
+  if (!turnedAway(resp)) return resp
+  return behindHeldWrites(() => sendAgainWhileHeld(input, init, made, resp))
 }
+
+/** A write that arrived while the auto sync's rclone was running on the
+ * library, waited for it on the server, and was turned away without being
+ * applied (503 with Retry-After). */
+function turnedAway(resp: Response): boolean {
+  return resp.status === 503 && resp.headers.get('Retry-After') !== null
+}
+
+/** Send a turned-away write again, holding on to what it carries, until it
+ * goes through or SYNC_RETRY_MS have passed since it was made. */
+async function sendAgainWhileHeld(
+  input: RequestInfo | URL,
+  init: RequestInit,
+  made: number,
+  first: Response,
+): Promise<Response> {
+  let resp = first
+  while (turnedAway(resp) && Date.now() - made <= SYNC_RETRY_MS) {
+    const seconds = Number(resp.headers.get('Retry-After'))
+    await new Promise((resolve) =>
+      setTimeout(resolve, (Number.isFinite(seconds) && seconds > 0 ? seconds : 5) * 1000),
+    )
+    resp = await fetch(input, { ...init, cache: 'no-store' })
+  }
+  return resp
+}
+
+/** The writes being sent again after a sync turned them away, chained in
+ * order; null when none is. */
+let heldWrites: Promise<unknown> | null = null
+
+function behindHeldWrites<T>(job: () => Promise<T>): Promise<T> {
+  const prev = heldWrites ?? Promise.resolve()
+  // A failed write must not cancel the ones behind it.
+  const run = prev.then(job, job)
+  heldWrites = run
+  const clear = () => {
+    if (heldWrites === run) heldWrites = null
+  }
+  run.then(clear, clear)
+  return run
+}
+
+/** How long a write turned away during a sync is retried before it fails. */
+const SYNC_RETRY_MS = 2 * 60 * 1000
+
+/** The `base` of an edit begun on a notes / discussion file that did not
+ * exist yet: one a sync brings meanwhile is kept in the backup by the save. */
+export const ABSENT_BASE = 'absent'
 
 async function getJSON<T>(url: string): Promise<T> {
   const resp = await apiFetch(url)
@@ -150,7 +214,11 @@ export function pdfUrl(id: string): string {
  * fire-and-forget caller's `.then` chain rejects rather than silently dropping
  * a failed save.
  */
-export async function putPdfAnnotations(id: string, bytes: Uint8Array): Promise<void> {
+export async function putPdfAnnotations(
+  id: string,
+  bytes: Uint8Array,
+  base?: string | null,
+): Promise<SaveResult> {
   // Send the bytes' underlying buffer slice as the body. fetch accepts an
   // ArrayBuffer as BodyInit and sends it verbatim; slicing by byteOffset/Length
   // copies exactly the view's region (saveDocument hands back a tight view, but
@@ -159,14 +227,40 @@ export async function putPdfAnnotations(id: string, bytes: Uint8Array): Promise<
     bytes.byteOffset,
     bytes.byteOffset + bytes.byteLength,
   ) as ArrayBuffer
-  const resp = await apiFetch(`/api/paper/${encodeURIComponent(id)}/pdf-annotations`, {
-    method: 'PUT',
-    body: buffer,
-    headers: { 'Content-Type': 'application/pdf' },
-  })
+  // `base`: the paper.pdf version this document was loaded at. If the file
+  // changed since (a sync brought another machine's annotations), the save
+  // still wins and the server keeps the replaced copy in the backup.
+  const qs = base ? `?base=${encodeURIComponent(base)}` : ''
+  const resp = await apiFetch(
+    `/api/paper/${encodeURIComponent(id)}/pdf-annotations${qs}`,
+    {
+      method: 'PUT',
+      body: buffer,
+      headers: { 'Content-Type': 'application/pdf' },
+    },
+  )
   if (!resp.ok) {
     throw new Error(`PUT pdf-annotations/${id} → ${resp.status} ${resp.statusText}`)
   }
+  return saveResult(await resp.json())
+}
+
+/** The `version` and `replaced` of a save's answer (older servers send neither). */
+function saveResult(body: unknown): SaveResult {
+  const b = (body ?? {}) as { version?: unknown; replaced?: { backup?: unknown } | null }
+  const backup = b.replaced?.backup
+  return {
+    version: typeof b.version === 'string' ? b.version : null,
+    replaced: typeof backup === 'string' ? { backup } : null,
+  }
+}
+
+/** The version of paper.pdf (`mtime:size`), read before its bytes are loaded. */
+export async function fetchPdfVersion(id: string): Promise<string | null> {
+  const resp = await apiFetch(`/api/paper/${encodeURIComponent(id)}/pdf-version`)
+  if (!resp.ok) return null
+  const body = (await resp.json()) as { version?: unknown }
+  return typeof body.version === 'string' ? body.version : null
 }
 
 /** Overwrite a paper's notes.md / discussion.md with the full edited text.
@@ -182,26 +276,35 @@ async function putMdText(
   id: string,
   doc: 'notes' | 'discussion',
   text: string,
-): Promise<void> {
+  base?: string | null,
+): Promise<SaveResult> {
+  // `base`: the version the edit started from. If the file changed since (a
+  // sync, an agent), the save still wins and the server keeps the replaced
+  // copy in the backup.
   const resp = await apiFetch(`/api/paper/${encodeURIComponent(id)}/${doc}`, {
     method: 'PUT',
-    body: JSON.stringify({ text }),
+    body: JSON.stringify(base ? { text, base } : { text }),
     headers: { 'Content-Type': 'application/json' },
   })
   if (!resp.ok) {
     throw new Error(`PUT ${doc}/${id} → ${resp.status} ${resp.statusText}`)
   }
+  return saveResult(await resp.json())
 }
 
-export function putNotes(id: string, text: string): Promise<void> {
-  return putMdText(id, 'notes', text)
+export function putNotes(id: string, text: string, base?: string | null): Promise<SaveResult> {
+  return putMdText(id, 'notes', text, base)
 }
 
-export function putDiscussion(id: string, text: string): Promise<void> {
-  return putMdText(id, 'discussion', text)
+export function putDiscussion(
+  id: string,
+  text: string,
+  base?: string | null,
+): Promise<SaveResult> {
+  return putMdText(id, 'discussion', text, base)
 }
 
-async function fetchMdText(id: string, doc: 'notes' | 'discussion'): Promise<string | null> {
+async function fetchMdText(id: string, doc: 'notes' | 'discussion'): Promise<MdFile | null> {
   const resp = await apiFetch(`/api/paper/${encodeURIComponent(id)}/${doc}`)
   if (resp.status === 404) return null
   if (!resp.ok) {
@@ -216,15 +319,15 @@ async function fetchMdText(id: string, doc: 'notes' | 'discussion'): Promise<str
     }
     throw new Error(detail)
   }
-  const body = (await resp.json()) as { text: string }
-  return body.text
+  const body = (await resp.json()) as { text: string; version?: unknown }
+  return { text: body.text, version: typeof body.version === 'string' ? body.version : null }
 }
 
-export function fetchNotes(id: string): Promise<string | null> {
+export function fetchNotes(id: string): Promise<MdFile | null> {
   return fetchMdText(id, 'notes')
 }
 
-export function fetchDiscussion(id: string): Promise<string | null> {
+export function fetchDiscussion(id: string): Promise<MdFile | null> {
   return fetchMdText(id, 'discussion')
 }
 
@@ -251,10 +354,18 @@ export function fetchDocMtimes(): Promise<DocMtimes> {
 export function fetchVaultVersion(): Promise<{
   version: string
   siRequest?: SiRequestSeed | null
+  sync?: SyncStatus | null
 }> {
-  return getJSON<{ version: string; siRequest?: SiRequestSeed | null }>(
+  return getJSON<{ version: string; siRequest?: SiRequestSeed | null; sync?: SyncStatus | null }>(
     '/api/vault-version',
   )
+}
+
+/** "Sync now": the click on the status mark. Also restarts an auto sync that
+ * stopped on an error. Throws with the server's way out (409) when this
+ * library cannot be synced from the GUI yet. */
+export function postSyncNow(): Promise<{ queued: boolean; state: string }> {
+  return mutateJSON<{ queued: boolean; state: string }>('/api/sync', 'POST')
 }
 
 /** The status/type whitelists (+ allowsNone) backing the cockpit

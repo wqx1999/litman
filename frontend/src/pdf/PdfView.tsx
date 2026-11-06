@@ -28,7 +28,7 @@ import {
   type ViewHistory,
   type ViewPos,
 } from './view-history'
-import { pdfUrl, putPdfAnnotations } from '../api'
+import { fetchPdfVersion, pdfUrl, putPdfAnnotations } from '../api'
 import { useT } from '../i18n'
 import { isEditingTarget } from '../useKeyboardShortcuts'
 
@@ -212,6 +212,14 @@ interface Props {
   /** Override the document URL (the trash view serves from /api/trash/.../pdf).
    * Defaults to the live paper's /api/paper/{id}/pdf. */
   pdfSrc?: string
+  /** Bumped by the host on a resync-from-disk. The view looks at paper.pdf's
+   * version again: changed on disk (a sync brought the other machine's
+   * annotations) and no unsaved edits here → it reloads, keeping the place;
+   * with unsaved edits it keeps them, and their save keeps the other copy. */
+  reloadToken?: number
+  /** A save replaced a paper.pdf that had changed since it was loaded; the
+   * other copy is at `backup`. */
+  onSaveReplaced?: (paperId: string, file: string, backup: string) => void
 }
 
 const MIN_SCALE = 0.5
@@ -404,9 +412,22 @@ export default function PdfView({
   onRegister,
   readOnly = false,
   pdfSrc,
+  reloadToken = 0,
+  onSaveReplaced,
 }: Props) {
   const t = useT()
   const tx = t.reader.pdfView
+  // paper.pdf's version (mtime:size) when each document was loaded, read
+  // BEFORE its bytes: a change in between can then only read as a change at
+  // save time, never be missed. Sent with every save of that document; the
+  // answer carries the next one. Kept per document, so a write of a document
+  // already replaced by a reload neither sends nor leaves the new one's
+  // version. Null for the trash view, which never saves.
+  const docVersionsRef = useRef(new WeakMap<PDFDocumentProxy, string | null>())
+  // Bumped to reload the document (the load effect depends on it).
+  const [reloadKey, setReloadKey] = useState(0)
+  const onSaveReplacedRef = useRef(onSaveReplaced)
+  onSaveReplacedRef.current = onSaveReplaced
   // The absolutely-positioned scroll container pdf_viewer attaches to.
   const containerRef = useRef<HTMLDivElement>(null)
   // The inner `.pdfViewer` div pdf_viewer fills with pages.
@@ -830,7 +851,9 @@ export default function PdfView({
       const hash = doc.annotationStorage.serializable.hash
       if (hash === savedHashRef.current) return
       const bytes = await doc.saveDocument()
-      await putPdfAnnotations(id, bytes)
+      const saved = await putPdfAnnotations(id, bytes, docVersionsRef.current.get(doc) ?? null)
+      docVersionsRef.current.set(doc, saved.version)
+      if (saved.replaced) onSaveReplacedRef.current?.(id, 'paper.pdf', saved.replaced.backup)
       // Bookkeep ONLY after the write lands. If saveDocument()/PUT throws,
       // savedHashRef stays behind, the document still reads dirty, and a later
       // save retries instead of silently dropping the edit.
@@ -972,7 +995,9 @@ export default function PdfView({
     // A write for the PREVIOUS document may still be in the air; it carries its
     // own doc + paper id and finishes on its own. Dropping the reference here
     // just gives the incoming document a fresh queue (the identity check in
-    // runQueued's `clear` keeps the old one from clobbering this).
+    // runQueued's `clear` keeps the old one from clobbering this). The version
+    // read below waits for it: the document then loads with what it wrote.
+    const previousWrite = inflightRef.current
     inflightRef.current = null
     discardRef.current = false
     lastNoteEditorRef.current = null
@@ -1190,17 +1215,33 @@ export default function PdfView({
     eventBus.on('annotationeditorparamschanged', onParamsChanged)
 
     let cancelled = false
-    const loadingTask = pdfjsLib.getDocument({
-      url: pdfSrc ?? pdfUrl(paperId),
-      // Scanned (image-only) PDFs decode their JBIG2 / CCITT-fax / JPEG2000
-      // images in a WebAssembly module pdf.js fetches from this directory;
-      // build.sh vendors pdf.js's wasm/ folder to the served root. Without it a
-      // scanned page fetches <null>/jbig2.wasm, the image decodes to nothing,
-      // and the page paints blank ("Dependent image isn't ready yet").
-      wasmUrl: new URL('wasm/', document.baseURI).href,
-    })
-    Promise.all([loadingTask.promise, textLayerFontsReady()])
-      .then(([doc]) => {
+    let loadingTask: ReturnType<typeof pdfjsLib.getDocument> | null = null
+    // The version first, then the bytes (see docVersionsRef).
+    let version: string | null = null
+    const versionFirst = readOnly
+      ? Promise.resolve(null)
+      : (previousWrite ?? Promise.resolve())
+          .catch(() => {})
+          .then(() => fetchPdfVersion(paperId))
+          .catch(() => null)
+    versionFirst
+      .then((read) => {
+        if (cancelled) return null
+        version = read
+        loadingTask = pdfjsLib.getDocument({
+          url: pdfSrc ?? pdfUrl(paperId),
+          // Scanned (image-only) PDFs decode their JBIG2 / CCITT-fax / JPEG2000
+          // images in a WebAssembly module pdf.js fetches from this directory;
+          // build.sh vendors pdf.js's wasm/ folder to the served root. Without it a
+          // scanned page fetches <null>/jbig2.wasm, the image decodes to nothing,
+          // and the page paints blank ("Dependent image isn't ready yet").
+          wasmUrl: new URL('wasm/', document.baseURI).href,
+        })
+        return Promise.all([loadingTask.promise, textLayerFontsReady()])
+      })
+      .then((loaded) => {
+        if (!loaded) return
+        const [doc] = loaded
         if (cancelled) {
           void doc.destroy()
           return
@@ -1220,6 +1261,7 @@ export default function PdfView({
             throw err
           })
         docRef.current = doc
+        docVersionsRef.current.set(doc, version)
         // Baseline for the dirty comparison. Read it rather than assuming "":
         // whatever this document hashes to at rest is what "no unsaved edits"
         // means for it.
@@ -1301,7 +1343,7 @@ export default function PdfView({
           console.error('Failed to destroy PDF editor UIManager:', err)
         }
         if (doc) void doc.destroy()
-        else void loadingTask.destroy()
+        else if (loadingTask) void loadingTask.destroy()
       }
 
       // Best-effort flush on plain unmount (tab switch). When the user closed the
@@ -1332,7 +1374,35 @@ export default function PdfView({
         teardown()
       }
     }
-  }, [paperId, pdfSrc, readOnly, tabKey])
+  }, [paperId, pdfSrc, readOnly, tabKey, reloadKey])
+
+  // A resync-from-disk: did paper.pdf change under this tab (a sync brought
+  // the other machine's annotations)? Clean → reload, keeping the place
+  // (viewPositions, saved by the load effect's cleanup). Unsaved edits → keep
+  // them; their save replaces the file and keeps the other copy. The mount run
+  // is skipped: the load effect just read the version.
+  const firstReloadRef = useRef(true)
+  useEffect(() => {
+    if (firstReloadRef.current) {
+      firstReloadRef.current = false
+      return
+    }
+    if (readOnly) return
+    let cancelled = false
+    void fetchPdfVersion(paperId).then((version) => {
+      const doc = docRef.current
+      const known = doc ? docVersionsRef.current.get(doc) : undefined
+      if (cancelled || version === null || known == null) return
+      if (version === known) return
+      if (inflightRef.current || isDirtyDoc(docRef.current)) return
+      setReloadKey((k) => k + 1)
+    })
+    return () => {
+      cancelled = true
+    }
+    // Only reloadToken drives this look; the rest is read for its current value.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [reloadToken])
 
   // Ctrl/Cmd + wheel zooms the PDF instead of the browser page (also catches
   // trackpad pinch, which fires wheel events with ctrlKey set). Plain wheel is

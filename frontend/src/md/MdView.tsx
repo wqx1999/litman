@@ -9,6 +9,7 @@ import {
 import { marked } from 'marked'
 import DOMPurify from 'dompurify'
 import {
+  ABSENT_BASE,
   fetchDiscussion,
   fetchNotes,
   fetchTrashDiscussion,
@@ -17,6 +18,7 @@ import {
   putNotes,
 } from '../api'
 import { getT, useT } from '../i18n'
+import type { MdFile } from '../types'
 
 /** The edit session for one md tab, owned by App (keyed per tab) so it survives
  * this view's unmount on tab switch. Absent (undefined) = not editing. */
@@ -25,6 +27,15 @@ export interface MdDraft {
   /** The on-disk text when the edit began — App diffs against it for dirtiness
    * (the close prompt + page-unload guard), mirroring PdfHandle.isDirty(). */
   savedText: string
+  /** The file's version when the edit began, sent with the save: a file that
+   * changed meanwhile (a sync, an agent) is kept in the backup before the
+   * save replaces it. Null when the file did not exist. */
+  base: string | null
+}
+
+/** A trashed doc has no version: it is never saved. */
+function unversioned(text: string | null): MdFile | null {
+  return text === null ? null : { text, version: null }
 }
 
 interface Props {
@@ -52,16 +63,23 @@ interface Props {
    * (e.g. a CLI/agent rewrote notes.md). Skipped while editing — the draft is
    * the source of truth then. */
   reloadToken?: number
-  /** Begin editing: App records {draft: seed, savedText: seed}. */
-  onBeginEdit: (tabKey: string, seed: string) => void
+  /** Begin editing: App records {draft: seed, savedText: seed, base}. */
+  onBeginEdit: (tabKey: string, seed: string, base: string | null) => void
   /** A keystroke in the textarea: App updates the lifted draft. */
   onDraftChange: (tabKey: string, draft: string) => void
-  /** A successful save: the edit session ends; App drops the entry. */
+  /** Leave the session with nothing to save (an untouched draft). */
   onEndEdit: (tabKey: string) => void
+  /** A save of `sent` went through, the file now at version `base`. App ends
+   * the session if the draft is still `sent`; typing done while the save was
+   * on its way stays, as a session that starts from the saved text. */
+  onSaveSettled: (tabKey: string, sent: string, base: string | null) => void
   /** A successful save bumped this paper's notes/discussion mtime. App advances
    * its doc-mtime baseline so the next resync diff does NOT mislabel the user's
    * own GUI edit as an external "notes updated" change (D2). */
   onSaved?: (paperId: string, doc: 'notes' | 'discussion') => void
+  /** A save went over a file that had changed since it was read: the save
+   * won, and the copy it replaced is at `backup`. The host tells the user. */
+  onSaveReplaced?: (paperId: string, file: string, backup: string) => void
 }
 
 // Per-tab scroll position for the rendered markdown, kept for the session so a
@@ -133,7 +151,9 @@ export default function MdView({
   onBeginEdit,
   onDraftChange,
   onEndEdit,
+  onSaveSettled,
   onSaved,
+  onSaveReplaced,
 }: Props) {
   const tx = useT().reader.mdView
   // The file's own name, which no language changes.
@@ -141,6 +161,8 @@ export default function MdView({
   // The current on-disk text (null = file absent / not loaded yet). The render
   // html is derived from it; edit mode seeds its textarea from it.
   const [text, setText] = useState<string | null>(null)
+  // The version `text` was read at; an edit starts from it.
+  const [version, setVersion] = useState<string | null>(null)
   const [loaded, setLoaded] = useState(false)
   // Load failed with a described server error (e.g. the file on disk is not
   // UTF-8). Kept separate from `missing`: the file EXISTS, so the tab must
@@ -198,16 +220,16 @@ export default function MdView({
     // Read-only (trash) tabs address the file by the trash entry_name, which the
     // host passes as `paperId`; live tabs use the per-paper read endpoints.
     const load = readOnly
-      ? doc === 'notes'
-        ? fetchTrashNotes
-        : fetchTrashDiscussion
+      ? (id: string) =>
+          (doc === 'notes' ? fetchTrashNotes : fetchTrashDiscussion)(id).then(unversioned)
       : doc === 'notes'
         ? fetchNotes
         : fetchDiscussion
     load(paperId)
-      .then((loadedText) => {
+      .then((loadedFile) => {
         if (cancelled) return
-        setText(loadedText)
+        setText(loadedFile?.text ?? null)
+        setVersion(loadedFile?.version ?? null)
         setLoaded(true)
       })
       .catch((err: unknown) => {
@@ -241,7 +263,8 @@ export default function MdView({
     load(paperId)
       .then((fresh) => {
         if (cancelled) return
-        setText(fresh)
+        setText(fresh?.text ?? null)
+        setVersion(fresh?.version ?? null)
         // A resync can also RECOVER a previously unreadable file (the user
         // fixed it on disk): clear the error and unlock the tab.
         setLoaded(true)
@@ -360,15 +383,21 @@ export default function MdView({
     // Wait for the fetch to settle (loaded) so an existing file seeds the
     // textarea from its real content, not a transient null.
     if (!loaded) return
-    onBeginEdit(tabKey, text ?? '')
-  }, [readOnly, editing, loaded, text, onBeginEdit, tabKey])
+    // A file that does not exist yet starts from ABSENT_BASE: one a sync
+    // brings meanwhile is then kept in the backup when the save replaces it.
+    onBeginEdit(tabKey, text ?? '', text === null ? ABSENT_BASE : version)
+  }, [readOnly, editing, loaded, text, version, onBeginEdit, tabKey])
 
   const save = useCallback(async () => {
     if (saving) return
     setSaving(true)
     const put = doc === 'notes' ? putNotes : putDiscussion
+    // What this save sends. The textarea stays open while it is on its way
+    // (a sync can hold it for a while), so the draft may move on meanwhile.
+    const sent = draft
     try {
-      await put(paperId, draft)
+      const saved = await put(paperId, sent, draftEntry?.base ?? null)
+      if (saved.replaced) onSaveReplaced?.(paperId, file, saved.replaced.backup)
       // Suppress this GUI write from the next resync diff (D2): advance App's
       // doc-mtime baseline so the bumped file mtime is not read as an external
       // edit. Done before the reload so a slow reload can't race a resync.
@@ -378,16 +407,30 @@ export default function MdView({
       // from re-stripping it).
       const reload = doc === 'notes' ? fetchNotes : fetchDiscussion
       const fresh = await reload(paperId)
-      setText(fresh ?? draft)
+      setText(fresh?.text ?? sent)
+      setVersion(fresh?.version ?? saved.version)
       // End the (App-owned) edit session — drops the draft so the tab is no
-      // longer dirty and switch-back shows the rendered view.
-      onEndEdit(tabKey)
+      // longer dirty and switch-back shows the rendered view — unless typing
+      // went on during the save: that stays, based on what was saved.
+      onSaveSettled(tabKey, sent, saved.version)
     } catch {
       onNotify?.(getT().reader.mdView.saveFailed(`${doc}.md`))
     } finally {
       setSaving(false)
     }
-  }, [doc, draft, paperId, saving, onNotify, onEndEdit, onSaved, tabKey])
+  }, [
+    doc,
+    draft,
+    draftEntry?.base,
+    file,
+    paperId,
+    saving,
+    onNotify,
+    onSaveSettled,
+    onSaved,
+    onSaveReplaced,
+    tabKey,
+  ])
 
   // Leave the textarea WITHOUT ending the edit session: the draft is kept and
   // rendered, so this is a preview, not a discard. Nothing in the editor throws

@@ -5,6 +5,7 @@ import type {
   HealthIssue,
   IndexPaper,
   ProjectEntry,
+  SyncStatus,
   VaultsPayload,
 } from '../types'
 import type { Candidate } from '../search'
@@ -21,6 +22,7 @@ import {
 } from '../api'
 import type { AgentLaunchMode, AgentLaunchResult, AgentStatus } from '../api'
 import { getT, useT } from '../i18n'
+import SyncButton from './SyncButton'
 import SearchBox from './SearchBox'
 import ProjectManager from './ProjectManager'
 import VaultManager from './VaultManager'
@@ -148,6 +150,11 @@ interface Props {
    * search) — they act on the live library, not the trash being browsed. The
    * vault identity moves into the trash banner (see TrashView). */
   trashMode?: boolean
+  /** The auto sync's status (riding on the vault-version poll): null for a
+   * library without `sync:` (a bare cloud), undefined until the first poll. */
+  syncStatus?: SyncStatus | null
+  /** The cloud button's "Sync now". */
+  onSyncNow?: () => void
 }
 
 /** Global chrome: brand, current-vault indicator, the global Projects manager,
@@ -194,6 +201,8 @@ export default function TopBar({
   onRegisterAgentManage,
   onRegisterVaultManagerOpen,
   trashMode,
+  syncStatus,
+  onSyncNow,
 }: Props) {
   const t = useT()
   const tb = t.topbar.topBar
@@ -825,6 +834,10 @@ export default function TopBar({
           <option value="">{tb.noVault}</option>
         ) : null}
       </select>
+      {/* The cloud sync's own button, next to the library it syncs. */}
+      {served && onSyncNow && (
+        <SyncButton status={syncStatus} onSyncNow={onSyncNow} onOpenLog={openLog} />
+      )}
 
       {/* Always enabled — NOT gated by the <select>'s <2-vault disable, so a
           single-vault user can still open the manager to register a second. */}
