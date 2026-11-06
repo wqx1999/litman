@@ -256,22 +256,42 @@ def test_only_writes_that_touch_no_synced_file_skip_the_wait(
     assert server_mod._write_not_synced(method, path) is not waits
 
 
+def _api_writes() -> set[tuple[str, str]]:
+    """Every ``/api/`` write route the app serves, as ``(method, path)``.
+
+    Read from the app's OpenAPI schema, FastAPI's public account of its
+    routes: walking ``app.routes`` finds none on a FastAPI that keeps each
+    included router there as one nested entry. A route left out of the schema
+    would be missed, so none may be.
+    """
+    sources = Path(server_mod.__file__).parent.glob("*.py")
+    hidden = [p.name for p in sources if "include_in_schema" in p.read_text(encoding="utf-8")]
+    assert hidden == [], "a route left out of the OpenAPI schema escapes this check"
+    paths = create_app(None).openapi()["paths"]
+    return {
+        (method.upper(), path)
+        for path, operations in paths.items()
+        if path.startswith("/api/")
+        for method in operations
+        if method.upper() in {"POST", "PUT", "PATCH", "DELETE"}
+    }
+
+
 def test_every_write_route_is_either_held_or_listed_as_not_synced() -> None:
     """A new write route waits until it is listed: the list is checked against the app."""
-    app = create_app(None)
-    held = []
-    for route in app.routes:
-        methods = getattr(route, "methods", None) or set()
-        for method in methods - {"GET", "HEAD", "OPTIONS"}:
-            path = route.path  # type: ignore[attr-defined]
-            if path.startswith("/api/"):
-                sample = path.replace("{", "").replace("}", "")
-                held.append((method, path, server_mod._write_not_synced(method, sample)))
-    synced_writes = {(m, p) for m, p, free in held if not free}
+    writes = _api_writes()
+    assert writes, "read no /api/ write route from the app: every check below would pass"
+    synced_writes = {
+        (method, path)
+        for method, path in writes
+        if not server_mod._write_not_synced(method, path.replace("{", "").replace("}", ""))
+    }
     assert ("PUT", "/api/paper/{paper_id}/notes") in synced_writes
     assert ("PUT", "/api/paper/{paper_id}/pdf-annotations") in synced_writes
     assert ("POST", "/api/ingest/confirm") in synced_writes
     assert ("POST", "/api/sync") not in synced_writes
+    # Each write listed as touching no synced file is one the app serves.
+    assert server_mod._WRITES_NOT_SYNCED - writes == set()
 
 
 # ---------------------------------------------------------------------------

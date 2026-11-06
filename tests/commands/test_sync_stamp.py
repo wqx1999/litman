@@ -312,7 +312,9 @@ def test_a_real_pull_names_the_files_it_wrote_here(
 
     (ops,) = [core_sync.parse_bisync_ops(run) for run in runs]
     assert not ops.remote_changed
-    assert ops.path1_writes is not None
+    # On failure, the lines that name the library folder, as this rclone printed them.
+    named = [line for line in runs[0].report if "Synching" in line or "Queue" in line]
+    assert ops.path1_writes is not None, named
     assert {"papers/p1/notes.md", "papers/p2/metadata.yaml", "papers/p2/paper.pdf"} <= set(
         ops.path1_writes
     )

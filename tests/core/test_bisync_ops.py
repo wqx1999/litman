@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 import re
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -40,11 +41,17 @@ def _load(path: Path) -> dict[str, Any]:
     return data
 
 
-def _ops(record: dict[str, Any], edit: Any = None) -> BisyncOps:
+def _record(stem: str) -> dict[str, Any]:
+    return _load(next(p for p in _REPORTS if p.stem == stem))
+
+
+def _ops(record: dict[str, Any], edit: Any = None, *, windows: bool = False) -> BisyncOps:
+    """Read ``record`` (recorded on Linux) after ``edit``; ``windows``: by rclone's rule there."""
     report, lines = record["report"], record["lines"]
     if edit is not None:
         report, lines = edit(report), edit(lines)
-    return parse_bisync_ops(BisyncRun(record["returncode"], tuple(lines), tuple(report)))
+    run = BisyncRun(record["returncode"], tuple(lines), tuple(report))
+    return parse_bisync_ops(run, windows=windows)
 
 
 def _counted(record: dict[str, Any], side: str) -> int:
@@ -124,12 +131,79 @@ def test_a_report_without_counts_reads_as_changed_both_ways(path: Path) -> None:
 
 
 def test_a_file_outside_the_library_folder_leaves_the_writes_unknown() -> None:
-    record = _load(next(p for p in _REPORTS if p.stem == "07-cloud-changed-pull-only"))
+    record = _record("07-cloud-changed-pull-only")
 
     def elsewhere(lines: list[str]) -> list[str]:
         return [line.replace("- <P>/vault/papers", "- <P>/other/papers") for line in lines]
 
     assert _ops(record, elsewhere).path1_writes is None
+
+
+#: The library folder as rclone on Windows prints it (``bilib.FsPath``: the
+#: ``\\?\`` dropped, backslashes, one at the end), and whether bisync escapes
+#: it. bisync's ``escapePath`` reads a backslash there as a slash: it only puts
+#: quotes around the folder in "Synching Path1" and prints it as it is in front
+#: of an operation's path, unless it holds a character to escape; then it
+#: writes the whole path as Go's ``strconv.Quote`` does, every backslash doubled.
+_WINDOWS_ROOTS = [
+    pytest.param(
+        "C:\\Users\\runneradmin\\AppData\\Local\\Temp\\lt-im822zks\\vault\\", False, id="ci-temp"
+    ),
+    pytest.param("D:\\文献 库\\vault\\", False, id="space-and-cjk"),
+    pytest.param("C:\\Users\\a\u00a0b\\vault\\", True, id="escaped-no-break-space"),
+]
+#: The recorded runs that wrote here.
+_WROTE_HERE = [
+    "06-cloud-new-pull-only",
+    "07-cloud-changed-pull-only",
+    "08-cloud-deleted-pull-only",
+    "09-conflict-cloud-wins",
+    "11-conflict-local-wins",
+]
+
+
+def _on_windows(root: str, escaped: bool) -> Callable[[list[str]], list[str]]:
+    """The recorded lines with the library folder printed as rclone on Windows prints ``root``."""
+
+    def printed(path: str, *, quotes: bool) -> str:
+        if escaped:
+            # As strconv.Quote writes it: the path is ASCII but for the one
+            # character escaped, which json.dumps escapes alike.
+            return json.dumps(path)
+        return f'"{path}"' if quotes else path
+
+    def edit(lines: list[str]) -> list[str]:
+        out = []
+        for line in lines:
+            line = line.replace('"<P>/vault/"', printed(root, quotes=True))
+            head, marker, rel = line.partition("- <P>/vault/")
+            out.append(f"{head}- {printed(root + rel, quotes=False)}" if marker else line)
+        return out
+
+    return edit
+
+
+@pytest.mark.parametrize(("root", "escaped"), _WINDOWS_ROOTS)
+@pytest.mark.parametrize("stem", _WROTE_HERE)
+def test_a_run_on_windows_names_the_files_it_wrote_here_as_elsewhere(
+    stem: str, root: str, escaped: bool
+) -> None:
+    record = _record(stem)
+    on_windows = _ops(record, _on_windows(root, escaped), windows=True)
+    assert on_windows.path1_writes
+    assert on_windows == _ops(record)
+
+
+@pytest.mark.parametrize(
+    ("root", "escaped"), [p for p in _WINDOWS_ROOTS if p.values[1] is False]
+)
+def test_the_folder_from_windows_read_by_the_rule_for_elsewhere_leaves_the_writes_unknown(
+    root: str, escaped: bool
+) -> None:
+    """The reverse: read as if bisync had escaped it, the folder cannot be read."""
+    record = _record("07-cloud-changed-pull-only")
+    ops = _ops(record, _on_windows(root, escaped), windows=False)
+    assert ops.path1_writes is None
 
 
 @pytest.mark.parametrize(

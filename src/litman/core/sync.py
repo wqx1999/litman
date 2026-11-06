@@ -2471,6 +2471,8 @@ _OP_LINE_RE = re.compile(
 #: A full comparison (first sync, ``--first-from``): no per-file operations.
 _RESYNC_LINE_RE = re.compile(r"^INFO\s*: - Path[12] +Resync is copying files to +- Path[12]\s*$")
 #: The line that names the library folder as bisync prints it, operations and all.
+#: On Windows: ``INFO  : Synching Path1 "C:\Users\me\lib\" with Path2 "remote:lib/"``,
+#: and an operation on it ``- C:\Users\me\lib\papers/x/notes.md``.
 _PATH1_ROOT_RE = re.compile(r'^INFO\s*: Synching Path1 (".*") with Path2 ".*"\s*$')
 #: The operations that change the cloud copy.
 _PATH2_OPS = frozenset({"Queue copy to Path2", "Renaming Path2 copy"})
@@ -2489,7 +2491,7 @@ class BisyncOps:
     path1_writes: frozenset[str] | None
 
 
-def parse_bisync_ops(run: BisyncRun) -> BisyncOps:
+def parse_bisync_ops(run: BisyncRun, *, windows: bool = sys.platform == "win32") -> BisyncOps:
     """Read which side one bisync run changed, from its operation lines.
 
     Cross-checked with the per-side change counts bisync prints, so a change
@@ -2497,7 +2499,8 @@ def parse_bisync_ops(run: BisyncRun) -> BisyncOps:
     changes counted and no operation read for the other side reads as "the
     other side may have changed". Over-reporting costs one sync that finds
     nothing to do. A full comparison, or a run that printed no count at all,
-    may have changed both sides.
+    may have changed both sides. ``windows``: rclone ran on Windows, where
+    bisync quotes the library folder without escaping its backslashes.
     """
     lines = [*run.report, *run.lines]
     unknown = BisyncOps(remote_changed=True, path1_writes=None)
@@ -2526,7 +2529,7 @@ def parse_bisync_ops(run: BisyncRun) -> BisyncOps:
             continue
         match = _PATH1_ROOT_RE.match(line)
         if match is not None and root is None:
-            root = _unquote_bisync_path(match.group(1))
+            root = _unquote_bisync_root(match.group(1), windows=windows)
     if not counts and not nothing_changed:
         return unknown
     remote_changed = path2_ops > 0 or counts.get("Path1", 0) > 0
@@ -2542,15 +2545,31 @@ def parse_bisync_ops(run: BisyncRun) -> BisyncOps:
     return BisyncOps(remote_changed=remote_changed, path1_writes=frozenset(writes))
 
 
+def _unquote_bisync_root(text: str, *, windows: bool) -> str | None:
+    """The library folder as bisync's "Synching Path1" line printed it, unquoted.
+
+    bisync always quotes it there. On Windows it escapes it (``strconv.Quote``,
+    which doubles every backslash) only when it holds something other than a
+    backslash to escape; else it only puts quotes around it. A Windows folder
+    as bisync prints it always ends in a backslash, and never holds two in a
+    row: so one without a doubled backslash was only quoted.
+    """
+    if windows and len(text) >= 2 and text[0] == text[-1] == '"' and "\\\\" not in text:
+        return text[1:-1]
+    return _unquote_bisync_path(text)
+
+
 def _relative_to_root(target: str | None, root: str | None) -> str | None:
     """``target`` relative to the library folder bisync printed (``""`` for the folder itself).
 
-    ``None`` when it is not under that folder, or either cannot be read.
+    The folder ends in the system's separator (``\\`` on Windows); the path
+    under it is rclone's, with ``/``. ``None`` when it is not under that
+    folder, or either cannot be read.
     """
     if target is None or not root:
         return None
-    prefix = root if root.endswith("/") else root + "/"
-    if target == prefix.rstrip("/"):
+    prefix = root if root.endswith(("/", "\\")) else root + "/"
+    if target == prefix[:-1]:
         return ""
     if not target.startswith(prefix):
         return None
