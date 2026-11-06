@@ -489,7 +489,7 @@ view with `lit config show`.
 | `view_definitions` | list[string] | `["by-project", "by-topic", "by-method", "by-status"]` | Nothing — legacy key, parsed but never read; no longer written into new libraries. The hub set `lit refresh-views` builds is fixed in code. |
 | `unique_keys` | list[string] | `["doi", "arxiv-id"]` | Nothing — legacy key, parsed but never read; no longer written into new libraries. `lit add`'s DOI duplicate precheck is fixed in code. |
 | `default_clone_depth` | integer ≥ 0 | `1` | `lit code add`, `lit code restore-all`. `0` means full history. |
-| `codes_ignore_patterns` | list[string] | `["repo/"]` | `lit sync push`. Glob patterns under `codes/` that backup tools exclude (keeps bulky checkouts out of the cloud; rebuild with `lit code restore-all`). |
+| `codes_ignore_patterns` | list[string] | `["repo/"]` | `lit sync push` / `pull`. Glob patterns under `codes/` that backup tools exclude (keeps bulky checkouts out of the cloud; rebuild with `lit code restore-all`). Two-way `lit sync` never carries `codes/*/repo/`. |
 | `projects` | dict[string, string] | `{}` | `lit link`, `lit unlink`, `lit refresh-views`. Project name to directory path. Must be populated (via `lit project add`) before `lit link`. |
 | `sync` | object or null | `null` | `lit sync`. `null` means sync is not configured. Populated by `lit sync setup`. |
 
@@ -498,8 +498,13 @@ The nested `sync` object:
 | Field | Type | Default | Notes |
 |---|---|---|---|
 | `remote` | string (required) | — | rclone remote name, must match one in `rclone listremotes`. |
-| `path` | string | `""` | Path inside the remote. Empty syncs to the remote root. |
-| `exclude_repos` | boolean | `false` | When `true`, `codes/*/repo/` checkouts are excluded. |
+| `path` | string | `""` | Path inside the remote. Empty means the remote's top level, which `push` and `pull` accept and two-way `lit sync` refuses. |
+| `exclude_repos` | boolean | `false` | When `true`, `lit sync push` / `pull` leave out `codes/*/repo/` checkouts. |
+
+Two-way `lit sync` never carries `lit-config.yaml`: each machine keeps its own,
+runs `lit sync setup` itself (its rclone remote may have another name, as long
+as `path` names the same cloud folder) and sets its own project folders with
+`lit project set-path`.
 
 Three things are deliberately absent from the schema: (1) LLM API keys,
 endpoints, or models (the agent manages its own auth and litman never makes an

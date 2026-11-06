@@ -18,6 +18,9 @@ Release discipline: the running version needs a section here too
 
 - 界面有中文了，默认跟随系统语言。
 - 想换语言，按 ? 打开快捷键面板，在右上角切换。
+- 文献库可通过云盘在多台电脑间同步。
+- litman 窗口打开期间自动同步。
+- 同步可交由 AI 助手配置，只需登录云盘账号。
 
 ## 1.3.11
 

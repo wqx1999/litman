@@ -23,6 +23,9 @@ and release.sh refuses to publish without one.
 
 - litman now speaks Chinese, following your system language.
 - Switch the language any time in the ? panel.
+- Keep one library on all your computers through your cloud drive.
+- litman syncs by itself while its window is open.
+- Your AI can set up sync for you; you just sign in.
 
 ## 1.3.11
 

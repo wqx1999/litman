@@ -147,5 +147,6 @@ drift by hand, it prevents what it can and surfaces the rest.
 **The vault and its backup.** The vault is the central unit. You can register
 several (your own, a colleague's snapshot), but exactly one is active at a time.
 Because the vault is deliberately not under version control, backup is the job of
-remote sync: `lit sync` mirrors the active vault to a cloud target, so a lost
-machine never means a lost library.
+cloud sync: `lit sync push` mirrors the active vault to a cloud folder, and
+`lit sync` keeps one library the same on several machines, so a lost machine
+never means a lost library.

@@ -861,7 +861,7 @@ file that number holds now, and — in a dated section of `discussion.md` — on
 name, written before the file now holding that number was added. Each finding
 says what to change. These are warnings: `lit health-check` exits 1 until the
 line is changed, but they do not hold up `lit sync push`, while the SI errors
-above do, like any other error.
+above do, like any other error. Two-way `lit sync` checks neither.
 
 ```
 lit health-check
@@ -932,7 +932,7 @@ lit sync [--first-from cloud|local] [--force]
 lit sync setup [--remote NAME] [--path PATH]
 lit sync push [--dry-run] [-y] [-f] [--exclude-repos]
 lit sync pull [--dry-run] [--exclude-repos]
-lit sync status
+lit sync status [--local]
 ```
 
 **Two-way sync** runs `rclone bisync` and needs rclone 1.74.2 or newer. What
@@ -952,10 +952,16 @@ down. It syncs with a folder inside the remote (the `--path` of
   `lit trash restore`. A code folder's `repo/` checkout is never touched.
 - **Backups.** Every file a sync replaces or deletes is kept, one folder per
   sync, named by its time. On this machine they are under `sync-backup/` in
-  litman's data folder: `~/.local/share/litman/` on Linux,
+  litman's data folder: `~/.local/share/litman/` on Linux
+  (`$XDG_DATA_HOME/litman/` when that is set),
   `~/Library/Application Support/litman/` on macOS,
   `%LOCALAPPDATA%\litman\litman\` on Windows. In the cloud they are in the
-  folder next to the synced one, `<path>-litman-backup/`.
+  folder next to the synced one, `<path>-litman-backup/`. The older copy of a
+  conflict, and the changed files of a folder deleted on another machine, go to
+  a `conflicts/<time>/` folder beside them: `<file>.sync-conflict1` was this
+  machine's copy, `<file>.sync-conflict2` the cloud's. When a note or PDF saved
+  in the GUI replaces a file that changed after it was opened, the replaced
+  copy goes to a `conflicts/<time>-save/` folder.
 - **First sync on a machine.** If the cloud folder is empty, this library is
   copied up. If this library is new (no papers, nothing under `codes/`), the
   cloud's library is copied down, and the local files it replaces go to the
@@ -994,6 +1000,16 @@ down. It syncs with a folder inside the remote (the `--path` of
   GUI's auto sync, or `lit sync` in another terminal), `lit sync` waits up to
   90 seconds for it to end, then exits `23` without syncing. `push` and `pull`
   wait the same way.
+- **Auto sync.** While `lit gui` runs, it syncs a library that has had its
+  first `lit sync` on this machine by itself (see `lit gui` below). A two-way
+  sync keeps a small `.litman-sync-stamp.json` in the cloud folder, which tells
+  the other machines that one has synced; it is not part of the library.
+- **When a sync stops.** Every two-way run, from a terminal or the GUI, is
+  recorded on this machine, and `lit sync status` shows the last one in full.
+  While that run failed or waits for `--first-from`, every other `lit` command
+  ends with one line, such as "Cloud sync stopped at 15:01 (sign-in refused).
+  Run `lit sync status` for why and what to do." The line goes away once a sync
+  goes through, from a terminal or the GUI.
 
 | Flag | What it does |
 |---|---|
@@ -1015,15 +1031,16 @@ is only listed; it does not change the exit code.
 
 | Subcommand | What it does |
 |---|---|
-| `setup` | Hand the TTY to `rclone config`, then record the chosen remote + path in `lit-config.yaml`. `--remote <name>` skips the interactive step (point litman at an existing remote); `--path <path>` sets the mirror path. |
+| `setup` | Hand the TTY to `rclone config`, then record the chosen remote + path in `lit-config.yaml`. `--remote <name>` skips the interactive step (point litman at an existing remote); `--path <path>` sets the mirror path. Off a terminal, both are required. |
 | `push` | Upload the vault (`rclone sync` — deletes orphans on the remote). Refused once the library syncs two-way, on this machine or another: run `lit sync` instead. |
 | `pull` | Download the remote into the vault. **One-way with deletion** — local files absent on the remote are removed. Refused once the library syncs two-way (run `lit sync`; on a new machine, `lit sync --first-from cloud`), and when the remote holds no `lit-config.yaml`. |
-| `status` | Show last-push / last-pull timestamps and local vs. remote file counts. No network mutation. For a library that syncs two-way, it counts what two-way sync carries and shows the last sync. Below that, this machine's last two-way run, from a terminal or the GUI: how it ended, each conflict with its backup, the code repos left behind, or the full error with what to do. Then the folders of conflict backups made on this machine in the last 7 days, besides the last run's: each one's time, whether a sync or a save in the GUI made it, its path and its first files. Both parts show even when the cloud cannot be reached. |
+| `status` | Show last-push / last-pull timestamps and local vs. remote file counts. No network mutation. For a library that syncs two-way, it counts what two-way sync carries and shows the last sync. Below that, this machine's last two-way run, from a terminal or the GUI: how it ended, each conflict with its backup, the code repos left behind, or the full error with what to do. Then the folders of conflict backups made on this machine in the last 7 days, besides the last run's: each one's time, whether a sync or a save in the GUI made it, its path and its first files. Both parts show even when the cloud cannot be reached. `--local` reads only this machine's records, with no rclone call: the mode (two-way, one-way push / pull, or not synced from this machine yet), the last run and the conflict backups. |
 
 `push` runs a full health-check first as an integrity gate: any error-severity
 finding aborts the push, so a corrupted local state never overwrites the cloud
 backup. `-f` / `--force` bypasses the gate; `-y` / `--yes` only skips the
-first-push size confirmation and does **not** bypass the gate. Both `push` and
+first-push size confirmation and does **not** bypass the gate. Two-way
+`lit sync` has no such gate: it carries every file as it is. Both `push` and
 `pull` accept `--dry-run` and the paired `--exclude-repos` / `--include-repos`
 (apply `codes_ignore_patterns` so `codes/*/repo/` checkouts are skipped; re-clone
 them later with `lit code restore-all`).
@@ -1163,6 +1180,29 @@ onto the window. Each file is checked as it lands: `✓` goes in, `?` goes in on
 with **add anyway** ticked, and `✕` never does; a file over 100 MB waits for a
 click on **Upload**. **Done** adds them all at once, and **Cancel** (or Esc)
 adds nothing.
+
+**Cloud sync.** Once a library has had its first `lit sync` on this machine, the
+window keeps it synced while it runs: when it starts, about a minute after a
+change, when another machine has synced (it looks every two minutes or so), and
+once more as it closes. It is the same sync as `lit sync`, with the same
+backups. The cloud button right of the library selector shows how it stands;
+click it for a one-line status and **Sync now**, and, after conflicts or a code
+repo that did not sync, **View activity log**, which names each file and its
+backup. A sync that needs you (an expired sign-in, rclone's safety stop, a side
+to pick) stops the auto sync until a sync goes through, from **Sync now** or a
+terminal; `lit sync status` says why and what to do. Saving a note or a PDF
+that a sync (or an agent) changed after you opened it keeps your version and
+backs up the one it replaced (see `lit sync`).
+
+| Dot | The popover says, for example | Note |
+|---|---|---|
+| none | Cloud sync is not set up. | The library has no `sync:`; `lit sync setup` adds one. |
+| green | Last synced 3 min ago. | Followed by "1 code repo not synced." when one did not follow. |
+| blue, pulsing | Syncing… | "Another sync is in progress (started 10:07)." while another sync of this library, `lit sync` in a terminal say, holds it. |
+| amber | Last synced just now, with 1 conflict. | The newer copy was kept; the activity log names the backup. |
+| red | Too many changes on one side. Confirmation required. | Auto sync stopped. Also "gdrive credentials expired. Sign in again.", "Choose which side wins: this machine or the cloud." and "Sync failed. Auto sync stopped." |
+| hollow | Sync unavailable. Retrying at 11:35. | The cloud could not be reached; it tries again by itself. "This machine has not completed its first sync." before the first `lit sync` here. |
+| grey | Not synced since launch. | Before the first sync since the window opened. |
 
 The Web UI drives a growing subset of the commands on this page through the same
 code paths — this page (the CLI) stays the complete surface. The web server

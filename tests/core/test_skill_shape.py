@@ -41,7 +41,7 @@ _BODY_LIMIT = {
 # The helper files each skill ships next to SKILL.md, and the phrase that
 # sends the agent to one.
 _HELPERS = {
-    "lit-library": {"add-errors.md", "legacy-repair.md"},
+    "lit-library": {"add-errors.md", "legacy-repair.md", "sync.md"},
     "lit-reading": {"health-check.md", "si.md"},
 }
 _POINTER = re.compile(r"read `([\w.-]+\.md)`")

@@ -9,6 +9,77 @@ before, and everything else is a patch — however large it was to build.
 Anything that takes something out of your library is marked **Breaking** in its
 own entry. Read those before you upgrade, whatever the number says.
 
+## Unreleased
+
+### Added
+
+- **One library on several computers.** `lit sync` with no subcommand now syncs
+  both ways through [rclone](https://rclone.org/) 1.74.2 or newer and any cloud it
+  supports: what you changed on this computer goes up, and what changed on your
+  other computers comes down. Point each computer at the same cloud folder with
+  `lit sync setup`, or ask your agent: the skill walks it through, and you only
+  sign in to your cloud. The first sync fills an empty cloud folder from this
+  library, or a new, empty library from the cloud; when both already hold one, it
+  changes nothing and asks which one wins (`--first-from cloud` or `local`). When
+  both computers changed the same file, the newer copy is kept; a paper deleted on
+  one computer stays deleted even if the other changed it. Every file a sync
+  replaces or deletes is kept in a backup folder, on this computer and in the
+  cloud. `lit sync status` shows this computer's last sync in full and lists the
+  conflict backups of the last 7 days; with `--local` it answers from this
+  computer's records alone, at once and offline. Each computer keeps its own
+  `lit-config.yaml` and project folders.
+- **Code repos follow the library by commit.** `repo-meta.yaml` now records the
+  `commit` and `branch` of each checkout. After a sync, each computer fetches that
+  commit from the repo's upstream and moves its own checkout there, unless it
+  holds changes of yours. A repo that cannot follow (offline, or imported from a
+  local folder) never stops the sync: the summary says why and what to do, and the
+  next `lit sync` tries again.
+- **The GUI syncs by itself while it runs.** For a library that has had its first
+  `lit sync` on this computer, the window syncs when it starts, about a minute
+  after a change, when another computer has synced, and once more as it closes. A
+  cloud button next to the library selector shows how it stands and has
+  **Sync now**. When a sync needs you, after an expired sign-in for example, auto
+  sync stops, and the other `lit` commands end with one line saying so until a
+  sync goes through, so your agent sees it too. `lit sync status` says why and
+  what to do.
+
+### Changed
+
+- **`lit sync push` and `pull` refuse a library that syncs two-way.** Once a
+  library has synced with `lit sync`, on this computer or another, a push would
+  overwrite what your other computers synced, and a pull would delete files the
+  cloud never holds, such as `lit-config.yaml` and code checkouts. Both now stop
+  with one line pointing to `lit sync`. A library you only back up with `push`
+  works as before.
+
+### Fixed
+
+- **A save in the GUI keeps the version it replaces.** When an agent rewrote
+  `notes.md` or `discussion.md` while you had it open with edits of your own,
+  saving overwrote the agent's version without a word. Your save still goes
+  through, and the version it replaced is now kept in a backup folder, with a
+  toast and a row in the activity log that names it. The same holds for a PDF, and
+  for a file a sync brings in.
+- **Cloning or updating a code repo no longer hangs.** `lit code add`,
+  `lit code update`, `lit code restore-all` and the re-clone in `lit trash restore`
+  could wait forever on a git prompt for a user name or password that an agent's
+  shell cannot answer, or on a download that had stalled. git now fails at once
+  instead of asking, and gives up on a transfer slower than 1 KB a second for a
+  minute; the error says why. At a terminal, `lit code add`, `lit code update` and
+  `lit code restore-all` now show git's progress as it goes.
+- **A project with no folder on this computer can get one.** A project listed in
+  `TAXONOMY.md` but missing from `lit-config.yaml`, one added on another computer
+  for example, sent you in a circle: `lit project set-path` said to use
+  `lit project add`, which refused because the project exists. `set-path` now
+  gives it its folder, and `lit health-check` points to it.
+- **`lit sync pull` refuses a cloud folder that holds no library.** A pull mirrors
+  the cloud folder with deletion, so pulling from an empty or wrong folder could
+  delete this library's files. It now stops unless the folder holds a
+  `lit-config.yaml`, as one you pushed to does, and says to point `lit sync setup`
+  at that folder.
+- **`lit sync push` and `pull` print the library's path whole.** A long path was
+  folded mid-line, and a part of it in square brackets dropped out.
+
 ## 1.3.11 — 2026-11-02
 
 ### Added

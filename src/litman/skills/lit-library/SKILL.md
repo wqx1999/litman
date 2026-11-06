@@ -1,6 +1,6 @@
 ---
 name: lit-library
-description: "Write side of the litman vault: drives the `lit` CLI to change the library. NOT for discussing or reading a paper — that's lit-reading. Use to add a paper (PDF or DOI) or its SI files, tag it, link it to a project, bind a code repo, export a .bib (or RIS for EndNote), rename, delete or restore a paper, or tidy the topic / method / data vocabulary. Triggers: '加到文献库' / 'add this paper', '把这些 SI 加到这篇' / 'add these SI files', '导出 bib' / 'export refs', '导出到 EndNote', '给这篇打标签' / 'tag this paper', '新建项目' / 'link it to my project', '把代码 clone 下来' / 'clone this repo', '把这篇删了' / 'delete this paper', '恢复删掉的论文' / 'restore from trash', '合并这两个 topic' / 'merge these tags', '把这篇的 id 改成 X' / 'rename this paper', '库里好多 Unknown' / 'fix these bad ids'. NOT for a project's own References/ folder — that's ref-manager."
+description: "Write side of the litman vault: drives the `lit` CLI to change the library. NOT for discussing or reading a paper — that's lit-reading. Use to add a paper (PDF or DOI) or its SI files, tag it, link it to a project, bind a code repo, export a .bib (or RIS for EndNote), rename, delete or restore a paper, tidy the topic / method / data vocabulary, or sync the library across computers via a cloud drive. Triggers: '加到文献库' / 'add this paper', '把这些 SI 加到这篇' / 'add these SI files', '导出 bib' / 'export refs', '导出到 EndNote', '给这篇打标签' / 'tag this paper', '新建项目' / 'link it to my project', '把代码 clone 下来' / 'clone this repo', '把这篇删了' / 'delete this paper', '恢复删掉的论文' / 'restore from trash', '合并这两个 topic' / 'merge these tags', '把这篇的 id 改成 X' / 'rename this paper', '库里好多 Unknown' / 'fix these bad ids', '云同步' / 'cloud sync', '多台电脑' / '家里和学校' / 'two computers', '换电脑' / 'new computer', '备份到云盘' / 'back up to the cloud'. NOT for a project's own References/ folder — that's ref-manager."
 ---
 
 # lit-library — the write side of the litman vault
@@ -24,7 +24,7 @@ Changes the library through the `lit` CLI. Reading, discussing and closing out a
 8. **Don't install, upgrade or uninstall litman.** If `lit` is missing, give the user the install command — `curl -LsSf https://get.litman.dev/install.sh | sh` (or `uv tool install litman` / `pipx install litman`) — and stop. If `lit hello` says a newer litman exists, pass that on and carry on with the task.
 9. **Cite in-vault papers as `[[paper-id]]`**, never in backticks or plain text — those escape `lit rm`'s `(deleted)` tagging and `lit health-check`'s dangling-link check. Check that each `[[X]]` you write or keep exists (`lit show 'X' --format json`); a missing one becomes `[[X]] (deleted)`. Cite this paper's own SI file as `si-01.pdf（<original name>）`, never a bare number; another paper's SI as `[[<other-id>]]` plus the file's original name, without its `si-NN`.
 10. **Don't organise on your own.** Never tag, add an edge, link a paper to a project or bind code on your own initiative. Saying what you notice ("this touches tokenization") is fine — noticing is not tagging. Propose; the user decides; then you run the command.
-11. **Write only on an explicit instruction.** Reads need no permission. A write — a status or date stamp, a tag, a grade, `type`, an edge, a project link, rewriting `notes.md`, appending to `discussion.md` — runs only when (a) the user's message asks for that write ("标成已读", "记下来", "打上 X", "加到文献库"), or (b) the user said yes to a proposal that listed it. A remark is not an instruction: "这篇差不多了", "感觉没什么要读的了", "读完了", "looks done" get one proposal that lists every write you intend, and then you wait. A yes covers the listed items only — nothing extra on the side. One exception: `lit add --si '<id>'` with no files — say so in one line, then run it; it only opens a window, and nothing is written until the user adds files and presses Done.
+11. **Write only on an explicit instruction.** Reads need no permission. A write — a status or date stamp, a tag, a grade, `type`, an edge, a project link, rewriting `notes.md`, appending to `discussion.md` — runs only when (a) the user's message asks for that write ("标成已读", "记下来", "打上 X", "加到文献库"), or (b) the user said yes to a proposal that listed it. A remark is not an instruction: "这篇差不多了", "感觉没什么要读的了", "读完了", "looks done" get one proposal that lists every write you intend, and then you wait. A yes covers the listed items only — nothing extra on the side. Two exceptions: `lit add --si '<id>'` with no files — say so in one line, then run it; it only opens a window, and nothing is written until the user adds files and presses Done; and `lit sync` on a library that syncs two-way, at the start of a session and after you changed the library ([S]).
 
 ## Hand-offs with lit-reading
 
@@ -33,11 +33,11 @@ Changes the library through the `lit` CLI. Reading, discussing and closing out a
 
 ## Finding the vault
 
-`lit vault list --format json` lists the registered vaults and the active one (`$LIT_LIBRARY`, if set, overrides it); `lit hello` confirms `lit` is installed (Rule 8 if not). Never assume a relative path. A project `References/` folder and a global vault both present → ask which one the user means.
+`lit vault list --format json` lists the registered vaults and the active one (`$LIT_LIBRARY`, if set, overrides it); `lit hello` confirms `lit` is installed (Rule 8 if not); `lit sync status --local` (no network) says whether the library syncs two-way: if so, [S] for the session's first `lit sync`. Never assume a relative path. A project `References/` folder and a global vault both present → ask which one the user means.
 
 ## Workflows, most used first
 
-**[A]** add a paper from a PDF · **[B]** from a DOI (preferred whenever one exists) · **[E]** metadata, tags, edges · **[G]** export a .bib or RIS · **[D]** browse · **[L]** a paper's SI files · **[C]** code repositories · **[H]** projects · **[I]** restore a trashed paper · **[J]** vocabulary governance · **[K]** repair a legacy library.
+**[A]** add a paper from a PDF · **[B]** from a DOI (preferred whenever one exists) · **[E]** metadata, tags, edges · **[G]** export a .bib or RIS · **[D]** browse · **[L]** a paper's SI files · **[C]** code repositories · **[H]** projects · **[I]** restore a trashed paper · **[J]** vocabulary governance · **[K]** repair a legacy library · **[S]** cloud sync across computers.
 
 ---
 
@@ -168,6 +168,10 @@ Only the paper lit-reading B13 confirmed with the user — never on your own, ne
 
 `lit health-check` reports `placeholder_metadata`, `placeholder_id`, `weak_id_keyword` or `dirty_metadata` (the `rename <id>` lines `--fix` prints), often dozens at once ("库里好多 Unknown" / "clean up these bad ids") → **read `legacy-repair.md` (next to this SKILL.md) first.** In short: `lit health-check --all` for the whole list, the fields before the id, one table and one yes for the batch.
 
+## [S] Cloud sync across computers
+
+One library on several computers through the user's cloud drive (`lit sync`): setting it up, a new computer, syncing day to day, conflicts, a code repo that did not follow, a stopped sync → **read `sync.md` (next to this SKILL.md) first.**
+
 ## `tip:` lines
 
-A dim `tip:` line after a command (`no lit health-check in 14+ days…`, `no lit sync push in 7+ days…`) → relay it and offer to run the command it names; never run it unasked. A first `lit sync push` prints a size preview and stops for `--yes`: relay the preview, re-run with `--yes` on the user's go.
+A dim `tip:` line after a command (`no lit health-check in 14+ days…`, `no lit sync push in 7+ days…`) → relay it and offer to run the command it names; never run it unasked. `no lit sync in 7+ days…` → run `lit sync` when `lit sync status --local` says two-way, else offer it ([S]). A first `lit sync push` prints a size preview and stops for `--yes`: relay the preview, re-run with `--yes` on the user's go. A `Cloud sync stopped …` / `Cloud sync failed …` line after any command → run `lit sync status`, tell the user in plain words what it says, and fix it through [S].
