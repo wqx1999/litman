@@ -3169,23 +3169,34 @@ def classify_sync_error(err: BaseException) -> tuple[SyncErrorKind, str]:
     return "offline", "offline"
 
 
-def _reserve_backup_name(local_root: Path) -> str:
+def _reserve_backup_name(local_root: Path, label: str = "") -> str:
     """Name, and create, a fresh local backup folder for one bisync run.
 
     Created up front because bisync creates it only when it backs something
     up, and the same name is used for the cloud-side folder: two runs within
     one second must not share it. An unused folder is removed afterwards
-    (:func:`_drop_if_empty`).
+    (:func:`_drop_if_empty`). The name is the time, then a number when that
+    time is taken, then ``label``: :data:`SAVE_BACKUP_LABEL` for a save's.
     """
     base = datetime.now().strftime("%Y-%m-%d_%H%M%S")
-    name, n = base, 2
+    name, n = base + label, 2
     while True:
         try:
             (local_root / name).mkdir()
             return name
         except FileExistsError:
-            name = f"{base}-{n}"
+            name = f"{base}-{n}{label}"
             n += 1
+
+
+def conflict_backups_root(vault: Path, target_url: str) -> Path:
+    """Where this machine keeps the conflict backups of ``vault`` synced with ``target_url``.
+
+    :attr:`BisyncPaths.conflicts_root`, also for a target two-way sync
+    refuses (the remote's top level) or none (``""``): a save keeps its copy
+    there all the same.
+    """
+    return sync_data_dir() / "sync-backup" / vault_key(vault, target_url) / "conflicts"
 
 
 def keep_replaced_copy(vault: Path, rel: str) -> Path:
@@ -3194,9 +3205,10 @@ def keep_replaced_copy(vault: Path, rel: str) -> Path:
     For a GUI save over a file that changed since the page read it (a sync
     brought another machine's copy, an agent rewrote it): the save wins, and
     the copy it replaces goes where a sync puts the older copy of a conflict,
-    ``<data dir>/sync-backup/<vault-key>/conflicts/<time>/<rel>``. Keyed by
-    the configured remote, or by the library alone when it has no ``sync:``.
-    Returns the backup's path.
+    ``<data dir>/sync-backup/<vault-key>/conflicts/<time>-save/<rel>``: the
+    label tells it from a sync's folder (:func:`recent_conflict_backups`).
+    Keyed by the configured remote, or by the library alone when it has no
+    ``sync:``. Returns the backup's path.
 
     Raises:
         OSError: the copy could not be made.
@@ -3209,12 +3221,98 @@ def keep_replaced_copy(vault: Path, rel: str) -> Path:
         target = configured.target_url() if configured is not None else ""
     except (LitmanError, OSError):
         target = ""
-    root = sync_data_dir() / "sync-backup" / vault_key(vault, target) / "conflicts"
+    root = conflict_backups_root(vault, target)
     root.mkdir(parents=True, exist_ok=True)
-    dest = root / _reserve_backup_name(root) / Path(*rel.split("/"))
+    dest = root / _reserve_backup_name(root, SAVE_BACKUP_LABEL) / Path(*rel.split("/"))
     dest.parent.mkdir(parents=True, exist_ok=True)
     shutil.copy2(vault / Path(*rel.split("/")), dest)
     return dest
+
+
+#: The end of the name of a folder of conflict backups that a GUI save made
+#: (:func:`keep_replaced_copy`), not a sync.
+SAVE_BACKUP_LABEL = "-save"
+#: How many days back ``lit sync status`` lists the folders of conflict backups.
+CONFLICT_BACKUP_DAYS = 7
+#: How many files of one such folder it names; the total counts them all.
+CONFLICT_BACKUP_FILES_CAP = 5
+
+#: A backup folder's name (:func:`_reserve_backup_name`): its time, the number
+#: that tells apart two made in one second, a save's label.
+_BACKUP_NAME_RE = re.compile(
+    rf"^(\d{{4}}-\d{{2}}-\d{{2}}_\d{{6}})(?:-\d+)?({re.escape(SAVE_BACKUP_LABEL)})?$"
+)
+
+
+@dataclass(frozen=True)
+class ConflictBackupFolder:
+    """One folder of this machine's conflict backups (:attr:`BisyncPaths.conflicts_root`).
+
+    ``at`` is when it was made, read from its name (this machine's time).
+    ``by_save`` says a GUI save made it, to keep the copy it replaced of a file
+    that had changed since the page read it. Else a sync made it, for the
+    copies that lost its conflicts (``<file>.sync-conflict1``: this machine's,
+    ``2``: the cloud's) and the files of a folder deleted on one machine and
+    changed on the other. ``files`` are the first
+    :data:`CONFLICT_BACKUP_FILES_CAP`, relative to the folder, with ``/``;
+    ``files_total`` counts them all.
+    """
+
+    path: Path
+    at: datetime
+    by_save: bool
+    files: tuple[str, ...]
+    files_total: int
+
+
+def recent_conflict_backups(
+    root: Path, *, now: datetime | None = None, days: int = CONFLICT_BACKUP_DAYS
+) -> list[ConflictBackupFolder]:
+    """The folders of conflict backups under ``root`` made in the last ``days`` days.
+
+    Newest first. ``root`` is a :attr:`BisyncPaths.conflicts_root`; ``now`` is
+    this machine's time, without a zone like the folder names. A folder whose
+    name is not a backup folder's, or that holds no file, is left out.
+    """
+    since = (now or datetime.now()) - timedelta(days=days)
+    try:
+        names = os.listdir(root)
+    except OSError:
+        return []
+    found: list[ConflictBackupFolder] = []
+    for name in names:
+        match = _BACKUP_NAME_RE.match(name)
+        if match is None:
+            continue
+        try:
+            at = datetime.strptime(match.group(1), "%Y-%m-%d_%H%M%S")
+        except ValueError:
+            continue
+        if at < since:
+            continue
+        files = sorted(_files_under(root / name))
+        if files:
+            found.append(
+                ConflictBackupFolder(
+                    path=root / name,
+                    at=at,
+                    by_save=match.group(2) is not None,
+                    files=tuple(files[:CONFLICT_BACKUP_FILES_CAP]),
+                    files_total=len(files),
+                )
+            )
+    found.sort(key=lambda f: (f.at, f.path.name), reverse=True)
+    return found
+
+
+def _files_under(folder: Path) -> list[str]:
+    """Every file under ``folder``, relative to it and with ``/``."""
+    out: list[str] = []
+    for dirpath, _dirnames, filenames in os.walk(folder):
+        rel_dir = os.path.relpath(dirpath, folder).replace(os.sep, "/")
+        prefix = "" if rel_dir == "." else rel_dir + "/"
+        out.extend(prefix + name for name in filenames)
+    return out
 
 
 def _drop_if_empty(path: Path) -> None:

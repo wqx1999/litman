@@ -45,6 +45,7 @@ from litman.core.document import list_papers
 from litman.core.library import find_vault, resolve_library_or_vault
 from litman.core.shell import shell_arg
 from litman.core.sync import (
+    CONFLICT_BACKUP_DAYS,
     DEFAULT_EXCLUDES,
     SYNC_LOCK_WAIT,
     FileChanges,
@@ -55,6 +56,7 @@ from litman.core.sync import (
     TwoWayResult,
     codes_ignore_patterns_to_rclone,
     compute_status,
+    conflict_backups_root,
     describe_sync_lock_holder,
     format_iso,
     humanize_bytes,
@@ -65,6 +67,7 @@ from litman.core.sync import (
     push,
     read_sync_mode,
     read_sync_state,
+    recent_conflict_backups,
     remote_exists,
     require_one_way,
     two_way_sync,
@@ -1037,8 +1040,9 @@ def sync_status_cmd(library: Path | None, vault_name: str | None) -> None:
     sync carries them, and the last two-way sync is shown instead. Below the
     table comes this machine's last two-way run (a terminal ``lit sync`` or
     the GUI's): how it ended, its conflicts with their backups, the code
-    repos it left behind, or its whole error with what to do. That part
-    shows even when the cloud cannot be reached.
+    repos it left behind, or its whole error with what to do. Then the
+    folders of conflict backups made here in the last days, but the last
+    run's. Those two parts show even when the cloud cannot be reached.
     """
     vault = find_vault(resolve_library_or_vault(library, vault_name))
     target, codes_patterns, default_exclude = _require_sync_configured(vault)
@@ -1057,6 +1061,7 @@ def sync_status_cmd(library: Path | None, vault_name: str | None) -> None:
         # record of what went wrong is the part that matters now.
         if last_run is not None:
             _print_last_run(last_run, target)
+        _print_conflict_backups(vault, target, last_run)
         raise
 
     table = Table(
@@ -1096,6 +1101,7 @@ def sync_status_cmd(library: Path | None, vault_name: str | None) -> None:
     console.print(table)
     if last_run is not None:
         _print_last_run(last_run, target)
+    _print_conflict_backups(vault, target, last_run)
 
 
 _RUN_TRIGGER = {
@@ -1173,6 +1179,72 @@ def _run_conflict_text(c: RunConflict) -> str:
         f"{c.path}/: deleted {where} and changed {other}; the deletion won, "
         f"the changed files are in {c.backup}"
     )
+
+
+#: How many folders of conflict backups ``lit sync status`` lists.
+_BACKUP_FOLDERS_CAP = 10
+#: In the name of the copy that lost a conflict (``--conflict-suffix``).
+_CONFLICT_COPY = ".sync-conflict"
+
+
+def _print_conflict_backups(vault: Path, target: str, run: LastRun | None) -> None:
+    """The folders of conflict backups made here in the last days, but the last run's.
+
+    For an agent to find a conflict after later syncs replaced the record of
+    the run that had it: each folder's time, whether a sync or a GUI save made
+    it, its whole path and its first files. The folders that hold a backup the
+    last run's record names are left out: that record shows them. Nothing is
+    printed when no folder is left. Printed unwrapped, so a path stays whole.
+    """
+    root = conflict_backups_root(vault, target)
+    shown = _folders_named(run, root)
+    folders = [f for f in recent_conflict_backups(root) if f.path.name not in shown]
+    if not folders:
+        return
+
+    def say(text: str) -> None:
+        console.print(text, soft_wrap=True, highlight=False)
+
+    listed = folders[:_BACKUP_FOLDERS_CAP]
+    # The names of the files listed from a sync's folders, for the two lines
+    # that say what they are.
+    names = [rel.rsplit("/", 1)[-1] for f in listed if not f.by_save for rel in f.files]
+    besides = ", besides the last run's" if shown else ""
+    console.print()
+    say(f"[bold]Conflict backups from the last {CONFLICT_BACKUP_DAYS} days{besides}:[/]")
+    if any(_CONFLICT_COPY in name for name in names):
+        say(
+            "  A sync keeps the copy that lost as <file>.sync-conflict1 (this machine's) "
+            "or .sync-conflict2 (the cloud's)."
+        )
+    if any(_CONFLICT_COPY not in name for name in names):
+        say(
+            "  A file under its own name in a sync's folder was changed in a folder "
+            "deleted on the other side; the deletion won."
+        )
+    for f in listed:
+        what = "a GUI save over a changed file" if f.by_save else "a sync's conflicts"
+        count = f"{f.files_total} file{'' if f.files_total == 1 else 's'}"
+        say(f"  • {f.at:%Y-%m-%d %H:%M}, {what}, {count}: {escape(str(f.path))}")
+        for rel in f.files:
+            say(f"      {escape(rel)}")
+        if f.files_total > len(f.files):
+            say(f"      … and {f.files_total - len(f.files)} more")
+    if len(folders) > _BACKUP_FOLDERS_CAP:
+        say(f"  • … and {len(folders) - _BACKUP_FOLDERS_CAP} more folders in {escape(str(root))}")
+
+
+def _folders_named(run: LastRun | None, root: Path) -> set[str]:
+    """The names of the folders under ``root`` that hold a backup ``run``'s record names."""
+    names: set[str] = set()
+    for c in run.conflicts if run is not None else ():
+        try:
+            parts = Path(c.backup).relative_to(root).parts
+        except ValueError:
+            continue
+        if parts:
+            names.add(parts[0])
+    return names
 
 
 def _run_way_out(run: LastRun, target: str) -> str | None:

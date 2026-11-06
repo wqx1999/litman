@@ -18,7 +18,7 @@ import os
 import sys
 from difflib import get_close_matches
 from pathlib import Path
-from typing import Any, ClassVar, cast
+from typing import TYPE_CHECKING, Any, ClassVar, cast
 
 import click
 from rich.console import Console
@@ -29,6 +29,11 @@ from litman.core.confirm import is_interactive
 from litman.core.replace import refusal_message, refused_by_windows
 from litman.core.undecodable import text_refusal
 from litman.exceptions import LitmanError
+
+if TYPE_CHECKING:
+    from datetime import datetime
+
+    from litman.core.sync import LastRun
 
 console = Console()
 
@@ -62,6 +67,44 @@ def _timestamp_is_stale(ts: str | None, *, now: Any, stale_days: int) -> bool:
     if parsed.tzinfo is None:
         parsed = parsed.replace(tzinfo=UTC)
     return cast(bool, (now - parsed).total_seconds() > stale_days * 86400)
+
+
+#: Why the last sync stopped, in a few words, by its record's ``reason``
+#: (:class:`litman.core.sync.LastRun`).
+_SYNC_STOP_WORDS: dict[str, str] = {
+    "auth": "sign-in expired",
+    "safety-stop": "too many changes on one side",
+    "choice": "a side must be picked to win",
+    "lock": "file locks refused",
+    "rclone": "rclone cannot run it",
+}
+
+
+def _sync_stopped_line(run: LastRun | None, *, now: datetime) -> str | None:
+    """The line after a command while this machine's last sync has not gone through.
+
+    ``None`` when there is no record of a run, or its run went through (``ok``
+    or ``conflicts``): the next run that goes through replaces the record, so
+    the line goes away by itself. ``now`` is tz-aware; a run on another day
+    than today is named with its date.
+    """
+    from datetime import datetime
+
+    if run is None or run.result not in ("failed", "needs-choice"):
+        return None
+    when = ""
+    try:
+        at = datetime.fromisoformat(run.at).astimezone()
+    except (ValueError, OverflowError, OSError):
+        at = None
+    if at is not None:
+        same_day = at.date() == now.astimezone().date()
+        when = f" at {at:%H:%M}" if same_day else f" on {at:%Y-%m-%d} at {at:%H:%M}"
+    words = _SYNC_STOP_WORDS.get(run.reason or "")
+    if words is None and run.result == "needs-choice":
+        words = _SYNC_STOP_WORDS["choice"]
+    verdict = f"Cloud sync stopped{when} ({words})." if words else f"Cloud sync failed{when}."
+    return f"{verdict} Run `lit sync status` for why and what to do."
 
 
 # Workflow-ordered command groups for `lit --help` / `lit help`. Any command
@@ -221,7 +264,7 @@ class LitGroup(click.Group):
         # `health-check` exit 1) bypasses this — accepted limitation; the
         # nudge is a passive reminder, not a guarantee on every exit path.
         if cmd_name not in self._NUDGE_SKIP:
-            self._emit_staleness_nudge()
+            self._emit_staleness_nudge(sync_command=cmd_name == "sync")
             self._emit_update_nudge(uncapped=cmd_name in self._NUDGE_UNCAPPED)
         return result
 
@@ -533,10 +576,10 @@ class LitGroup(click.Group):
         return candidate
 
     @staticmethod
-    def _emit_staleness_nudge() -> None:
+    def _emit_staleness_nudge(*, sync_command: bool = False) -> None:
         """Post-dispatch staleness nudges (M30 §5).
 
-        Two independent, condition-driven reminders for the **active
+        Independent, condition-driven reminders for the **active
         registered** vault (an unregistered ``--library`` override has no entry
         → no nudge). Each fires when its tracked timestamp is older than its
         threshold, or None / missing / unparseable (treated as stale):
@@ -551,8 +594,15 @@ class LitGroup(click.Group):
           local data folder), else "run ``lit sync push``": push refuses a
           library that syncs two-way. Either command within the window
           silences it.
+        * sync stopped: this machine's last two-way run (``last-run`` in the
+          same state file, :class:`~litman.core.sync.LastRun`) ended
+          ``failed`` or ``needs-choice`` → "Cloud sync stopped …, run ``lit
+          sync status``" (:func:`_sync_stopped_line`), in place of the 7-day
+          sync line, which it outranks. Not after a ``lit sync`` command
+          (``sync_command``): those report the sync themselves. A run that
+          goes through replaces the record, and the line with it.
 
-        Both are stateless (recomputed every command, no "already shown" flag),
+        All are stateless (recomputed every command, no "already shown" flag),
         so an ignored tip re-appears on the next command and only clears once
         the user runs the action that refreshes the timestamp.
 
@@ -597,11 +647,11 @@ class LitGroup(click.Group):
             now = datetime.now(UTC)
             tty = _default_tty_probe()
 
-            def _emit(line: str) -> None:
+            def _emit(line: str, *, whole: bool = False) -> None:
                 if tty:
-                    console.print(line)
+                    console.print(line, soft_wrap=whole)
                 else:
-                    Console(stderr=True).print(line)
+                    Console(stderr=True).print(line, soft_wrap=whole)
 
             # 1. Health-check staleness — registry-only.
             if _timestamp_is_stale(
@@ -633,7 +683,17 @@ class LitGroup(click.Group):
 
                     state = read_sync_state(vault)
                     sync_config = load_config(vault).sync
-                    if sync_config is not None and all(
+                    stopped = (
+                        _sync_stopped_line(state.last_run, now=now)
+                        if sync_config is not None
+                        else None
+                    )
+                    if stopped is not None:
+                        # Whole, not broken at the 80 columns Rich assumes
+                        # off a terminal: an agent reads it as one line.
+                        if not sync_command:
+                            _emit(f"[yellow]{escape(stopped)}[/]", whole=True)
+                    elif sync_config is not None and all(
                         _timestamp_is_stale(
                             stamp, now=now, stale_days=SYNC_STALE_DAYS
                         )
