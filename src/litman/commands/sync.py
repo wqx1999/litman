@@ -62,7 +62,9 @@ from litman.core.sync import (
     humanize_bytes,
     largest_files,
     list_remotes,
+    local_sync_mode,
     local_vault_size,
+    oauth_expired,
     pull,
     push,
     read_sync_mode,
@@ -70,6 +72,7 @@ from litman.core.sync import (
     recent_conflict_backups,
     remote_exists,
     require_one_way,
+    sign_in_way_out,
     two_way_sync,
     write_sync_to_config,
 )
@@ -1027,9 +1030,20 @@ def sync_pull_cmd(
 
 
 @sync_group.command("status")
+@click.option(
+    "--local",
+    "local_only",
+    is_flag=True,
+    default=False,
+    help=(
+        "Only this machine's records, with no rclone call and no network: how "
+        "this library syncs (two-way, one-way, or not yet from here), its last "
+        "two-way run and recent conflict backups. No file counts."
+    ),
+)
 @library_option
 @vault_option
-def sync_status_cmd(library: Path | None, vault_name: str | None) -> None:
+def sync_status_cmd(local_only: bool, library: Path | None, vault_name: str | None) -> None:
     """Show last-push / last-pull timestamps and local vs. remote file counts.
 
     No network mutation. Calls rclone size --json once to enumerate the
@@ -1043,8 +1057,16 @@ def sync_status_cmd(library: Path | None, vault_name: str | None) -> None:
     repos it left behind, or its whole error with what to do. Then the
     folders of conflict backups made here in the last days, but the last
     run's. Those two parts show even when the cloud cannot be reached.
+
+    With --local, only this machine's records are read: the Mode row says
+    whether the library syncs two-way here, one-way (push / pull), or has not
+    synced from here yet; then the last run and the conflict backups. No rclone
+    call, so it answers at once and offline.
     """
     vault = find_vault(resolve_library_or_vault(library, vault_name))
+    if local_only:
+        _print_local_status(vault)
+        return
     target, codes_patterns, default_exclude = _require_sync_configured(vault)
     last_run = read_sync_state(vault).last_run
     # Mirror the push exclude set so the local count matches what rclone
@@ -1104,6 +1126,46 @@ def sync_status_cmd(library: Path | None, vault_name: str | None) -> None:
     _print_conflict_backups(vault, target, last_run)
 
 
+#: The Mode row of ``lit sync status --local`` (:func:`local_sync_mode`).
+_LOCAL_MODE = {
+    "two-way": "two-way",
+    "one-way": "one-way (push / pull)",
+    "unsynced": "not synced from this machine yet",
+}
+
+
+def _print_local_status(vault: Path) -> None:
+    """``lit sync status --local``: this machine's records only, no rclone call."""
+    config = load_config(vault)
+    if config.sync is None:
+        console.print(
+            "Mode: not set up. `lit sync setup` sets up cloud sync for this library.",
+            soft_wrap=True,
+        )
+        return
+    target = config.sync.target_url()
+    state = read_sync_state(vault)
+    mode = local_sync_mode(vault, target, state)
+    table = Table(
+        title=f"lit sync status --local — {target}",
+        header_style="bold",
+        show_lines=False,
+    )
+    table.add_column("Metric", style="bold")
+    table.add_column("Value", overflow="fold")
+    table.add_row("Target", escape(target))
+    table.add_row("Mode", _LOCAL_MODE[mode])
+    if mode == "two-way":
+        table.add_row("Last sync", escape(format_iso(state.last_sync)))
+    else:
+        table.add_row("Last push", escape(format_iso(state.last_push)))
+        table.add_row("Last pull", escape(format_iso(state.last_pull)))
+    console.print(table)
+    if state.last_run is not None:
+        _print_last_run(state.last_run, target)
+    _print_conflict_backups(vault, target, state.last_run)
+
+
 _RUN_TRIGGER = {
     "terminal": "`lit sync` in a terminal",
     "auto": "the GUI's auto sync",
@@ -1116,7 +1178,7 @@ _RUN_RESULT = {
     "failed": "failed",
 }
 _RUN_REASON = {
-    "auth": "the sign-in to the remote expired",
+    "auth": "the cloud refused the sign-in",
     "safety-stop": "rclone's safety check stopped it",
     "lock": "the file system refuses file locks",
     "rclone": "rclone cannot run this sync",
@@ -1257,8 +1319,12 @@ def _run_way_out(run: LastRun, target: str) -> str | None:
     if run.result != "failed":
         return None
     if run.reason == "auth":
-        remote = target.split(":", 1)[0]
-        return f"Sign in again with `rclone config reconnect {remote}:`, then run `lit sync`."
+        # How to sign in again was settled when the sync failed; a record from
+        # before that kept it falls back on rclone's own words. Its error names
+        # the way back itself when litman wrote it (auth_failure).
+        sign_in = run.sign_in or ("browser" if oauth_expired(run.error or "") else None)
+        way_out = sign_in_way_out(target.split(":", 1)[0], sign_in)
+        return None if way_out in (run.error or "") else way_out
     if run.reason is None:
         return (
             "Run `lit sync` to try again; it shows rclone's whole output. "

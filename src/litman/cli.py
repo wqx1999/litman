@@ -72,7 +72,7 @@ def _timestamp_is_stale(ts: str | None, *, now: Any, stale_days: int) -> bool:
 #: Why the last sync stopped, in a few words, by its record's ``reason``
 #: (:class:`litman.core.sync.LastRun`).
 _SYNC_STOP_WORDS: dict[str, str] = {
-    "auth": "sign-in expired",
+    "auth": "sign-in refused",
     "safety-stop": "too many changes on one side",
     "choice": "a side must be picked to win",
     "lock": "file locks refused",
@@ -588,12 +588,13 @@ class LitGroup(click.Group):
           :data:`HEALTH_CHECK_STALE_DAYS` → "run ``lit health-check``".
         * sync: ``.litman-sync-state.yaml`` ``last_push`` and ``last_sync``
           both > :data:`SYNC_STALE_DAYS`, AND only when a remote is configured
-          (``lit-config.yaml`` ``sync`` set) → "run ``lit sync``" once this
-          machine syncs two-way or has tried to (``last_sync`` or
-          ``last_sync_result`` set, or its two-way records exist in litman's
-          local data folder), else "run ``lit sync push``": push refuses a
-          library that syncs two-way. Either command within the window
-          silences it.
+          (``lit-config.yaml`` ``sync`` set) → "run ``lit sync push``" when
+          this machine has only pushed or pulled
+          (:func:`~litman.core.sync.local_sync_mode` ``one-way``), else "run
+          ``lit sync``": it syncs two-way or has tried to, or has not synced at
+          all yet, where ``lit sync setup`` names ``lit sync`` as the next step.
+          push refuses a library that syncs two-way. Either command within the
+          window silences it.
         * sync stopped: this machine's last two-way run (``last-run`` in the
           same state file, :class:`~litman.core.sync.LastRun`) ended
           ``failed`` or ``needs-choice`` → "Cloud sync stopped …, run ``lit
@@ -675,11 +676,7 @@ class LitGroup(click.Group):
             if vault is not None:
                 try:
                     from litman.core.config import load_config
-                    from litman.core.sync import (
-                        bisync_initialised,
-                        read_sync_state,
-                        sync_workdir,
-                    )
+                    from litman.core.sync import local_sync_mode, read_sync_state
 
                     state = read_sync_state(vault)
                     sync_config = load_config(vault).sync
@@ -699,25 +696,23 @@ class LitGroup(click.Group):
                         )
                         for stamp in (state.last_push, state.last_sync)
                     ):
-                        two_way = (
-                            state.last_sync is not None
-                            or state.last_sync_result is not None
-                            or bisync_initialised(
-                                sync_workdir(vault, sync_config.target_url())
-                            )
+                        mode = local_sync_mode(
+                            vault, sync_config.target_url(), state
                         )
-                        if two_way:
-                            _emit(
-                                f"[dim]tip: no `lit sync` in {SYNC_STALE_DAYS}+ "
-                                "days. Run it to sync this library with the "
-                                "configured remote.[/dim]"
-                            )
-                        else:
+                        if mode == "one-way":
                             _emit(
                                 f"[dim]tip: no `lit sync push` in "
                                 f"{SYNC_STALE_DAYS}+ days. "
                                 "Run it to back up your vault to the configured "
                                 "remote.[/dim]"
+                            )
+                        else:
+                            # Two-way, or set up and not synced from here yet,
+                            # where setup names `lit sync` as the next step.
+                            _emit(
+                                f"[dim]tip: no `lit sync` in {SYNC_STALE_DAYS}+ "
+                                "days. Run it to sync this library with the "
+                                "configured remote.[/dim]"
                             )
                 except Exception:
                     pass

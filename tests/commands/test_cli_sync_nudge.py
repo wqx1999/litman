@@ -110,14 +110,23 @@ def test_sync_nudge_fires_when_stale(tmp_path: Path) -> None:
     assert _SYNC_NUDGE not in result.stdout
 
 
-def test_sync_nudge_fires_when_never_pushed(tmp_path: Path) -> None:
-    """Remote configured but never pushed (no sync-state → last_push None) →
-    nudge fires."""
-    _seed_active_vault(tmp_path, configure_remote=True, last_push=None)
+def test_sync_nudge_names_lit_sync_on_a_machine_set_up_that_never_synced(
+    tmp_path: Path,
+) -> None:
+    """Remote configured, nothing synced from here yet: the tip names `lit sync`,
+    the step `lit sync setup` names next, not the one-way push."""
+    vault = _seed_active_vault(tmp_path, configure_remote=True, last_push=None)
 
     result = CliRunner().invoke(cli, ["list"])
     assert result.exit_code == 0, result.output
-    assert _SYNC_NUDGE in result.stderr
+    assert "no `lit sync` in 7+ days" in result.stderr
+    assert _SYNC_NUDGE not in result.stderr
+    # The reverse: a machine with only push or pull history keeps the push tip.
+    for history in (SyncState(last_push=_iso_days_ago(8)), SyncState(last_pull=_iso_days_ago(8))):
+        write_sync_state(vault, history)
+        result = CliRunner().invoke(cli, ["list"])
+        assert _SYNC_NUDGE in result.stderr, history
+        assert "no `lit sync` in" not in result.stderr
 
 
 def test_sync_nudge_silent_when_fresh(tmp_path: Path) -> None:
@@ -207,7 +216,7 @@ def test_sync_nudge_names_lit_sync_when_this_machine_has_two_way_records(
     from litman.core.config import load_config
     from litman.core.sync import bisync_initialised, sync_workdir
 
-    vault = _seed_active_vault(tmp_path, configure_remote=True, last_push=None)
+    vault = _seed_active_vault(tmp_path, configure_remote=True, last_push=_iso_days_ago(30))
     sync_config = load_config(vault).sync
     assert sync_config is not None
     work = sync_workdir(vault, sync_config.target_url())
@@ -219,7 +228,8 @@ def test_sync_nudge_names_lit_sync_when_this_machine_has_two_way_records(
     assert result.exit_code == 0, result.output
     assert "no `lit sync` in 7+ days" in result.stderr
     assert _SYNC_NUDGE not in result.stderr
-    # The reverse: without the records it is a one-way library again.
+    # The reverse: without the records, its push history makes it a one-way
+    # library again.
     (work / "x.path1.lst").unlink()
     result = CliRunner().invoke(cli, ["list"])
     assert _SYNC_NUDGE in result.stderr
@@ -245,7 +255,7 @@ def _stop(vault: Path, result: str, reason: str | None = None) -> datetime:
 @pytest.mark.parametrize(
     ("result", "reason", "verdict"),
     [
-        ("failed", "auth", "Cloud sync stopped at {t} (sign-in expired)."),
+        ("failed", "auth", "Cloud sync stopped at {t} (sign-in refused)."),
         ("failed", "safety-stop", "Cloud sync stopped at {t} (too many changes on one side)."),
         ("needs-choice", "choice", "Cloud sync stopped at {t} (a side must be picked to win)."),
         ("failed", None, "Cloud sync failed at {t}."),
@@ -300,7 +310,7 @@ def test_a_library_without_sync_set_up_gets_no_line(tmp_path: Path) -> None:
     assert "Cloud sync" not in quiet.output
     # The reverse: once it is set up, the same record is named.
     _configure_remote(vault)
-    assert "(sign-in expired)" in CliRunner().invoke(cli, ["list"]).stderr
+    assert "(sign-in refused)" in CliRunner().invoke(cli, ["list"]).stderr
 
 
 def test_lit_sync_and_lit_sync_status_print_no_line_they_report_the_sync_themselves(
@@ -341,13 +351,13 @@ def test_lit_sync_and_lit_sync_status_print_no_line_they_report_the_sync_themsel
     synced = CliRunner().invoke(cli, ["sync"])
 
     assert status.exit_code == 0, status.output
-    assert "failed (the sign-in to the remote expired)." in status.output
+    assert "failed (the cloud refused the sign-in)." in status.output
     assert synced.exit_code == 0, synced.output
     assert "Synced." in synced.output
     for result in (status, synced):
         assert "Cloud sync" not in result.output
     # The reverse: any other command names it.
-    assert "(sign-in expired)" in CliRunner().invoke(cli, ["list"]).stderr
+    assert "(sign-in refused)" in CliRunner().invoke(cli, ["list"]).stderr
 
 
 def test_the_line_names_another_day_by_its_date_and_stays_short() -> None:

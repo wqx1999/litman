@@ -264,6 +264,20 @@ class SyncStoppedError(SyncError):
     """
 
 
+class SyncAuthError(SyncError):
+    """The cloud refused the sign-in rclone holds for it, so nothing was synced.
+
+    An OAuth token that expired or was revoked, or a password the server (a
+    WebDAV one, say) no longer accepts. ``sign_in`` says how the user signs in
+    again: ``"browser"`` (``rclone config reconnect``), ``"password"`` (typed
+    into ``rclone config``), or ``None`` when rclone could not tell.
+    """
+
+    def __init__(self, message: str, sign_in: str | None = None) -> None:
+        super().__init__(message)
+        self.sign_in = sign_in
+
+
 class SyncBusyError(SyncError):
     """Another sync of the same library holds its lock, so this one did not start.
 

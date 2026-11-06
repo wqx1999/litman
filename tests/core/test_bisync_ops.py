@@ -26,6 +26,7 @@ from litman.core.sync import (
 )
 from litman.exceptions import (
     BisyncLockedError,
+    SyncAuthError,
     SyncBusyError,
     SyncChoiceRequiredError,
     SyncError,
@@ -227,11 +228,33 @@ def test_the_folder_from_windows_read_by_the_rule_for_elsewhere_leaves_the_write
             SyncError("AADSTS700082: The refresh token has expired due to inactivity."),
             ("needs-user", "auth"),
         ),
+        # A WebDAV server's answer to a wrong or revoked password, as rclone 1.75
+        # passes it on (measured against `rclone serve webdav`).
+        (
+            SyncError(
+                "rclone could not finish the sync (exit 1).\nCRITICAL: Failed to create file "
+                'system for destination "wd:lib": read metadata failed: 401 Unauthorized: '
+                "401 Unauthorized"
+            ),
+            ("needs-user", "auth"),
+        ),
+        (
+            SyncError(
+                "rclone could not read the sync stamp in wd:lib (exit 1):\nCRITICAL: Failed "
+                'to create file system for "wd:lib/.litman-sync-stamp.json": read metadata '
+                "failed: 401 Unauthorized: 401 Unauthorized"
+            ),
+            ("needs-user", "auth"),
+        ),
+        (SyncAuthError("wd refused the password, so nothing was synced."), ("needs-user", "auth")),
         (
             SyncError("rclone could not read the sync stamp (exit 1):\ndial tcp: i/o timeout"),
             ("offline", "offline"),
         ),
         (SyncError("Failed to bisync: connection refused"), ("offline", "offline")),
+        # Not a sign-in: a file whose name holds 401, and a server that forbids.
+        (SyncError("ERROR : papers/2401_Smith_x/notes.md: md5 differ"), ("offline", "offline")),
+        (SyncError("ERROR : couldn't list files: 403 Forbidden"), ("offline", "offline")),
     ],
 )
 def test_failed_syncs_are_told_apart_for_the_auto_sync(

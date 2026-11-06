@@ -372,7 +372,13 @@ class SyncScheduler:
             try:
                 check = core_sync.check_remote_stamp(lib.workdir, lib.target_url)
             except SyncError as err:
-                self._failed(lib, err, now)
+                refused = core_sync.as_auth_failure(err, lib.target_url)
+                if refused is not err:
+                    # The cloud refused the sign-in: auto sync stops, and like a
+                    # sync it stopped, the record says why (`lit sync status`,
+                    # the line after other commands).
+                    core_sync.record_run(lib.vault, core_sync.run_from_error(refused, "auto"))
+                self._failed(lib, refused, now)
                 return None
             if check.moved:
                 return "remote"

@@ -221,12 +221,12 @@ def test_an_expired_sign_in_shows_in_status_with_the_way_out_when_the_cloud_cann
     assert status.exit_code == 1
     assert isinstance(status.exception, SyncError)
     said = _one_line(status.output)
-    assert "`lit sync` in a terminal: failed (the sign-in to the remote expired)." in said
+    assert "`lit sync` in a terminal: failed (the cloud refused the sign-in)." in said
     assert "invalid_grant" in said
-    assert (
-        "What to do: Sign in again with `rclone config reconnect fake-cloud:`, "
-        "then run `lit sync`." in said
-    )
+    # The error names the way back itself, so no "What to do:" repeats it.
+    way_back = "Sign in again with `rclone config reconnect fake-cloud:`, then run `lit sync`."
+    assert said.count(way_back) == 1
+    assert "What to do:" not in said
     # The reverse: with the cloud listed, the table comes first, then the record.
     monkeypatch.setattr(core_sync, "list_cloud_root", real_listing)
     status = _sync(a, "status")
@@ -407,7 +407,7 @@ def test_a_stopped_run_is_named_after_other_commands_until_a_run_goes_through(
 
     assert listed.exit_code == 0, listed.output
     assert (
-        f"Cloud sync stopped at {at:%H:%M} (sign-in expired). "
+        f"Cloud sync stopped at {at:%H:%M} (sign-in refused). "
         "Run `lit sync status` for why and what to do." in listed.stderr.splitlines()
     )
     # The reverse: a run that goes through takes the line away.

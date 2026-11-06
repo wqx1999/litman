@@ -63,6 +63,7 @@ from litman.core.locking import (
     is_file_manager_dropping,
 )
 from litman.core.replace import replace_file
+from litman.core.shell import shell_arg
 from litman.core.sync_lock import FileLock, LockHolder, read_holder
 from litman.core.terminal import hidden_console_flags
 from litman.core.undecodable import config_refusal
@@ -70,6 +71,7 @@ from litman.core.yaml_pool import ThreadLocalYAML
 from litman.exceptions import (
     BisyncLockedError,
     LitmanError,
+    SyncAuthError,
     SyncBusyError,
     SyncChoiceRequiredError,
     SyncError,
@@ -658,8 +660,10 @@ class LastRun:
     ``result`` is ``ok``, ``conflicts``, ``needs-choice`` or ``failed``.
     ``reason`` says why a run stopped, where that is known: ``auth``,
     ``safety-stop``, ``choice``, ``lock`` or ``rclone``. ``error`` is the
-    whole error text. The lists hold the first :data:`RUN_RECORD_CAP`
-    entries; the totals count all of them.
+    whole error text. ``sign_in``, for ``auth``, says how the user signs in
+    again (:attr:`litman.exceptions.SyncAuthError.sign_in`), so that reading
+    the record needs no rclone. The lists hold the first
+    :data:`RUN_RECORD_CAP` entries; the totals count all of them.
     """
 
     at: str
@@ -671,6 +675,7 @@ class LastRun:
     conflicts_total: int = 0
     repos: tuple[RunRepo, ...] = ()
     repos_total: int = 0
+    sign_in: str | None = None
 
 
 def repo_rows(result: TwoWayResult) -> list[RunRepo]:
@@ -720,6 +725,7 @@ def run_from_error(
         result="needs-choice" if isinstance(err, SyncChoiceRequiredError) else "failed",
         reason=reason or (guessed if kind == "needs-user" else None),
         error=str(err)[:RUN_ERROR_CAP],
+        sign_in=err.sign_in if isinstance(err, SyncAuthError) else None,
     )
 
 
@@ -739,6 +745,8 @@ def _last_run_to(run: LastRun) -> dict[str, Any]:
     out: dict[str, Any] = {"at": run.at, "trigger": run.trigger, "result": run.result}
     if run.reason:
         out["reason"] = run.reason
+    if run.sign_in:
+        out["sign-in"] = run.sign_in
     if run.error:
         out["error"] = run.error
     if run.conflicts_total:
@@ -794,6 +802,7 @@ def _last_run_from(data: object) -> LastRun | None:
         result=result,
         reason=text(data, "reason"),
         error=text(data, "error"),
+        sign_in=text(data, "sign-in"),
         conflicts=conflicts,
         conflicts_total=count("conflicts-total", len(conflicts)),
         repos=repos,
@@ -973,6 +982,37 @@ def read_sync_mode(vault: Path, target_url: str) -> SyncMode:
         stamp_in_cloud=SYNC_STAMP_FILENAME in names,
         config_in_cloud=CONFIG_FILENAME in names,
     )
+
+
+#: How this machine syncs a library, by its own records alone
+#: (:func:`local_sync_mode`).
+LocalSyncMode = Literal["two-way", "one-way", "unsynced"]
+
+
+def local_sync_mode(
+    vault: Path, target_url: str, state: SyncState | None = None
+) -> LocalSyncMode:
+    """How this machine syncs ``vault`` with ``target_url``, from its own records only.
+
+    No rclone call, so no network: ``two-way`` once a two-way sync was tried
+    here (``last-sync`` or ``last-sync-result`` in the state file) or rclone's
+    records of one are in this machine's data folder; else ``one-way`` when a
+    push or a pull is on record; else ``unsynced``. Unlike
+    :func:`read_sync_mode` it cannot see another machine's two-way sync in the
+    cloud: a machine set up to join one reads ``unsynced`` until its first
+    ``lit sync``. ``state`` is the state file, when the caller has read it.
+    """
+    if state is None:
+        state = read_sync_state(vault)
+    if (
+        state.last_sync is not None
+        or state.last_sync_result is not None
+        or bisync_initialised(sync_workdir(vault, target_url))
+    ):
+        return "two-way"
+    if state.last_push is not None or state.last_pull is not None:
+        return "one-way"
+    return "unsynced"
 
 
 def require_one_way(vault: Path, target_url: str, direction: OneWay) -> None:
@@ -3138,12 +3178,145 @@ def _bisync_failure(returncode: int, lines: list[str], workdir: Path) -> SyncErr
 #: the user acts, ``busy`` retries soon, ``offline`` retries with a growing pause.
 SyncErrorKind = Literal["needs-user", "busy", "offline"]
 
-#: What rclone says when its sign-in to a provider has expired or been revoked.
-_AUTH_EXPIRED_RE = re.compile(
+#: What rclone says when its OAuth sign-in to a provider has expired or been
+#: revoked; it names ``rclone config reconnect`` itself.
+_OAUTH_EXPIRED_RE = re.compile(
     r"invalid_grant|token expired|expired_access_token|couldn't fetch token|"
     r"refresh token has expired|config reconnect",
     re.IGNORECASE,
 )
+
+#: The server's own answer to a sign-in it turned down, as rclone passes it on:
+#: a WebDAV server's to a wrong or revoked password, for one.
+_SIGN_IN_REFUSED_RE = re.compile(r"\b401 Unauthorized\b")
+
+
+def oauth_expired(text: str) -> bool:
+    """Whether rclone's ``text`` says an OAuth token expired (``rclone config reconnect``)."""
+    return bool(_OAUTH_EXPIRED_RE.search(text))
+
+
+def sign_in_refused(text: str) -> bool:
+    """Whether rclone's ``text`` says the cloud refused its sign-in."""
+    return bool(_OAUTH_EXPIRED_RE.search(text) or _SIGN_IN_REFUSED_RE.search(text))
+
+
+SignIn = Literal["browser", "password"]
+
+#: The rclone backends whose sign-in goes through a browser, by name and by
+#: prefix (:func:`_oauth_backends`); ``None`` until rclone has listed them.
+_oauth_backend_names: frozenset[str] | None = None
+
+
+def _oauth_backends() -> frozenset[str] | None:
+    """The rclone backends that sign in through a browser (OAuth), or None if rclone cannot say.
+
+    From ``rclone config providers``: rclone gives every OAuth backend the same
+    ``token``, ``auth_url`` and ``token_url`` options. A local call, kept for
+    the process once it worked.
+    """
+    global _oauth_backend_names
+    if _oauth_backend_names is None:
+        result = run_rclone(["config", "providers"], check=False, timeout=_GATE_TIMEOUT)
+        if result.returncode != 0:
+            return None
+        names: set[str] = set()
+        for backend in json.loads(result.stdout or "[]"):
+            if not isinstance(backend, dict):
+                continue
+            options = {
+                option.get("Name")
+                for option in backend.get("Options") or ()
+                if isinstance(option, dict)
+            }
+            if {"token", "auth_url", "token_url"} <= options:
+                names.update(
+                    str(backend[key]) for key in ("Name", "Prefix") if backend.get(key)
+                )
+        _oauth_backend_names = frozenset(names)
+    return _oauth_backend_names
+
+
+def remote_sign_in(remote: str) -> SignIn | None:
+    """How the user signs in to rclone remote ``remote`` again; None if rclone cannot tell.
+
+    ``browser`` for an OAuth backend (``rclone config reconnect``),
+    ``password`` for any other: one typed into ``rclone config``, which is
+    the only way back for a WebDAV remote (it refuses ``reconnect``). Reads the
+    remote's type from ``rclone listremotes --json``: local calls, no network,
+    no prompt.
+    """
+    try:
+        with rclone_never_asks():
+            listed = run_rclone(["listremotes", "--json"], check=False, timeout=_GATE_TIMEOUT)
+            if listed.returncode != 0:
+                return None
+            entries = json.loads(listed.stdout or "[]")
+            kind = next(
+                (
+                    entry.get("type")
+                    for entry in entries
+                    if isinstance(entry, dict) and entry.get("name") == remote
+                ),
+                None,
+            )
+            if not isinstance(kind, str) or not kind:
+                return None
+            oauth = _oauth_backends()
+    except (SyncError, OSError, ValueError, TypeError):
+        return None
+    if oauth is None:
+        return None
+    return "browser" if kind in oauth else "password"
+
+
+def sign_in_way_out(remote: str, sign_in: str | None) -> str:
+    """The sentence that tells the user how to sign in to ``remote`` again, then sync."""
+    if sign_in == "browser":
+        return (
+            f"Sign in again with `rclone config reconnect {shell_arg(remote + ':')}`, "
+            "then run `lit sync`."
+        )
+    if sign_in == "password":
+        return (
+            f"Enter the password again with `rclone config` (edit remote {remote}), "
+            "then run `lit sync`."
+        )
+    return f"Sign in again with `rclone config` (edit remote {remote}), then run `lit sync`."
+
+
+def auth_failure(target_url: str, detail: str) -> SyncAuthError:
+    """The error for a sync the cloud's sign-in stopped: what happened, the way out, rclone's lines.
+
+    The way out fits the remote (:func:`remote_sign_in`); rclone's own words
+    for an expired OAuth token settle it without asking rclone.
+    """
+    remote = target_url.partition(":")[0]
+    sign_in: SignIn | None = (
+        "browser" if _OAUTH_EXPIRED_RE.search(detail) else remote_sign_in(remote)
+    )
+    if sign_in == "browser":
+        verdict = f"The sign-in to {remote} has expired, so nothing was synced."
+    elif sign_in == "password":
+        verdict = f"{remote} refused the password, so nothing was synced."
+    else:
+        verdict = f"{remote} refused the sign-in, so nothing was synced."
+    return SyncAuthError(
+        f"{verdict} {sign_in_way_out(remote, sign_in)}\n{detail}", sign_in=sign_in
+    )
+
+
+def as_auth_failure(err: BaseException, target_url: str) -> BaseException:
+    """``err`` made into :func:`auth_failure` when the cloud refused the sign-in; else ``err``.
+
+    Keeps rclone's lines from ``err`` (what follows its first line) and drops
+    its own advice, which would say to run the sync again.
+    """
+    if isinstance(err, SyncAuthError) or classify_sync_error(err) != ("needs-user", "auth"):
+        return err
+    text = str(err)
+    detail = text.split("\n", 1)[1] if "\n" in text else text
+    return auth_failure(target_url, detail)
 
 
 def classify_sync_error(err: BaseException) -> tuple[SyncErrorKind, str]:
@@ -3151,7 +3324,8 @@ def classify_sync_error(err: BaseException) -> tuple[SyncErrorKind, str]:
 
     Needs the user (``reason``): ``choice`` (``--first-from``, a changed
     filter set, records gone, an emptied side), ``safety-stop`` (rclone's
-    too-many-deletes or all-changed stop), ``auth`` (the sign-in expired),
+    too-many-deletes or all-changed stop), ``auth`` (the cloud refused the
+    sign-in: an expired OAuth token, a password it no longer accepts),
     ``lock`` (the file system refuses the sync locks). Busy: another sync
     holds litman's lock or rclone's. Anything else, the network included, is
     taken as offline.
@@ -3164,7 +3338,7 @@ def classify_sync_error(err: BaseException) -> tuple[SyncErrorKind, str]:
         return "needs-user", "choice"
     if isinstance(err, SyncStoppedError):
         return "needs-user", "safety-stop"
-    if _AUTH_EXPIRED_RE.search(str(err)):
+    if isinstance(err, SyncAuthError) or sign_in_refused(str(err)):
         return "needs-user", "auth"
     return "offline", "offline"
 
@@ -3481,7 +3655,10 @@ def two_way_sync(
         # Another sync's run: the record stays that run's.
         raise
     except (LitmanError, OSError) as err:
-        record_run(vault, run_from_error(err, trigger))
+        refused = as_auth_failure(err, target_url)
+        record_run(vault, run_from_error(refused, trigger))
+        if refused is not err:
+            raise refused from err
         raise
 
 
