@@ -773,6 +773,10 @@ def test_cli_sync_setup_with_remote_flag(
     )
     assert result.exit_code == 0, result.output
     assert "Sync configured" in result.output
+    # The way on is the two-way sync, not a one-way push.
+    flat = " ".join(result.output.split())
+    assert "`lit sync` to start syncing" in flat
+    assert "sync push" not in flat
 
     cfg = load_config(vault)
     assert cfg.sync is not None

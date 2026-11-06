@@ -1,0 +1,43 @@
+{
+ "scenario": "01-first-sync-resync",
+ "rclone": "1.75.2",
+ "returncode": 0,
+ "report": [
+  "INFO  : Setting --ignore-listing-checksum as neither --checksum nor --compare checksum are set.",
+  "INFO  : Bisyncing with Comparison Settings: ",
+  "{",
+  "\t\"Modtime\": true,",
+  "\t\"Size\": true,",
+  "\t\"Checksum\": false,",
+  "\t\"HashType1\": 0,",
+  "\t\"HashType2\": 0,",
+  "\t\"NoSlowHash\": false,",
+  "\t\"SlowHashSyncOnly\": false,",
+  "\t\"SlowHashDetected\": true,",
+  "\t\"DownloadHash\": false",
+  "}",
+  "INFO  : lock file renewed for 5m0s. New expiration: 2026-11-06 08:16:38.336753889 +0100 CET m=+300.058332903",
+  "INFO  : Synching Path1 \"<P>/vault/\" with Path2 \"fake-cloud:<P>/cloud/lib/\"",
+  "INFO  : Using filters file <P>/wd/filters.txt",
+  "INFO  : Storing filters file hash to <P>/wd/filters.txt.md5",
+  "INFO  : Copying Path2 files to Path1",
+  "INFO  : - Path2             Resync is copying files to                  - Path1",
+  "INFO  : There was nothing to transfer",
+  "INFO  : - Path1             Resync is copying files to                  - Path2",
+  "INFO  : papers: Made directory with metadata (mtime=2026-11-06T08:11:38.27217084+01:00)",
+  "INFO  : papers/a: Made directory with metadata (mtime=2026-11-06T08:11:38.27217084+01:00)",
+  "INFO  : papers/b: Made directory with metadata (mtime=2026-11-06T08:11:38.27217084+01:00)",
+  "INFO  : papers/b/notes.md: Copied (new)",
+  "INFO  : papers/a/notes.md: Copied (new)",
+  "INFO  : papers/b: Set directory modification time (using SetModTime)",
+  "INFO  : papers/a: Set directory modification time (using SetModTime)",
+  "INFO  : papers: Set directory modification time (using SetModTime)",
+  "INFO  : Resync updating listings",
+  "INFO  : Validating listings for Path1 \"<P>/vault/\" vs Path2 \"fake-cloud:<P>/cloud/lib/\"",
+  "INFO  : Bisync successful"
+ ],
+ "lines": [
+  "NOTICE:           6 B / 6 B, 100%, 0 B/s, ETA -"
+ ],
+ "cloud_changed": true
+}

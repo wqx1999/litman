@@ -9,7 +9,6 @@ ADR-017). The vault is read from ``request.app.state.vault`` (set by
 from __future__ import annotations
 
 import dataclasses
-import hashlib
 import json
 import os
 from pathlib import Path
@@ -32,9 +31,9 @@ from litman.core.query import recency_key
 from litman.core.schema import all_fixed_enums, fixed_enum_allows_none
 from litman.core.search import search_notes
 from litman.core.taxonomy import parse_taxonomy, read_taxonomy_text
-from litman.core.trash import TRASH_DIRNAME
 from litman.core.undecodable import has_undecodable, printable, printable_tree, refusal
 from litman.core.vault_registry import find_active, load_registry, registry_path
+from litman.core.vault_token import fingerprint, gui_token, md_version
 from litman.core.views import (
     INDEX_PAPER_FIELDS,
     load_index_papers,
@@ -395,43 +394,6 @@ def get_doc_mtimes(request: Request) -> dict[str, dict[str, float | None]]:
     return out
 
 
-# The library-level files whose mtime+size answers "did anything structural
-# change?": INDEX.json covers every paper's metadata (it is re-derived by every
-# write command), TAXONOMY.md the controlled vocabulary, lit-config.yaml the
-# project map `GET /api/projects` reads, and the .trash DIRECTORY's own mtime
-# flips whenever an entry is moved in or out of it.
-_VAULT_VERSION_FILES = ("INDEX.json", "TAXONOMY.md", CONFIG_FILENAME, TRASH_DIRNAME)
-
-# Free-form docs an agent rewrites in place. These are the reason the token
-# cannot be four stats: nothing in INDEX.json moves when an agent overwrites
-# notes.md, and that is the motivating case for the whole mechanism.
-_VAULT_VERSION_DOCS = ("notes.md", "discussion.md")
-
-
-def _fingerprint(path: Path) -> str:
-    """``mtime_ns:size`` for one path, or ``-`` when it is absent/unreadable.
-
-    Absent is a legitimate state (no .trash yet, a paper without notes.md), and
-    it has to be *distinguishable* from any present state — creating the file
-    must move the token.
-
-    Never raises: this runs on a timer, and a path the OS refuses to stat (a
-    permission, a name the platform rejects, a disconnected network drive)
-    reads as "not there" rather than turning the whole poll into a 500.
-
-    Resolution follows the filesystem's. On NTFS/ext4/APFS that is far finer
-    than the seconds between two polls; on FAT32 (a vault on a USB stick) mtime
-    is bucketed to 2s, so two edits inside one bucket that also leave the size
-    unchanged look like one. The next edit moves it again, and the window is a
-    fraction of the poll interval — worth knowing, not worth engineering around.
-    """
-    try:
-        st = os.stat(path)
-    except (OSError, ValueError):
-        return "-"
-    return f"{st.st_mtime_ns}:{st.st_size}"
-
-
 @router.get("/vault-version")
 def get_vault_version(request: Request) -> dict[str, Any]:
     """An opaque token that changes iff the vault changed on disk.
@@ -453,36 +415,24 @@ def get_vault_version(request: Request) -> dict[str, Any]:
     this library (``{id, paperId, title, link}``, all held in memory since the
     request was made) or ``null`` — how the page learns that ``lit add --si``
     is waiting for it, without a timer of its own. It is not part of the token.
+
+    ``sync`` rides along the same way: the auto sync's status
+    (``GET /api/sync/status``), or ``null`` when this library has no ``sync:``
+    set up. Held in memory; not part of the token either.
+
+    The token itself is :func:`litman.core.vault_token.gui_token`.
     """
     vault = _vault(request)
-    digest = hashlib.blake2b(digest_size=12)
-
-    def feed(label: str, path: Path) -> None:
-        # surrogatepass: a paper folder whose name is not UTF-8 text (any lone
-        # surrogate, whatever the platform) still feeds the hash instead of
-        # failing every poll.
-        digest.update(f"{label}\0{_fingerprint(path)}\n".encode("utf-8", "surrogatepass"))
-
-    for name in _VAULT_VERSION_FILES:
-        feed(name, vault / name)
-    # The registry lives outside the vault (per-user config dir) and drives the
-    # vault switcher, which the resync sweep re-pulls.
-    feed("registry", registry_path())
-
-    papers_dir = vault / "papers"
-    try:
-        entries = sorted(os.listdir(papers_dir))
-    except OSError:
-        entries = []
-    for paper_id in entries:
-        for doc in _VAULT_VERSION_DOCS:
-            feed(f"{paper_id}/{doc}", papers_dir / paper_id / doc)
-
     si_request = None
     table = getattr(request.app.state, "si_requests", None)
     if table is not None and table.has_open():
         si_request = table.first_open(Anchor.of(vault))
-    return {"version": digest.hexdigest(), "siRequest": si_request}
+    scheduler = getattr(request.app.state, "sync_scheduler", None)
+    return {
+        "version": gui_token(vault, registry_path()),
+        "siRequest": si_request,
+        "sync": scheduler.status_for(vault) if scheduler is not None else None,
+    }
 
 
 def _snippet_window(line: str, query: str, *, width: int = 90, lead: int = 24) -> str:
@@ -664,15 +614,34 @@ def get_paper_pdf(request: Request, paper_id: str) -> FileResponse:
     )
 
 
+@router.get("/paper/{paper_id}/pdf-version")
+def get_paper_pdf_version(request: Request, paper_id: str) -> dict[str, str]:
+    """``{"version": "<mtime_ns>:<size>"}`` of ``papers/{id}/paper.pdf``.
+
+    The PDF tab asks before it loads the bytes and sends it back with an
+    annotation save (``base``), so a save over a copy that changed meanwhile
+    (a sync brought another machine's) keeps that copy in the backup. Asked
+    before the load, a change in between can only read as a change, never be
+    missed. Stat-only: hashing a large PDF on every save is not worth it.
+    """
+    vault = _vault(request)
+    if not is_valid_id(paper_id):
+        raise HTTPException(status_code=404, detail=f"Invalid paper id: {paper_id!r}.")
+    version = fingerprint(vault / "papers" / paper_id / "paper.pdf")
+    if version == "-":
+        raise HTTPException(status_code=404, detail=f"No paper.pdf for {paper_id!r}.")
+    return {"version": version}
+
+
 @router.get("/paper/{paper_id}/notes")
 def get_paper_notes(request: Request, paper_id: str) -> dict[str, str]:
-    """Raw ``notes.md`` text. 404 when the file is absent."""
+    """Raw ``notes.md`` text and its version. 404 when the file is absent."""
     return _read_paper_md(request, paper_id, "notes.md")
 
 
 @router.get("/paper/{paper_id}/discussion")
 def get_paper_discussion(request: Request, paper_id: str) -> dict[str, str]:
-    """Raw ``discussion.md`` text. 404 when the file is absent."""
+    """Raw ``discussion.md`` text and its version. 404 when the file is absent."""
     return _read_paper_md(request, paper_id, "discussion.md")
 
 
@@ -686,7 +655,12 @@ def _read_paper_md(request: Request, paper_id: str, filename: str) -> dict[str, 
     if not md_path.is_file():
         raise HTTPException(status_code=404, detail=f"No {filename} for {paper_id!r}.")
     try:
-        return {"text": md_path.read_text(encoding="utf-8")}
+        data = md_path.read_bytes()
+        # Newlines as text mode reads them, so the text is what it always was.
+        text = data.decode("utf-8").replace("\r\n", "\n").replace("\r", "\n")
+        # The version of exactly the bytes the text came from: a save sends it
+        # back, and a file changed since then is kept before it is replaced.
+        return {"text": text, "version": md_version(data)}
     except (OSError, UnicodeDecodeError) as exc:
         # Present but unservable (external editor saved it non-UTF-8, cloud
         # client left a husk): damaged data, not a missing resource — the

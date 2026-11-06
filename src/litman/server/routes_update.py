@@ -106,6 +106,12 @@ def start_self_update(request: Request) -> dict[str, object]:
         stub_paths=launcher_stubs.installed_stubs(),
     )
 
+    # The helper waits for this process to end: no sync before exit, which
+    # could hold it for a minute. The relaunched GUI syncs on its start.
+    scheduler = getattr(request.app.state, "sync_scheduler", None)
+    if scheduler is not None:
+        scheduler.self_update_pending = True
+
     # Bow out AFTER the response is flushed. The window watcher's presence
     # gate may beat us to it (the SPA closes its window) — both paths set the
     # same idempotent flag (`should_exit`), so the race is harmless.

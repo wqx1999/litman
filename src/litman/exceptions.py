@@ -255,6 +255,40 @@ class SyncChoiceRequiredError(SyncError):
     """
 
 
+class SyncStoppedError(SyncError):
+    """rclone stopped a two-way sync on one of its safety checks.
+
+    More than half of the files were deleted on one side, or every file
+    changed on both. Only the user can tell whether that was meant, so the
+    GUI's auto sync stops until they decide; ``lit sync --force`` goes on.
+    """
+
+
+class SyncBusyError(SyncError):
+    """Another sync of the same library holds its lock, so this one did not start.
+
+    Nothing was synced. ``lit sync`` exits 23 with it; the GUI's auto sync
+    tries again a little later.
+    """
+
+
+class SyncLockError(SyncError):
+    """A sync lock could not be taken because the file system refused locks altogether.
+
+    Not another holder: the folder that keeps litman's sync records allows no
+    file locks (some network file systems), so no sync can run from this
+    machine until that folder is on a disk that does.
+    """
+
+
+class BisyncLockedError(SyncError):
+    """rclone's own lock of this library's sync records is still in place.
+
+    Left by a sync that was cut off, or held by one that runs outside litman's
+    own lock. It expires on its own (``--max-lock``).
+    """
+
+
 class ExportError(LitmanError):
     """`lit export` (M12.1) rejected an op: mutually-exclusive flags missing
     or doubled, target file is hand-edited (no litman sentinel) and `--force`

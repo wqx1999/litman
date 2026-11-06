@@ -167,3 +167,42 @@ def test_sync_nudge_names_lit_sync_once_two_way_sync_is_in_use(
     assert result.exit_code == 0, result.output
     assert "no `lit sync` in 7+ days" in result.stderr
     assert _SYNC_NUDGE not in result.stderr
+
+
+def test_sync_nudge_names_lit_sync_after_a_two_way_try_that_did_not_go_through(
+    tmp_path: Path,
+) -> None:
+    """A first `lit sync` that stopped for a --first-from choice: push now
+    refuses this library, so the nudge must not offer it."""
+    vault = _seed_active_vault(tmp_path, configure_remote=True, last_push=None)
+    write_sync_state(vault, SyncState(last_sync_result="needs-choice"))
+
+    result = CliRunner().invoke(cli, ["list"])
+    assert result.exit_code == 0, result.output
+    assert "no `lit sync` in 7+ days" in result.stderr
+    assert _SYNC_NUDGE not in result.stderr
+
+
+def test_sync_nudge_names_lit_sync_when_this_machine_has_two_way_records(
+    tmp_path: Path,
+) -> None:
+    """The sync-state file is gone, rclone's two-way records are not."""
+    from litman.core.config import load_config
+    from litman.core.sync import bisync_initialised, sync_workdir
+
+    vault = _seed_active_vault(tmp_path, configure_remote=True, last_push=None)
+    sync_config = load_config(vault).sync
+    assert sync_config is not None
+    work = sync_workdir(vault, sync_config.target_url())
+    work.mkdir(parents=True)
+    (work / "x.path1.lst").write_text("", encoding="utf-8")
+    assert bisync_initialised(work)
+
+    result = CliRunner().invoke(cli, ["list"])
+    assert result.exit_code == 0, result.output
+    assert "no `lit sync` in 7+ days" in result.stderr
+    assert _SYNC_NUDGE not in result.stderr
+    # The reverse: without the records it is a one-way library again.
+    (work / "x.path1.lst").unlink()
+    result = CliRunner().invoke(cli, ["list"])
+    assert _SYNC_NUDGE in result.stderr

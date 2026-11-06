@@ -36,6 +36,41 @@ _LINUX_TERMINALS: tuple[str, ...] = (
 )
 
 
+#: Windows ``CREATE_NO_WINDOW``: the child gets a console of its own, with no window.
+_CREATE_NO_WINDOW = 0x08000000
+
+
+def _on_windows() -> bool:
+    """Seam: tests take the Windows branch of :func:`hidden_console_flags` with it."""
+    return sys.platform == "win32"
+
+
+def _has_console() -> bool:
+    """Whether this Windows process has a console; True when that cannot be told."""
+    if sys.platform != "win32":
+        return True
+    try:
+        import ctypes
+
+        return bool(ctypes.windll.kernel32.GetConsoleWindow())
+    except Exception:
+        return True
+
+
+def hidden_console_flags() -> int:
+    """``creationflags`` for a console program litman runs in the background (rclone, git).
+
+    A process with no console (``litw``, the desktop shortcut's launcher) gives
+    every such child a new console window, which would flash on screen at each
+    auto sync. ``CREATE_NO_WINDOW`` gives the child a console with no window;
+    its output still reaches the pipes litman reads. A process with a console
+    (a terminal ``lit``) shares it with the child as before: 0. Off Windows: 0.
+    """
+    if not _on_windows() or _has_console():
+        return 0
+    return _CREATE_NO_WINDOW
+
+
 def _linux_terminal_argv(name: str, exe: str, argv: list[str]) -> list[str]:
     """The full spawn argv for one Linux terminal emulator."""
     if name == "gnome-terminal":

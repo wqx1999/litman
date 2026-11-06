@@ -13,6 +13,9 @@ machines. Four subcommands wired thinly over ``litman.core.sync``:
 - ``status`` — show last-push / last-pull timestamps, local + remote file
   counts, and the size delta.
 
+``push`` and ``pull`` refuse a library that syncs two-way
+(:func:`litman.core.sync.require_one_way`).
+
 M6.2 will layer ``--exclude-repos`` and ``--dry-run`` onto push/pull plus
 a size-warning preflight before the first push. M6.1 keeps the surface
 intentionally small so the rclone integration itself is the only thing
@@ -24,7 +27,7 @@ from __future__ import annotations
 import sys
 from datetime import datetime
 from pathlib import Path
-from typing import cast
+from typing import NoReturn, cast
 
 import click
 from click.core import ParameterSource
@@ -43,12 +46,16 @@ from litman.core.library import find_vault, resolve_library_or_vault
 from litman.core.shell import shell_arg
 from litman.core.sync import (
     DEFAULT_EXCLUDES,
+    SYNC_LOCK_WAIT,
     FileChanges,
     FirstFrom,
+    LastRun,
+    RunConflict,
     SetupPayload,
     TwoWayResult,
     codes_ignore_patterns_to_rclone,
     compute_status,
+    describe_sync_lock_holder,
     format_iso,
     humanize_bytes,
     largest_files,
@@ -56,12 +63,15 @@ from litman.core.sync import (
     local_vault_size,
     pull,
     push,
+    read_sync_mode,
     read_sync_state,
     remote_exists,
+    require_one_way,
     two_way_sync,
     write_sync_to_config,
 )
-from litman.exceptions import SyncChoiceRequiredError, SyncError
+from litman.core.sync_lock import LockHolder
+from litman.exceptions import SyncBusyError, SyncChoiceRequiredError, SyncError
 
 console = Console()
 # rclone's own log lines go to stderr, as they do when rclone runs by itself.
@@ -74,6 +84,10 @@ EXIT_SYNC_CONFLICTS = 21
 # A sync with conflicts exits 21 even when a repo did not follow too; the
 # summary lists both.
 EXIT_SYNC_REPOS_DIFFER = 22
+# Another sync of the same library (the GUI's auto sync, another terminal)
+# still held its lock after SYNC_LOCK_WAIT seconds: nothing was synced. Also
+# for push and pull.
+EXIT_SYNC_BUSY = 23
 
 
 @click.group("sync", invoke_without_command=True)
@@ -131,13 +145,20 @@ def sync_group(
     machine fetches the commit its repo-meta.yaml records from the repo's
     upstream, and moves its own checkout there unless it holds your changes.
 
+    When another sync of this library is running (the GUI's auto sync, or
+    lit sync in another terminal), lit sync waits up to 90 seconds for it,
+    then gives up without syncing; so do push and pull.
+
     Exit codes: 0 synced, 1 failed, 20 waiting for your --first-from
     choice, 21 synced with conflicts, 22 synced but a code repo here does
-    not match the library (21 when there are conflicts as well).
+    not match the library (21 when there are conflicts as well), 23 another
+    sync of this library was still running, so nothing was synced (also
+    push and pull).
 
     The subcommands are one-way: push mirrors the vault to the cloud as a
     backup, pull restores it from there, setup points litman at an rclone
-    remote, status compares the two sides.
+    remote, status compares the two sides. Once a library syncs two-way,
+    push and pull refuse it.
     """
     if ctx.invoked_subcommand is not None:
         _refuse_group_options_before(ctx, ctx.invoked_subcommand)
@@ -187,6 +208,19 @@ def _refuse_group_options_before(ctx: click.Context, sub: str) -> None:
 
 def _echo_rclone_line(line: str) -> None:
     _rclone_console.print(f"[dim]{escape(line)}[/]", highlight=False, soft_wrap=True)
+
+
+def _say_waiting(holder: LockHolder | None) -> None:
+    console.print(
+        f"[dim]{escape(describe_sync_lock_holder(holder))}; waiting up to "
+        f"{SYNC_LOCK_WAIT:.0f} seconds…[/]",
+        soft_wrap=True,
+    )
+
+
+def _exit_busy(err: SyncBusyError, title: str) -> NoReturn:
+    console.print(Panel.fit(escape(str(err)), title=title, border_style="yellow"))
+    sys.exit(EXIT_SYNC_BUSY)
 
 
 def _describe_changes(changes: FileChanges | None) -> str:
@@ -293,6 +327,14 @@ def _render_two_way_summary(result: TwoWayResult) -> None:
             "[yellow]Could not read rclone's per-file report:[/] a paper deleted on one "
             "machine and changed on another may be left incomplete. "
             "`lit health-check` finds it."
+        )
+    if result.unsynced:
+        n = len(result.unsynced)
+        lines.append(
+            f"[yellow]{n} file{'s' if n != 1 else ''} changed here while the sync ran"
+            f"[/] and may not have gone up: {escape(', '.join(result.unsynced[:3]))}"
+            f"{', …' if n > 3 else ''}. The next `lit sync` takes "
+            f"{'them' if n != 1 else 'it'} up."
         )
     lines += _repo_lines(result)
     if result.projects_without_folder:
@@ -422,7 +464,11 @@ def _run_two_way(
             force=force,
             on_log=_echo_rclone_line,
             git_progress=console.is_terminal,
+            lock_wait=SYNC_LOCK_WAIT,
+            on_lock_wait=_say_waiting,
         )
+    except SyncBusyError as err:
+        _exit_busy(err, "lit sync — nothing was synced")
     except SyncChoiceRequiredError as err:
         console.print(
             Panel.fit(
@@ -583,7 +629,7 @@ def sync_setup_cmd(
             f"[bold green]Sync configured.[/]\n"
             f"[bold]Target:[/] {escape(target)}\n"
             f"[bold]Config:[/] {config_path}\n\n"
-            f"[dim]Next:[/] `lit sync push` to upload, or "
+            "[dim]Next:[/] `lit sync` to start syncing, or "
             "`lit sync status` to inspect.",
             title="lit sync setup",
             border_style="green",
@@ -819,9 +865,14 @@ def sync_push_cmd(
     Subsequent pushes go straight through; pass --yes to skip the
     confirm on first push (e.g. in cron / CI). --dry-run previews any
     push (first or subsequent) without touching the remote.
+
+    Refused, --dry-run too, once the library syncs two-way, on this machine
+    or another one: a push would overwrite what the other machines synced.
+    Run lit sync instead.
     """
     vault = find_vault(resolve_library_or_vault(library, vault_name))
     target, codes_patterns, default_exclude = _require_sync_configured(vault)
+    require_one_way(vault, target, "push")
     _preflight_integrity_gate(vault, force=force, dry_run=dry_run)
     exclude_repos = _resolve_exclude_repos(exclude_repos_flag, default_exclude)
     extra_excludes = (
@@ -848,7 +899,17 @@ def sync_push_cmd(
     if dry_run:
         banner += " [dim](dry-run)[/]"
     console.print(banner, soft_wrap=True)
-    push(vault, target, extra_excludes=extra_excludes, dry_run=dry_run)
+    try:
+        push(
+            vault,
+            target,
+            extra_excludes=extra_excludes,
+            dry_run=dry_run,
+            lock_wait=SYNC_LOCK_WAIT,
+            on_lock_wait=_say_waiting,
+        )
+    except SyncBusyError as err:
+        _exit_busy(err, "lit sync push — nothing was pushed")
 
     tail = "[dim]`lit sync status` to inspect.[/]"
     if dry_run:
@@ -906,9 +967,14 @@ def sync_pull_cmd(
     remote is DELETED locally. This is correct for the "freshly cloned"
     scenario; do not run pull against a vault holding unpushed local work
     you care about. Pass --dry-run to preview safely.
+
+    Refused, --dry-run too, once the library syncs two-way, on this machine
+    or another one (run lit sync, or lit sync --first-from cloud on a new
+    machine), and when the remote holds no lit-config.yaml.
     """
     vault = find_vault(resolve_library_or_vault(library, vault_name))
     target, codes_patterns, default_exclude = _require_sync_configured(vault)
+    require_one_way(vault, target, "pull")
     exclude_repos = _resolve_exclude_repos(exclude_repos_flag, default_exclude)
     extra_excludes = (
         codes_ignore_patterns_to_rclone(codes_patterns) if exclude_repos else ()
@@ -922,7 +988,17 @@ def sync_pull_cmd(
     if dry_run:
         banner += " [dim](dry-run)[/]"
     console.print(banner, soft_wrap=True)
-    pull(vault, target, extra_excludes=extra_excludes, dry_run=dry_run)
+    try:
+        pull(
+            vault,
+            target,
+            extra_excludes=extra_excludes,
+            dry_run=dry_run,
+            lock_wait=SYNC_LOCK_WAIT,
+            on_lock_wait=_say_waiting,
+        )
+    except SyncBusyError as err:
+        _exit_busy(err, "lit sync pull — nothing was pulled")
 
     tail = (
         "[dim]Run `lit health-check` to verify, and "
@@ -956,16 +1032,32 @@ def sync_status_cmd(library: Path | None, vault_name: str | None) -> None:
     No network mutation. Calls rclone size --json once to enumerate the
     remote; reads the per-machine .litman-sync-state.yaml for
     timestamps. Output is a small table the user can eyeball at a glance.
+
+    For a library that syncs two-way, both sides are counted the way two-way
+    sync carries them, and the last two-way sync is shown instead. Below the
+    table comes this machine's last two-way run (a terminal ``lit sync`` or
+    the GUI's): how it ended, its conflicts with their backups, the code
+    repos it left behind, or its whole error with what to do. That part
+    shows even when the cloud cannot be reached.
     """
     vault = find_vault(resolve_library_or_vault(library, vault_name))
     target, codes_patterns, default_exclude = _require_sync_configured(vault)
+    last_run = read_sync_state(vault).last_run
     # Mirror the push exclude set so the local count matches what rclone
     # transfers. Without this, `exclude_repos` users see a permanent false
     # "out of sync" delta: push excludes codes/*/repo/, status counted it.
     extra_excludes = (
         codes_ignore_patterns_to_rclone(codes_patterns) if default_exclude else ()
     )
-    report = compute_status(vault, target, extra_excludes=extra_excludes)
+    try:
+        two_way = read_sync_mode(vault, target).two_way
+        report = compute_status(vault, target, extra_excludes=extra_excludes, two_way=two_way)
+    except SyncError:
+        # The cloud cannot be listed (an expired sign-in, no network): the
+        # record of what went wrong is the part that matters now.
+        if last_run is not None:
+            _print_last_run(last_run, target)
+        raise
 
     table = Table(
         title=f"lit sync status — {target}",
@@ -975,8 +1067,11 @@ def sync_status_cmd(library: Path | None, vault_name: str | None) -> None:
     table.add_column("Metric", style="bold")
     table.add_column("Value", overflow="fold")
     table.add_row("Target", escape(report.target_url))
-    table.add_row("Last push", escape(format_iso(report.state.last_push)))
-    table.add_row("Last pull", escape(format_iso(report.state.last_pull)))
+    if report.two_way:
+        table.add_row("Last sync", escape(format_iso(report.state.last_sync)))
+    else:
+        table.add_row("Last push", escape(format_iso(report.state.last_push)))
+        table.add_row("Last pull", escape(format_iso(report.state.last_pull)))
     table.add_row(
         "Local",
         f"{report.local.count} files, {humanize_bytes(report.local.bytes)}",
@@ -999,3 +1094,103 @@ def sync_status_cmd(library: Path | None, vault_name: str | None) -> None:
         )
     table.add_row("Delta", delta_str)
     console.print(table)
+    if last_run is not None:
+        _print_last_run(last_run, target)
+
+
+_RUN_TRIGGER = {
+    "terminal": "`lit sync` in a terminal",
+    "auto": "the GUI's auto sync",
+    "exit": "the GUI's sync on exit",
+}
+_RUN_RESULT = {
+    "ok": "synced",
+    "conflicts": "synced, with conflicts",
+    "needs-choice": "stopped until you pick which side wins",
+    "failed": "failed",
+}
+_RUN_REASON = {
+    "auth": "the sign-in to the remote expired",
+    "safety-stop": "rclone's safety check stopped it",
+    "lock": "the file system refuses file locks",
+    "rclone": "rclone cannot run this sync",
+}
+
+
+def _print_last_run(run: LastRun, target: str) -> None:
+    """This machine's last two-way run (:class:`LastRun`), for a person or an agent.
+
+    One line says when, who and how it ended; then the whole error, each
+    conflict with its backup, each repo left behind with its way out, and
+    what to do. Printed unwrapped, so a long path stays whole.
+    """
+
+    def say(text: str) -> None:
+        console.print(text, soft_wrap=True, highlight=False)
+
+    who = _RUN_TRIGGER.get(run.trigger, run.trigger)
+    how = _RUN_RESULT.get(run.result, run.result)
+    if run.result == "conflicts":
+        n = run.conflicts_total
+        how = f"synced, {n} conflict{'' if n == 1 else 's'}"
+    why = _RUN_REASON.get(run.reason or "")
+    console.print()
+    say(
+        f"[bold]Last run:[/] {escape(format_iso(run.at))}, {escape(who)}: "
+        f"{escape(how)}{f' ({escape(why)})' if why else ''}."
+    )
+    for line in (run.error or "").splitlines():
+        if line.strip():
+            say(f"  {escape(line)}")
+    for c in run.conflicts:
+        say(f"  • {escape(_run_conflict_text(c))}")
+    if run.conflicts_total > len(run.conflicts):
+        say(f"  • … and {run.conflicts_total - len(run.conflicts)} more")
+    for r in run.repos:
+        head = f"code repo {r.name}" if r.name else "code repos"
+        say(f"  • {escape(head)}: {escape(r.what)}{f'. {escape(r.way_out)}' if r.way_out else ''}")
+    if run.repos_total > len(run.repos):
+        say(f"  • … and {run.repos_total - len(run.repos)} more repos")
+    way_out = _run_way_out(run, target)
+    if way_out:
+        say(f"[bold]What to do:[/] {escape(way_out)}")
+
+
+def _run_conflict_text(c: RunConflict) -> str:
+    if c.kept == "local":
+        return (
+            f"{c.path}: changed on both machines; this machine's copy kept, "
+            f"the cloud's is in {c.backup}"
+        )
+    if c.kept == "cloud":
+        return (
+            f"{c.path}: changed on both machines; the cloud's copy kept, "
+            f"this machine's is in {c.backup}"
+        )
+    where = "here" if c.kept == "deleted-here" else "on another machine"
+    other = "on another machine" if c.kept == "deleted-here" else "here"
+    return (
+        f"{c.path}/: deleted {where} and changed {other}; the deletion won, "
+        f"the changed files are in {c.backup}"
+    )
+
+
+def _run_way_out(run: LastRun, target: str) -> str | None:
+    """What to do after ``run``, where its own words do not say it already."""
+    if run.result == "conflicts":
+        return (
+            "Nothing is lost: compare each kept file with its backup and "
+            "copy back what should stay."
+        )
+    if run.result != "failed":
+        return None
+    if run.reason == "auth":
+        remote = target.split(":", 1)[0]
+        return f"Sign in again with `rclone config reconnect {remote}:`, then run `lit sync`."
+    if run.reason is None:
+        return (
+            "Run `lit sync` to try again; it shows rclone's whole output. "
+            "If the network was down, the GUI's auto sync tries again on its own."
+        )
+    # safety-stop, lock and rclone: the error names the way out itself.
+    return None

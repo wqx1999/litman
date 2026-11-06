@@ -13,6 +13,7 @@ startup path stays fastapi-free even though fastapi is now a core dependency).
 
 from __future__ import annotations
 
+import asyncio
 import threading
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
@@ -21,13 +22,16 @@ from pathlib import Path
 from fastapi import FastAPI, Request, Response
 from fastapi.responses import JSONResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
+from starlette.concurrency import run_in_threadpool
 
 from litman.core.config import CONFIG_FILENAME
 from litman.core.presence import PresenceTracker
+from litman.core.sync_lock import SharedHold
 from litman.exceptions import (
     ConfigError,
     CorruptMetadataError,
     LitmanError,
+    SyncLockError,
     UnreadableTaxonomyError,
 )
 from litman.server import peer_owner
@@ -40,11 +44,13 @@ from litman.server.routes_read import router as read_router
 from litman.server.routes_si import config_problem
 from litman.server.routes_si import router as si_router
 from litman.server.routes_structured import router as structured_router
+from litman.server.routes_sync import router as sync_router
 from litman.server.routes_trash import router as trash_router
 from litman.server.routes_ui_state import router as ui_state_router
 from litman.server.routes_update import router as update_router
 from litman.server.routes_write import router as write_router
 from litman.server.si_requests import SiRequestTable
+from litman.server.sync_scheduler import SaveGate, SyncScheduler
 
 # The vendored SPA build lands here once `frontend/build.sh` has run; it does
 # not exist until Phase 1, so the factory guards on its presence.
@@ -116,6 +122,91 @@ _VAULTLESS_ALLOWED = frozenset(
         ("POST", "/api/open-url"),
     }
 )
+
+
+# Writes that touch no file two-way sync carries, so they need not wait while
+# rclone runs on the library: machine-level settings, the registry, the
+# folder picker, launching agents and apps, the self-update, the drop-in
+# stashes (``.litman-upload/`` never syncs) and "sync now" itself. Every other
+# write waits (:func:`_saves_wait_for_rclone`); a new route is held back until
+# it is listed here.
+_WRITES_NOT_SYNCED = frozenset(
+    {
+        ("POST", "/api/open-url"),
+        ("POST", "/api/fs/mkdir"),
+        ("PUT", "/api/ui-lang"),
+        ("PUT", "/api/whatsnew/seen"),
+        ("DELETE", "/api/pins"),
+        ("PUT", "/api/vaults/active"),
+        ("POST", "/api/vaults"),
+        ("POST", "/api/vaults/create"),
+        ("POST", "/api/agent/launch"),
+        ("POST", "/api/agent/skill/install"),
+        ("PUT", "/api/agent/default"),
+        ("PUT", "/api/agent/launch-mode"),
+        ("POST", "/api/self-update"),
+        ("POST", "/api/ingest/pdf"),
+        ("POST", "/api/ingest/derive-id"),
+        ("POST", "/api/si/requests"),
+        ("POST", "/api/sync"),
+    }
+)
+
+#: How long a save waits for rclone to finish with the library.
+SAVE_WAIT_S = 60.0
+
+
+#: How often a waiting save looks at the lock again.
+SAVE_POLL_S = 0.25
+
+
+async def _admit(gate: SaveGate, hold: SharedHold, deadline: float) -> bool | None:
+    """Wait for ``hold``, in line behind the saves that came first.
+
+    True once in (the caller leaves it); False when ``deadline`` (the event
+    loop's clock) passed first; None when the file system refuses locks, so
+    that no sync can run either. Only the save first in line looks at the
+    lock; the others wait their turn, and are let in in the order they came.
+    """
+    loop = asyncio.get_running_loop()
+    queue = gate.queue_for(hold)
+    try:
+        await asyncio.wait_for(queue.acquire(), timeout=max(0.0, deadline - loop.time()))
+    except TimeoutError:
+        return False
+    try:
+        while True:
+            try:
+                if await run_in_threadpool(hold.try_enter):
+                    return True
+            except SyncLockError:
+                return None
+            if loop.time() >= deadline:
+                return False
+            await asyncio.sleep(SAVE_POLL_S)
+    finally:
+        queue.release()
+
+
+def _write_not_synced(method: str, path: str) -> bool:
+    """Is this write one that touches no synced file (see ``_WRITES_NOT_SYNCED``)?"""
+    if (method, path) in _WRITES_NOT_SYNCED:
+        return True
+    parts = path.split("/")
+    # /api/pins/{id}; /api/vaults/{name}; /api/vaults/{name}/path;
+    # /api/ingest/{handle}; the SI window's stash: /api/si/requests/{rid}/files[/{fid}]
+    # and /cancel; opening an SI file: /api/paper/{id}/si/{file}/open.
+    if path.startswith("/api/pins/") and method in ("PUT", "DELETE"):
+        return True
+    if path.startswith("/api/vaults/") and (
+        method == "DELETE" or (method == "PUT" and path.endswith("/path"))
+    ):
+        return True
+    if path.startswith("/api/ingest/") and method == "DELETE":
+        return True
+    if path.startswith("/api/si/requests/") and len(parts) >= 6:
+        return parts[5] == "files" or (parts[5] == "cancel" and method == "POST")
+    return path.startswith("/api/paper/") and path.endswith("/open") and "/si/" in path
 
 
 def _vaultless_allowed(method: str, path: str) -> bool:
@@ -228,11 +319,19 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
             registration = None
     app.state.gui_registration = registration
 
+    # The auto sync runs for `lit gui` only (the same test as the
+    # registration above): a test's app never syncs by itself. Stopped here
+    # without waiting; `lit gui` runs the exit sync once the server is down.
+    scheduler = app.state.sync_scheduler
+    if port is not None:
+        scheduler.start()
+
     threading.Thread(target=_refresh, daemon=True).start()
     try:
         yield
     finally:
         stop_checking.set()
+        scheduler.stop()
         if registration is not None:
             from litman.core.gui_registry import unregister_gui
 
@@ -262,6 +361,10 @@ def create_app(vault: Path | None) -> FastAPI:
     # The SI window's requests (routes_si). Here, not in the lifespan: a bare
     # TestClient never runs the lifespan, and memory is all they need.
     app.state.si_requests = SiRequestTable()
+    # The auto sync (started by the lifespan, for `lit gui` only) and the gate
+    # that holds saves off the library while rclone runs on it.
+    app.state.sync_scheduler = SyncScheduler(app.state)
+    app.state.save_gate = SaveGate()
 
     @app.middleware("http")
     async def _guard_vault(request: Request, call_next):  # type: ignore[no-untyped-def]
@@ -332,6 +435,61 @@ def create_app(vault: Path | None) -> FastAPI:
             response.headers["Cache-Control"] = "no-store"
         return response
 
+    @app.middleware("http")
+    async def _saves_wait_for_rclone(request: Request, call_next):  # type: ignore[no-untyped-def]
+        """Hold a write to the library while rclone runs on it, up to ``SAVE_WAIT_S``.
+
+        Every ``/api/`` write but those in ``_WRITES_NOT_SYNCED`` waits for the
+        library's ``pass.lock`` (:mod:`litman.core.sync_lock`) and holds it
+        while it runs, so a sync never copies a file half-saved and a save
+        never lands between rclone's listing and its copy. The writes share
+        it: they never wait for each other. Those that do wait are let in
+        in the order they came, so two changes to one thing land in the
+        order they were made. The wait polls, in a worker thread, so the
+        server keeps answering meanwhile. Past it: 503 with ``Retry-After``;
+        the page tries again, holding on to what it was saving. A library
+        without ``sync:`` set up has no lock to wait on, and neither has one
+        whose file system refuses locks (then no sync can run either).
+        """
+        method = request.method
+        path = request.url.path
+        vault = request.app.state.vault
+        if (
+            method in ("GET", "HEAD", "OPTIONS")
+            or not path.startswith("/api/")
+            or vault is None
+            or _write_not_synced(method, path)
+        ):
+            return await call_next(request)
+        gate = request.app.state.save_gate
+        hold = await run_in_threadpool(gate.hold_for, vault)
+        if hold is None:
+            return await call_next(request)
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + SAVE_WAIT_S
+
+        def busy() -> Response:
+            return JSONResponse(
+                status_code=503,
+                content={
+                    "detail": (
+                        "A sync of this library is running. Your change was not "
+                        "saved; try again in a minute."
+                    )
+                },
+                headers={"Retry-After": "5", "Cache-Control": "no-store"},
+            )
+
+        entered = await _admit(gate, hold, deadline)
+        if entered is False:
+            return busy()
+        if entered is None:
+            return await call_next(request)
+        try:
+            return await call_next(request)
+        finally:
+            hold.leave()
+
     # Added after ``_guard_vault`` so it wraps it: a request from another web
     # page is refused before anything reads the vault — WebSockets included.
     app.add_middleware(LocalPageGuard)
@@ -385,6 +543,7 @@ def create_app(vault: Path | None) -> FastAPI:
     app.include_router(ui_state_router)
     app.include_router(ingest_router)
     app.include_router(si_router)
+    app.include_router(sync_router)
 
     if _WEBUI_ASSETS.is_dir():
         # html=True so client-side routes fall back to index.html.

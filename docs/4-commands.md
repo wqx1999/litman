@@ -990,6 +990,10 @@ down. It syncs with a folder inside the remote (the `--path` of
 - **Safety stop.** rclone stops a sync that would delete more than half of the
   files on one side, before anything is deleted. If the deletions are intended,
   run `lit sync --force`.
+- **One sync at a time.** When another sync of this library is running (the
+  GUI's auto sync, or `lit sync` in another terminal), `lit sync` waits up to
+  90 seconds for it to end, then exits `23` without syncing. `push` and `pull`
+  wait the same way.
 
 | Flag | What it does |
 |---|---|
@@ -1003,6 +1007,7 @@ down. It syncs with a folder inside the remote (the `--path` of
 | `20` | Nothing was synced: pick the side that wins with `--first-from cloud` or `--first-from local`. |
 | `21` | Synced, with conflicts: the newer copy of each file was kept and the older one is in the backup, or a folder deleted on one machine won over changes made to it on the other. |
 | `22` | Synced, but a code repo here does not match the library: its checkout is missing, at another commit, or left behind by a repo removed on another machine. The summary says why and what to do. |
+| `23` | Nothing was synced: another sync of this library was still running after 90 seconds. Run `lit sync` again once it is done. Also from `push` and `pull`. |
 
 A sync with conflicts that also left a code repo behind exits `21`, and its
 summary lists both. A checkout at the recorded commit with uncommitted changes
@@ -1011,9 +1016,9 @@ is only listed; it does not change the exit code.
 | Subcommand | What it does |
 |---|---|
 | `setup` | Hand the TTY to `rclone config`, then record the chosen remote + path in `lit-config.yaml`. `--remote <name>` skips the interactive step (point litman at an existing remote); `--path <path>` sets the mirror path. |
-| `push` | Upload the vault (`rclone sync` — deletes orphans on the remote). |
-| `pull` | Download the remote into the vault. **One-way with deletion** — local files absent on the remote are removed. |
-| `status` | Show last-push / last-pull timestamps and local vs. remote file counts. No network mutation. |
+| `push` | Upload the vault (`rclone sync` — deletes orphans on the remote). Refused once the library syncs two-way, on this machine or another: run `lit sync` instead. |
+| `pull` | Download the remote into the vault. **One-way with deletion** — local files absent on the remote are removed. Refused once the library syncs two-way (run `lit sync`; on a new machine, `lit sync --first-from cloud`), and when the remote holds no `lit-config.yaml`. |
+| `status` | Show last-push / last-pull timestamps and local vs. remote file counts. No network mutation. For a library that syncs two-way, it counts what two-way sync carries and shows the last sync. Below that, this machine's last two-way run, from a terminal or the GUI: how it ended, each conflict with its backup, the code repos left behind, or the full error with what to do. That part shows even when the cloud cannot be reached. |
 
 `push` runs a full health-check first as an integrity gate: any error-severity
 finding aborts the push, so a corrupted local state never overwrites the cloud

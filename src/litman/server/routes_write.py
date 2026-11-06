@@ -12,17 +12,85 @@ None of these
 handlers scan the vault, touch metadata / INDEX / TAXONOMY, or open any second
 write path. The vault is read from ``request.app.state.vault`` (set by
 :func:`litman.server.create_app`), so nothing here assumes a path.
+
+Each save may carry ``base``, the version of the file the page started from
+(``GET`` notes / discussion give it; ``GET /pdf-version`` for the PDF). When
+the file on disk is no longer that version (a sync brought another machine's
+copy, an agent rewrote it), the save still wins, and the copy it replaces is
+kept in the sync's conflicts backup first; the answer's ``replaced.backup``
+names it, so the page can say so. Every answer carries the new ``version``,
+so consecutive saves chain. ``base`` is ``"absent"`` for a notes / discussion
+file that did not exist when the edit began: one there now is kept too. A save
+of exactly what the file already holds keeps nothing (a repeated save).
+The copy and the write run in a worker thread, off the server's event loop.
 """
 
 from __future__ import annotations
 
+from collections.abc import Callable
+from pathlib import Path
+from typing import Any
+
 from fastapi import APIRouter, HTTPException, Request
+from starlette.concurrency import run_in_threadpool
 
 from litman.core.atomic import staged_write
 from litman.core.id import is_valid_id
 from litman.core.notes import ensure_discussion_scaffold, ensure_wikilink_reminder
+from litman.core.sync import keep_replaced_copy
+from litman.core.vault_token import fingerprint, md_version
 
 router = APIRouter(prefix="/api")
+
+
+#: The ``base`` of an edit that began on a notes / discussion file that did
+#: not exist yet. No version reads like it.
+ABSENT_BASE = "absent"
+
+
+def _read_md_version(path: Path) -> str:
+    return md_version(path.read_bytes())
+
+
+def _keep_if_changed(
+    vault: Path, rel: str, base: str | None, version_of: Callable[[Path], str], data: bytes
+) -> dict[str, Any]:
+    """Keep ``rel`` in the backup when it is no longer at ``base``; the answer's part.
+
+    Nothing is kept when the file already holds ``data``, the bytes about to
+    be written: a save made twice replaces nothing.
+
+    Raises:
+        HTTPException: 500 when the copy could not be kept (then nothing is saved).
+    """
+    path = vault / rel
+    if base is None or not path.is_file():
+        return {}
+    try:
+        if base != ABSENT_BASE and version_of(path) == base:
+            return {}
+        if path.read_bytes() == data:
+            return {}
+        backup = keep_replaced_copy(vault, rel)
+    except OSError as exc:
+        raise HTTPException(
+            status_code=500,
+            detail=(
+                f"{rel} changed on disk and a copy of it could not be kept "
+                f"({exc.strerror or exc}), so nothing was saved. Try again."
+            ),
+        ) from exc
+    return {"replaced": {"backup": str(backup)}}
+
+
+def _save(
+    vault: Path, rel: str, data: bytes, base: str | None, version_of: Callable[[Path], str]
+) -> dict[str, Any]:
+    """Keep the copy a save replaces, then write ``data`` to ``rel``: blocking, run in a thread."""
+    kept = _keep_if_changed(vault, rel, base, version_of, data)
+    with staged_write(vault) as sw:
+        sw.write_bytes(rel, data)
+    return kept
 
 
 @router.put("/paper/{paper_id}/pdf-annotations")
@@ -53,22 +121,25 @@ async def put_pdf_annotations(request: Request, paper_id: str) -> dict[str, obje
     if not body:
         raise HTTPException(status_code=400, detail="Empty request body.")
 
-    with staged_write(vault) as sw:
-        sw.write_bytes(f"papers/{paper_id}/paper.pdf", body)
+    rel = f"papers/{paper_id}/paper.pdf"
+    kept = await run_in_threadpool(
+        _save, vault, rel, body, request.query_params.get("base"), fingerprint
+    )
 
-    return {"ok": True, "bytes": len(body)}
+    return {"ok": True, "bytes": len(body), "version": fingerprint(pdf_path), **kept}
 
 
-async def _md_text_body(request: Request) -> str:
-    """Parse the ``{"text": "..."}`` JSON body shared by the md write endpoints.
+async def _md_text_body(request: Request) -> tuple[str, str | None]:
+    """Parse the ``{"text": "...", "base": "..."}`` body shared by the md write endpoints.
 
     Symmetric with the GET notes/discussion read endpoints, which return
-    ``{"text": ...}``. An absent/non-object body, a missing ``text`` key, a
-    non-string ``text``, or a blank string are all client bugs → 400 (a save
-    with nothing to write is never a legitimate overwrite of an authored file).
-    "Blank" is checked after ``strip()`` so a whitespace-only ``"  \n"`` is
-    rejected too — otherwise an accidental select-all + delete + save would
-    silently blank an authored note/discussion.
+    ``{"text": ..., "version": ...}``. An absent/non-object body, a missing
+    ``text`` key, a non-string ``text``, or a blank string are all client
+    bugs → 400 (a save with nothing to write is never a legitimate overwrite
+    of an authored file). "Blank" is checked after ``strip()`` so a
+    whitespace-only ``"  \n"`` is rejected too — otherwise an accidental
+    select-all + delete + save would silently blank an authored
+    note/discussion. ``base`` is optional; a non-string one is a client bug.
     """
     try:
         payload = await request.json()
@@ -79,7 +150,10 @@ async def _md_text_body(request: Request) -> str:
     text: str = payload["text"]
     if not text.strip():
         raise HTTPException(status_code=400, detail="Empty text.")
-    return text
+    base = payload.get("base")
+    if base is not None and not isinstance(base, str):
+        raise HTTPException(status_code=400, detail="base must be a string.")
+    return text, base
 
 
 @router.put("/paper/{paper_id}/notes")
@@ -107,13 +181,14 @@ async def put_notes(request: Request, paper_id: str) -> dict[str, object]:
     if not (vault / "papers" / paper_id).is_dir():
         raise HTTPException(status_code=404, detail=f"No such paper: {paper_id!r}.")
 
-    text = await _md_text_body(request)
+    text, base = await _md_text_body(request)
     healed = ensure_wikilink_reminder(text)
 
-    with staged_write(vault) as sw:
-        sw.write_text(f"papers/{paper_id}/notes.md", healed)
+    rel = f"papers/{paper_id}/notes.md"
+    data = healed.encode("utf-8")
+    kept = await run_in_threadpool(_save, vault, rel, data, base, _read_md_version)
 
-    return {"ok": True, "bytes": len(healed.encode("utf-8"))}
+    return {"ok": True, "bytes": len(data), "version": md_version(data), **kept}
 
 
 @router.put("/paper/{paper_id}/discussion")
@@ -136,10 +211,11 @@ async def put_discussion(request: Request, paper_id: str) -> dict[str, object]:
     if not (vault / "papers" / paper_id).is_dir():
         raise HTTPException(status_code=404, detail=f"No such paper: {paper_id!r}.")
 
-    text = await _md_text_body(request)
+    text, base = await _md_text_body(request)
     healed = ensure_discussion_scaffold(text, paper_id)
 
-    with staged_write(vault) as sw:
-        sw.write_text(f"papers/{paper_id}/discussion.md", healed)
+    rel = f"papers/{paper_id}/discussion.md"
+    data = healed.encode("utf-8")
+    kept = await run_in_threadpool(_save, vault, rel, data, base, _read_md_version)
 
-    return {"ok": True, "bytes": len(healed.encode("utf-8"))}
+    return {"ok": True, "bytes": len(data), "version": md_version(data), **kept}

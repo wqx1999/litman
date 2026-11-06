@@ -8,7 +8,9 @@ Every git command litman runs goes through :func:`run_git`, which:
 * passes ``-c http.lowSpeedLimit=1000 -c http.lowSpeedTime=60``: an HTTP
   transfer that stays under 1000 bytes a second for a minute is given up;
 * drops the variables that point git at another repository (``GIT_DIR`` and
-  the like): litman always names the repository it means.
+  the like): litman always names the repository it means;
+* opens no console window from a process that has none (the GUI's auto sync
+  under ``litw``, :func:`litman.core.terminal.hidden_console_flags`).
 
 With ``progress``, git's output goes to the terminal as git writes it, so a
 clone or a fetch shows its progress, and its last lines are still kept for
@@ -27,6 +29,7 @@ from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import TextIO, cast
 
+from litman.core.terminal import hidden_console_flags
 from litman.exceptions import CodeError
 
 #: Given to every git command: an HTTP transfer slower than 1000 bytes a
@@ -111,6 +114,7 @@ def run_git(
             errors="surrogateescape",
             env=run_env,
             timeout=timeout,
+            creationflags=hidden_console_flags(),
         )
     except FileNotFoundError as err:
         raise GitNotFoundError(
@@ -123,7 +127,11 @@ def _run_streamed(
 ) -> subprocess.CompletedProcess[str]:
     """Run ``command``, writing its output to ``out`` as it comes; keep its end."""
     process = subprocess.Popen(
-        command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, env=env
+        command,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        env=env,
+        creationflags=hidden_console_flags(),
     )
     decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
     kept = ""

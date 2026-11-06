@@ -29,6 +29,8 @@ Design choices baked in (per M6 spec + ADR-002, ADR-003, ADR-030):
 
 from __future__ import annotations
 
+import calendar
+import contextvars
 import fnmatch
 import hashlib
 import io
@@ -36,11 +38,16 @@ import json
 import os
 import re
 import shutil
+import signal
+import socket
 import stat
 import subprocess
 import sys
 import tempfile
+import threading
+import uuid
 from collections.abc import Callable, Iterable, Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -48,6 +55,7 @@ from typing import TYPE_CHECKING, Any, Literal
 
 from platformdirs import user_data_dir
 
+from litman.core.config import CONFIG_FILENAME
 from litman.core.dates import now_iso
 from litman.core.locking import (
     ensure_truth_locked,
@@ -55,9 +63,19 @@ from litman.core.locking import (
     is_file_manager_dropping,
 )
 from litman.core.replace import replace_file
+from litman.core.sync_lock import FileLock, LockHolder, read_holder
+from litman.core.terminal import hidden_console_flags
 from litman.core.undecodable import config_refusal
 from litman.core.yaml_pool import ThreadLocalYAML
-from litman.exceptions import LitmanError, SyncChoiceRequiredError, SyncError
+from litman.exceptions import (
+    BisyncLockedError,
+    LitmanError,
+    SyncBusyError,
+    SyncChoiceRequiredError,
+    SyncError,
+    SyncLockError,
+    SyncStoppedError,
+)
 
 if TYPE_CHECKING:
     from litman.core.code_sync import RepoSyncReport
@@ -118,11 +136,41 @@ def _require_rclone() -> None:
         )
 
 
+#: Set on the GUI's own threads (:func:`rclone_never_asks`): rclone must never
+#: wait there for an answer on a terminal, the password of an encrypted rclone
+#: config above all, which would block the auto sync for good.
+_NEVER_ASK: contextvars.ContextVar[bool] = contextvars.ContextVar(
+    "litman_rclone_never_ask", default=False
+)
+
+#: How long rclone may take to tell its version or list its remotes.
+_GATE_TIMEOUT = 30.0
+
+
+@contextmanager
+def rclone_never_asks() -> Iterator[None]:
+    """In this thread, meanwhile: rclone gets no stdin and ``--ask-password=false``.
+
+    For the GUI, whose rclone runs have no terminal to answer from.
+    """
+    token = _NEVER_ASK.set(True)
+    try:
+        yield
+    finally:
+        _NEVER_ASK.reset(token)
+
+
+def _never_ask_args() -> list[str]:
+    return ["--ask-password=false"] if _NEVER_ASK.get() else []
+
+
 def run_rclone(
     args: list[str],
     *,
     capture: bool = True,
     check: bool = True,
+    timeout: float | None = None,
+    input: str | None = None,
 ) -> subprocess.CompletedProcess[str]:
     """Invoke ``rclone <args>`` and return the completed process.
 
@@ -136,21 +184,37 @@ def run_rclone(
         check: When True (default), a non-zero rclone exit code is wrapped
             into ``SyncError`` carrying the last few stderr lines. When
             False, the caller is responsible for inspecting ``returncode``.
+        timeout: Seconds rclone may take; past them it is stopped and
+            ``SyncError`` raised.
+        input: Text handed to rclone on its stdin (``rclone rcat``).
 
     Raises:
         SyncError: rclone not installed (re-checked here so unit tests that
             patch PATH don't need to mock both ``rclone_available`` and the
-            subprocess), or (when ``check=True``) the command exited non-zero.
+            subprocess), it ran past ``timeout``, or (when ``check=True``) the
+            command exited non-zero.
     """
     _require_rclone()
-    cmd = [RCLONE_BIN, *args]
+    cmd = [RCLONE_BIN, *_never_ask_args(), *args]
     try:
         result = subprocess.run(
             cmd,
             check=False,
             capture_output=capture,
-            text=True,
+            # rclone writes UTF-8 whatever the locale; a name it prints must
+            # never fail the decode.
+            encoding="utf-8",
+            errors="replace",
+            input=input,
+            stdin=subprocess.DEVNULL if input is None and _NEVER_ASK.get() else None,
+            timeout=timeout,
+            creationflags=hidden_console_flags(),
         )
+    except subprocess.TimeoutExpired as e:
+        raise SyncError(
+            f"rclone did not answer within {timeout:.0f} seconds for `rclone "
+            f"{' '.join(args)}`."
+        ) from e
     except FileNotFoundError as e:
         # Race: PATH said rclone existed, but it disappeared. Treat as
         # missing-install for a consistent message.
@@ -182,7 +246,7 @@ def list_remotes() -> list[str]:
     colon (``my-gdrive:``); we strip the colon for ergonomic comparison.
     Empty output (no remotes configured) yields ``[]``.
     """
-    result = run_rclone(["listremotes"])
+    result = run_rclone(["listremotes"], timeout=_GATE_TIMEOUT)
     names: list[str] = []
     for line in result.stdout.splitlines():
         line = line.strip()
@@ -210,19 +274,24 @@ class Size:
     bytes: int
 
 
-def remote_size(target_url: str) -> Size:
+def remote_size(target_url: str, *, two_way: bool = False) -> Size:
     """Return ``Size`` of the remote location via ``rclone size --json``.
 
     Args:
         target_url: rclone destination (``"remote:path/"``).
+        two_way: Count only what two-way sync carries
+            (:func:`two_way_filter_rules`), for a library that syncs two-way.
 
     Raises:
         SyncError: rclone fails (path missing, auth error, etc.). A missing
             remote path returns ``Size(0, 0)`` rather than raising — that
             state is the legitimate "never pushed" case.
     """
+    # The auto-sync stamp is litman's, not the library's: counted, it would
+    # leave `lit sync status` one file out of step for good.
+    filters = _two_way_filter_args() if two_way else list(_STAMP_EXCLUDE_ARGS)
     result = run_rclone(
-        ["size", target_url, "--json"],
+        ["size", target_url, "--json", *filters],
         check=False,
     )
     if result.returncode != 0:
@@ -338,6 +407,26 @@ def local_vault_size(
     return Size(count=count, bytes=total)
 
 
+def two_way_local_size(vault: Path) -> Size:
+    """File count + bytes of what two-way sync carries from ``vault``.
+
+    The local half of :func:`remote_size` with ``two_way``: the same rules
+    (:func:`_walk_synced`), links left out as rclone leaves them out.
+    """
+    count = 0
+    total = 0
+    for _rel, full in _walk_synced(vault):
+        try:
+            st = os.lstat(full)
+        except OSError:
+            continue
+        if not stat.S_ISREG(st.st_mode):
+            continue
+        count += 1
+        total += st.st_size
+    return Size(count=count, bytes=total)
+
+
 def largest_files(
     vault: Path,
     n: int = 5,
@@ -424,13 +513,15 @@ class SyncState:
 
     ``last_sync`` is the last successful two-way sync; ``last_sync_result`` is
     how the most recent two-way attempt ended: ``ok``, ``conflicts``,
-    ``needs-choice`` or ``failed``.
+    ``needs-choice`` or ``failed``. ``last_run`` holds that attempt's details
+    for ``lit sync status`` (:class:`LastRun`).
     """
 
     last_push: str | None = None
     last_pull: str | None = None
     last_sync: str | None = None
     last_sync_result: str | None = None
+    last_run: LastRun | None = None
 
 
 def read_sync_state(vault: Path) -> SyncState:
@@ -459,6 +550,7 @@ def read_sync_state(vault: Path) -> SyncState:
         last_pull=field("last-pull"),
         last_sync=field("last-sync"),
         last_sync_result=field("last-sync-result"),
+        last_run=_last_run_from(data.get("last-run")),
     )
 
 
@@ -478,6 +570,8 @@ def write_sync_state(vault: Path, state: SyncState) -> None:
         "last-sync": state.last_sync,
         "last-sync-result": state.last_sync_result,
     }
+    if state.last_run is not None:
+        payload["last-run"] = _last_run_to(state.last_run)
     buf = io.StringIO()
     _yaml.dump(payload, buf)
     tmp.write_text(buf.getvalue(), encoding="utf-8")
@@ -508,6 +602,205 @@ def stamp_two_way(vault: Path, result: str) -> None:
     write_sync_state(vault, replace(state, last_sync_result=result))
 
 
+RunTrigger = Literal["terminal", "auto", "exit"]
+
+#: How many conflicts, and how many repos, a :class:`LastRun` lists; the
+#: totals count them all.
+RUN_RECORD_CAP = 20
+#: The most characters of an error a :class:`LastRun` keeps.
+RUN_ERROR_CAP = 8000
+
+
+@dataclass(frozen=True)
+class RunConflict:
+    """One thing a run had to settle, and where the copy that lost went.
+
+    ``kept`` is ``local`` or ``cloud`` for a file changed on both sides (whose
+    copy stayed at ``path``), ``deleted-here`` or ``deleted-there`` for a
+    folder deleted on one machine and changed on the other (the deletion won;
+    ``path`` is the folder).
+    """
+
+    path: str
+    kept: str
+    backup: str
+
+
+RepoRowKind = Literal["not-restored", "left-behind", "failed"]
+
+
+@dataclass(frozen=True)
+class RunRepo:
+    """A code checkout that did not follow the library, and the way out.
+
+    ``kind`` says which way: ``not-restored`` (not brought to the commit the
+    library records), ``left-behind`` (the repo was removed from the library
+    and its folder stays on this machine) or ``failed`` (the repo step itself
+    failed; ``name`` is empty). ``what`` and ``way_out`` are one sentence
+    each, for ``lit sync status``.
+    """
+
+    name: str
+    what: str
+    way_out: str
+    kind: str = "not-restored"
+
+
+@dataclass(frozen=True)
+class LastRun:
+    """How this machine's last two-way sync run ended, for ``lit sync status``.
+
+    Written by every run :func:`two_way_sync` starts (from a terminal, the
+    GUI's auto sync or its sync on exit: ``trigger``), and by the GUI when it
+    cannot start one; not by a run that another sync held off. Kept in the
+    per-machine state file, which never syncs.
+
+    ``result`` is ``ok``, ``conflicts``, ``needs-choice`` or ``failed``.
+    ``reason`` says why a run stopped, where that is known: ``auth``,
+    ``safety-stop``, ``choice``, ``lock`` or ``rclone``. ``error`` is the
+    whole error text. The lists hold the first :data:`RUN_RECORD_CAP`
+    entries; the totals count all of them.
+    """
+
+    at: str
+    trigger: str
+    result: str
+    reason: str | None = None
+    error: str | None = None
+    conflicts: tuple[RunConflict, ...] = ()
+    conflicts_total: int = 0
+    repos: tuple[RunRepo, ...] = ()
+    repos_total: int = 0
+
+
+def repo_rows(result: TwoWayResult) -> list[RunRepo]:
+    """The code repos ``result`` left behind, each with its way out."""
+    from litman.core.code import left_behind_message
+
+    rows: list[RunRepo] = []
+    if result.repos is not None:
+        rows += [
+            RunRepo(m.name, m.what, m.way_out, "not-restored")
+            for m in result.repos.not_restored
+        ]
+        for name in result.repos.left_behind:
+            what, way_out = left_behind_message(name)
+            rows.append(RunRepo(name, what, way_out, "left-behind"))
+    if result.repos_error is not None:
+        rows.append(RunRepo("", result.repos_error, "", "failed"))
+    return rows
+
+
+def run_from_result(result: TwoWayResult, trigger: RunTrigger) -> LastRun:
+    """The record of a run that went through."""
+    settled = [RunConflict(c.path, c.kept, str(c.backup)) for c in result.conflicts] + [
+        RunConflict(d.folder, "deleted-here" if d.deleted_here else "deleted-there", str(d.backup))
+        for d in result.deleted_folders
+    ]
+    repos = repo_rows(result)
+    return LastRun(
+        at=now_iso(),
+        trigger=trigger,
+        result="conflicts" if settled else "ok",
+        conflicts=tuple(settled[:RUN_RECORD_CAP]),
+        conflicts_total=len(settled),
+        repos=tuple(repos[:RUN_RECORD_CAP]),
+        repos_total=len(repos),
+    )
+
+
+def run_from_error(
+    err: BaseException, trigger: RunTrigger, *, reason: str | None = None
+) -> LastRun:
+    """The record of a run that ``err`` stopped; ``reason`` overrides the guess."""
+    kind, guessed = classify_sync_error(err)
+    return LastRun(
+        at=now_iso(),
+        trigger=trigger,
+        result="needs-choice" if isinstance(err, SyncChoiceRequiredError) else "failed",
+        reason=reason or (guessed if kind == "needs-user" else None),
+        error=str(err)[:RUN_ERROR_CAP],
+    )
+
+
+def record_run(vault: Path, run: LastRun) -> None:
+    """Keep ``run`` as this machine's last run, preserving the other fields.
+
+    A state-file problem is swallowed: it must not hide how the sync went.
+    """
+    try:
+        state = read_sync_state(vault)
+        write_sync_state(vault, replace(state, last_run=run))
+    except OSError:
+        pass
+
+
+def _last_run_to(run: LastRun) -> dict[str, Any]:
+    out: dict[str, Any] = {"at": run.at, "trigger": run.trigger, "result": run.result}
+    if run.reason:
+        out["reason"] = run.reason
+    if run.error:
+        out["error"] = run.error
+    if run.conflicts_total:
+        out["conflicts-total"] = run.conflicts_total
+        out["conflicts"] = [
+            {"path": c.path, "kept": c.kept, "backup": c.backup} for c in run.conflicts
+        ]
+    if run.repos_total:
+        out["repos-total"] = run.repos_total
+        out["repos"] = [
+            {"name": r.name, "kind": r.kind, "what": r.what, "way-out": r.way_out}
+            for r in run.repos
+        ]
+    return out
+
+
+def _last_run_from(data: object) -> LastRun | None:
+    """The record in the state file, or None when it is missing or malformed."""
+    if not isinstance(data, dict):
+        return None
+
+    def text(source: dict[Any, Any], key: str) -> str | None:
+        value = source.get(key)
+        return str(value) if value not in (None, "") else None
+
+    def rows(key: str) -> list[dict[Any, Any]]:
+        value = data.get(key)
+        return [row for row in value if isinstance(row, dict)] if isinstance(value, list) else []
+
+    def count(key: str, listed: int) -> int:
+        value = data.get(key)
+        return value if isinstance(value, int) and value >= listed else listed
+
+    at, trigger, result = text(data, "at"), text(data, "trigger"), text(data, "result")
+    if at is None or trigger is None or result is None:
+        return None
+    conflicts = tuple(
+        RunConflict(text(r, "path") or "", text(r, "kept") or "", text(r, "backup") or "")
+        for r in rows("conflicts")
+    )
+    repos = tuple(
+        RunRepo(
+            text(r, "name") or "",
+            text(r, "what") or "",
+            text(r, "way-out") or "",
+            text(r, "kind") or "not-restored",
+        )
+        for r in rows("repos")
+    )
+    return LastRun(
+        at=at,
+        trigger=trigger,
+        result=result,
+        reason=text(data, "reason"),
+        error=text(data, "error"),
+        conflicts=conflicts,
+        conflicts_total=count("conflicts-total", len(conflicts)),
+        repos=repos,
+        repos_total=count("repos-total", len(repos)),
+    )
+
+
 # ---------------------------------------------------------------------------
 # Push / pull / status
 # ---------------------------------------------------------------------------
@@ -531,6 +824,8 @@ def push(
     *,
     extra_excludes: tuple[str, ...] = (),
     dry_run: bool = False,
+    lock_wait: float = 0.0,
+    on_lock_wait: Callable[[LockHolder | None], None] | None = None,
 ) -> subprocess.CompletedProcess[str]:
     """Mirror ``vault`` to ``target_url`` (``rclone sync`` one-way).
 
@@ -548,12 +843,28 @@ def push(
 
     On success, updates the per-machine ``last-push`` timestamp (skipped on
     dry-run; we're previewing, not actually transferring).
+
+    One-way and two-way sync do not mix: the caller first checks
+    :func:`require_one_way`, which refuses a library that syncs two-way. The
+    auto-sync stamp is still left out of the mirror, so that a push started
+    just before another machine's first two-way sync does not delete it. A
+    real push holds the library's sync lock, waiting up to ``lock_wait``
+    seconds for another sync to end (``on_lock_wait`` hears when it starts
+    waiting).
+
+    Raises:
+        SyncBusyError: another sync still held the lock after ``lock_wait``.
     """
-    args = ["sync", str(vault), target_url, *build_exclude_args(extra_excludes)]
+    args = [
+        "sync", str(vault), target_url,
+        *build_exclude_args(extra_excludes), *_STAMP_EXCLUDE_ARGS,
+    ]
     if dry_run:
         args.append("--dry-run")
-    result = run_rclone(args, capture=False)
-    if not dry_run:
+        return run_rclone(args, capture=False)
+    workdir = sync_workdir(vault, target_url)
+    with hold_sync_lock(workdir, by="lit sync push", wait=lock_wait, on_wait=on_lock_wait):
+        result = run_rclone(args, capture=False)
         stamp_push(vault)
     return result
 
@@ -564,6 +875,8 @@ def pull(
     *,
     extra_excludes: tuple[str, ...] = (),
     dry_run: bool = False,
+    lock_wait: float = 0.0,
+    on_lock_wait: Callable[[LockHolder | None], None] | None = None,
 ) -> subprocess.CompletedProcess[str]:
     """Mirror ``target_url`` into ``vault`` (``rclone sync`` one-way).
 
@@ -575,12 +888,25 @@ def pull(
     NOTE: the destination's ``.litman-sync-state.yaml`` is preserved because
     it's on the default exclude list, so a local machine's prior pull
     history is never clobbered.
+
+    The caller first checks :func:`require_one_way`, which refuses a library
+    that syncs two-way, and a cloud folder holding no ``lit-config.yaml``,
+    whose pull would delete this one. The auto-sync stamp stays out of the
+    vault all the same. A real pull holds the sync lock like :func:`push`.
+
+    Raises:
+        SyncBusyError: another sync still held the lock after ``lock_wait``.
     """
-    args = ["sync", target_url, str(vault), *build_exclude_args(extra_excludes)]
+    args = [
+        "sync", target_url, str(vault),
+        *build_exclude_args(extra_excludes), *_STAMP_EXCLUDE_ARGS,
+    ]
     if dry_run:
         args.append("--dry-run")
-    result = run_rclone(args, capture=False)
-    if not dry_run:
+        return run_rclone(args, capture=False)
+    workdir = sync_workdir(vault, target_url)
+    with hold_sync_lock(workdir, by="lit sync pull", wait=lock_wait, on_wait=on_lock_wait):
+        result = run_rclone(args, capture=False)
         stamp_pull(vault)
         # rclone does not round-trip Unix permissions, so pulled TRUTH files
         # land writable (default 0o644). Re-assert the read-only lock locally
@@ -588,6 +914,108 @@ def pull(
         # readable, uploads fine).
         ensure_truth_locked(vault)
     return result
+
+
+# -- one-way and two-way do not mix ------------------------------------------------
+
+
+OneWay = Literal["push", "pull"]
+
+
+def list_cloud_root(target_url: str) -> frozenset[str]:
+    """The names of the files at the top of the cloud folder (one ``rclone lsf``).
+
+    Empty when the folder does not exist yet.
+
+    Raises:
+        SyncError: rclone could not list it (offline, sign-in, provider).
+    """
+    result = run_rclone(
+        ["lsf", "--files-only", target_url, *_STAMP_NET_FLAGS],
+        check=False,
+        timeout=_STAMP_RUN_TIMEOUT,
+    )
+    if result.returncode in (3, 4):
+        return frozenset()
+    if result.returncode != 0:
+        tail = "\n".join((result.stderr or "").strip().splitlines()[-3:])
+        raise SyncError(
+            f"rclone could not list {target_url} (exit {result.returncode}):\n{tail}"
+        )
+    return frozenset(line for line in (result.stdout or "").splitlines() if line)
+
+
+@dataclass(frozen=True)
+class SyncMode:
+    """How a library is synced, from this machine's records and the cloud folder's top."""
+
+    #: This machine has two-way sync records for the library and this cloud folder.
+    two_way_here: bool
+    #: The cloud folder holds the auto-sync stamp: a machine syncs it two-way.
+    stamp_in_cloud: bool
+    #: The cloud folder holds a ``lit-config.yaml``, which only a push puts there.
+    config_in_cloud: bool
+
+    @property
+    def two_way(self) -> bool:
+        return self.two_way_here or self.stamp_in_cloud
+
+
+def read_sync_mode(vault: Path, target_url: str) -> SyncMode:
+    """Read :class:`SyncMode`: a look at this machine's records and one listing of the cloud.
+
+    Raises:
+        SyncError: rclone could not list the cloud folder.
+    """
+    names = list_cloud_root(target_url)
+    return SyncMode(
+        two_way_here=bisync_initialised(sync_workdir(vault, target_url)),
+        stamp_in_cloud=SYNC_STAMP_FILENAME in names,
+        config_in_cloud=CONFIG_FILENAME in names,
+    )
+
+
+def require_one_way(vault: Path, target_url: str, direction: OneWay) -> None:
+    """Refuse a ``push`` or ``pull`` that would break a library synced two-way.
+
+    Two-way sync never uploads ``lit-config.yaml``, ``INDEX.json`` or the
+    code checkouts, so a pull, which mirrors the cloud with deletion, would
+    delete them here; and a push would overwrite what the other machines
+    synced. A library that syncs two-way, here or on any machine (the cloud
+    holds the stamp), is refused both. A pull is refused as well when the
+    cloud folder holds no ``lit-config.yaml``. Nothing is transferred.
+
+    Raises:
+        SyncError: the transfer is refused, or rclone could not list the cloud folder.
+    """
+    mode = read_sync_mode(vault, target_url)
+    if direction == "push":
+        if mode.two_way_here:
+            raise SyncError(
+                "This library syncs two-way, so a push would overwrite what your "
+                "other machines synced. Run `lit sync` instead."
+            )
+        if mode.stamp_in_cloud:
+            raise SyncError(
+                f"{target_url} is synced two-way, so a push would overwrite what "
+                "the other machines synced. Run `lit sync` instead."
+            )
+        return
+    if mode.two_way_here:
+        raise SyncError(
+            "This library syncs two-way, so a pull would delete files the cloud "
+            "never holds, like lit-config.yaml. Run `lit sync` instead."
+        )
+    if mode.stamp_in_cloud:
+        raise SyncError(
+            f"{target_url} is synced two-way, so a pull would delete files the "
+            "cloud never holds. Run `lit sync --first-from cloud` instead."
+        )
+    if not mode.config_in_cloud:
+        raise SyncError(
+            f"{target_url} holds no lit-config.yaml, so a pull would delete this "
+            "library's. Point `lit sync setup` at the folder you pushed to."
+        )
 
 
 @dataclass(frozen=True)
@@ -598,6 +1026,8 @@ class StatusReport:
     local: Size
     remote: Size
     state: SyncState
+    #: Counted with the two-way rules: the library syncs two-way.
+    two_way: bool = False
 
     @property
     def file_delta(self) -> int:
@@ -615,23 +1045,33 @@ def compute_status(
     target_url: str,
     *,
     extra_excludes: tuple[str, ...] = (),
+    two_way: bool = False,
 ) -> StatusReport:
     """Gather local + remote sizes + state-file timestamps into one report.
 
     Two rclone calls (``listremotes`` was already done by the caller; here
     we only do ``size``). Local enumeration is a pure filesystem walk.
+
+    ``two_way`` counts both sides with the two-way rules instead (where
+    ``extra_excludes`` has no say): a library that syncs two-way leaves
+    ``INDEX.json``, ``lit-config.yaml`` and the code checkouts out of the
+    cloud, and reads as in sync once it is.
     """
-    local = local_vault_size(
-        vault,
-        excludes=(*DEFAULT_EXCLUDES, *extra_excludes),
-    )
-    remote = remote_size(target_url)
+    if two_way:
+        local = two_way_local_size(vault)
+    else:
+        local = local_vault_size(
+            vault,
+            excludes=(*DEFAULT_EXCLUDES, *extra_excludes),
+        )
+    remote = remote_size(target_url, two_way=two_way)
     state = read_sync_state(vault)
     return StatusReport(
         target_url=target_url,
         local=local,
         remote=remote,
         state=state,
+        two_way=two_way,
     )
 
 
@@ -716,6 +1156,11 @@ BISYNC_MIN_VERSION: tuple[int, int, int] = (1, 74, 2)
 #: (auto sync). Excluded now, so that writing it later is not a filter change,
 #: which would make every machine start over with ``--first-from``.
 SYNC_STAMP_FILENAME = ".litman-sync-stamp.json"
+
+#: Keeps the stamp out of one-way push / pull and of ``rclone size``. Not in
+#: :data:`DEFAULT_EXCLUDES`: that list is part of the two-way filters text,
+#: whose every change sends each machine back to ``--first-from``.
+_STAMP_EXCLUDE_ARGS: tuple[str, ...] = ("--exclude", f"/{SYNC_STAMP_FILENAME}")
 
 #: Root paths two-way sync never carries, on top of :data:`DEFAULT_EXCLUDES`.
 #: INDEX.json is derived and changes on every write, so it would conflict on
@@ -804,6 +1249,15 @@ def two_way_filter_rules() -> str:
     return "\n".join(lines) + "\n"
 
 
+def _two_way_filter_args() -> list[str]:
+    """:func:`two_way_filter_rules` as ``--filter`` flags, for rclone commands other than bisync."""
+    args: list[str] = []
+    for line in two_way_filter_rules().splitlines():
+        if line and not line.startswith("#"):
+            args += ["--filter", line]
+    return args
+
+
 def sync_data_dir() -> Path:
     """litman's per-user data dir, which holds the bisync state and the backups.
 
@@ -831,6 +1285,10 @@ def vault_key(vault: Path, target_url: str) -> str:
     return f"{name or 'vault'}-{digest}"
 
 
+#: litman's record of the synced files after the last sync, in the workdir.
+SNAPSHOT_NAME = "litman-snapshot.json"
+
+
 @dataclass(frozen=True)
 class BisyncPaths:
     """Where one vault's two-way sync keeps its state and its backups."""
@@ -846,7 +1304,7 @@ class BisyncPaths:
     @property
     def snapshot_file(self) -> Path:
         """litman's record of the vault's synced files after the last sync."""
-        return self.workdir / "litman-snapshot.json"
+        return self.workdir / SNAPSHOT_NAME
 
     @property
     def conflicts_root(self) -> Path:
@@ -857,6 +1315,11 @@ class BisyncPaths:
     def repo_heads_file(self) -> Path:
         """The commit each code checkout was at when this machine's last sync ended."""
         return self.workdir / "repo-heads.json"
+
+    @property
+    def stamp_file(self) -> Path:
+        """Which remote stamp this machine last saw and last wrote (:class:`StampRecord`)."""
+        return self.workdir / STAMP_RECORD_NAME
 
 
 def remote_backup_root(target_url: str) -> str:
@@ -879,12 +1342,21 @@ def remote_backup_root(target_url: str) -> str:
     return f"{remote}:{trimmed}-litman-backup"
 
 
+def sync_workdir(vault: Path, target_url: str) -> Path:
+    """The folder of rclone's records for ``vault`` synced with ``target_url``.
+
+    It also holds litman's own: the snapshot of the last sync, the stamp it
+    last saw, and the sync locks (:mod:`litman.core.sync_lock`).
+    """
+    return sync_data_dir() / "bisync" / vault_key(vault, target_url)
+
+
 def bisync_paths(vault: Path, target_url: str) -> BisyncPaths:
     """The state and backup locations for ``vault`` synced with ``target_url``."""
     key = vault_key(vault, target_url)
     data = sync_data_dir()
     return BisyncPaths(
-        workdir=data / "bisync" / key,
+        workdir=sync_workdir(vault, target_url),
         local_backup_root=data / "sync-backup" / key,
         remote_backup_root=remote_backup_root(target_url),
     )
@@ -908,13 +1380,449 @@ def bisync_initialised(workdir: Path) -> bool:
     )
 
 
+# -- the sync locks ----------------------------------------------------------
+
+#: The lock held for a whole sync, and the one held while rclone runs
+#: (:mod:`litman.core.sync_lock`), both in the workdir.
+SYNC_LOCK_NAME = "sync.lock"
+PASS_LOCK_NAME = "pass.lock"
+
+#: How long ``lit sync`` waits for another sync of the same library to end.
+#: Under two minutes: an agent's shell tool often stops a command at 120 s,
+#: and the agent should see the exit code and its message, not a killed run.
+SYNC_LOCK_WAIT = 90.0
+
+#: How long a sync waits for the GUI to finish a save before rclone runs.
+PASS_LOCK_WAIT = 60.0
+
+
+def _busy_message(holder: LockHolder | None) -> str:
+    who = holder.describe() if holder is not None else ""
+    return (
+        f"Another sync of this library is running{f' ({who})' if who else ''}, so "
+        "this one did not start. Try again in a minute."
+    )
+
+
+def describe_sync_lock_holder(holder: LockHolder | None) -> str:
+    """``Another sync of this library is running (lit gui, since 14:02)``."""
+    who = holder.describe() if holder is not None else ""
+    return f"Another sync of this library is running{f' ({who})' if who else ''}"
+
+
+@contextmanager
+def hold_sync_lock(
+    workdir: Path,
+    *,
+    by: str,
+    wait: float,
+    on_wait: Callable[[LockHolder | None], None] | None = None,
+) -> Iterator[None]:
+    """Hold ``sync.lock`` for one sync, waiting up to ``wait`` seconds for it.
+
+    ``by`` names the holder in the line others read (``lit sync``,
+    ``lit gui``). ``on_wait`` hears the current holder once, when the wait
+    starts.
+
+    Raises:
+        SyncBusyError: the lock was still held after ``wait`` seconds.
+    """
+    lock = FileLock(workdir / SYNC_LOCK_NAME)
+
+    def waiting() -> None:
+        if on_wait is not None:
+            on_wait(read_holder(lock.path))
+
+    if not lock.acquire(wait, on_wait=waiting):
+        raise SyncBusyError(_busy_message(read_holder(lock.path)))
+    try:
+        lock.write_holder(by)
+        yield
+    finally:
+        lock.release()
+
+
+@contextmanager
+def hold_pass_lock(workdir: Path) -> Iterator[None]:
+    """Hold ``pass.lock`` while rclone runs, after the GUI's saves in progress end.
+
+    Raises:
+        SyncBusyError: a GUI save still held it after :data:`PASS_LOCK_WAIT`.
+    """
+    lock = FileLock(workdir / PASS_LOCK_NAME)
+    if not lock.acquire(PASS_LOCK_WAIT):
+        raise SyncBusyError(
+            "The GUI is still saving to this library, so nothing was synced. "
+            "Try again in a minute."
+        )
+    try:
+        yield
+    finally:
+        lock.release()
+
+
+def pass_lock_path(vault: Path, target_url: str) -> Path:
+    """Where ``pass.lock`` of ``vault`` synced with ``target_url`` lives."""
+    return sync_workdir(vault, target_url) / PASS_LOCK_NAME
+
+
+# -- the auto-sync stamp -----------------------------------------------------
+
+#: The workdir file that records the stamps this machine saw and wrote.
+STAMP_RECORD_NAME = "stamp.json"
+
+#: rclone's network limits for a stamp read or write, and the run's own cap:
+#: the stamp is one tiny file, so a provider that does not answer is offline.
+_STAMP_NET_FLAGS: tuple[str, ...] = ("--contimeout", "15s", "--timeout", "30s")
+_STAMP_RUN_TIMEOUT = 60.0
+
+
+@dataclass(frozen=True)
+class Stamp:
+    """The stamp on the remote: written after every sync that changed the cloud.
+
+    ``prev`` is the id the writer read before its sync. A machine whose own
+    stamp is neither the current one nor its ``prev`` knows it was replaced by
+    one that did not see it, and writes a new one after its next sync.
+    """
+
+    id: str
+    prev: str | None = None
+    at: str | None = None
+    machine: str | None = None
+
+
+@dataclass(frozen=True)
+class StampRecord:
+    """What this machine knows of the stamp (``<workdir>/stamp.json``).
+
+    ``seen``: the stamp this machine's last sync started from, or wrote.
+    ``written``: the last stamp this machine wrote, until a later stamp names
+    it as ``prev`` (another machine saw it). ``owed``: a stamp is still to be
+    written, because the write failed or this machine's stamp was replaced
+    unseen. ``pending``: a sync started and has not reached its stamp yet; left
+    set by one that was killed or failed, whose uploads are then owed a stamp.
+    """
+
+    seen: str | None = None
+    written: str | None = None
+    owed: bool = False
+    pending: bool = False
+
+
+def stamp_url(target_url: str) -> str | None:
+    """The stamp's rclone path; ``None`` for a remote's top level, which two-way sync refuses."""
+    remote, sep, path = target_url.partition(":")
+    trimmed = path.rstrip("/\\")
+    if not sep or not trimmed:
+        return None
+    return f"{remote}:{trimmed}/{SYNC_STAMP_FILENAME}"
+
+
+def read_remote_stamp(target_url: str) -> Stamp | None:
+    """The stamp on the remote; ``None`` when there is none.
+
+    Raises:
+        SyncError: rclone could not read it (offline, sign-in, provider).
+    """
+    url = stamp_url(target_url)
+    if url is None:
+        return None
+    result = run_rclone(
+        ["cat", url, *_STAMP_NET_FLAGS], check=False, timeout=_STAMP_RUN_TIMEOUT
+    )
+    if result.returncode in (3, 4):
+        return None
+    if result.returncode != 0:
+        tail = "\n".join((result.stderr or "").strip().splitlines()[-3:])
+        raise SyncError(
+            f"rclone could not read the sync stamp in {target_url} "
+            f"(exit {result.returncode}):\n{tail}"
+        )
+    text = result.stdout or ""
+    try:
+        payload = json.loads(text)
+        stamp_id = payload["id"]
+        if not isinstance(stamp_id, str) or not stamp_id:
+            raise ValueError(stamp_id)
+    except (ValueError, KeyError, TypeError):
+        # Damaged: still a state of its own, which a sync replaces.
+        digest = hashlib.sha256(text.encode("utf-8", "surrogateescape")).hexdigest()
+        return Stamp(id=f"{_UNREADABLE_STAMP}{digest[:16]}")
+
+    def text_or_none(key: str) -> str | None:
+        value = payload.get(key)
+        return value if isinstance(value, str) else None
+
+    return Stamp(
+        id=stamp_id,
+        prev=text_or_none("prev"),
+        at=text_or_none("at"),
+        machine=text_or_none("machine"),
+    )
+
+
+def write_remote_stamp(target_url: str, *, prev: str | None) -> Stamp:
+    """Write a new stamp naming ``prev``, and return it.
+
+    Raises:
+        SyncError: rclone could not write it.
+    """
+    url = stamp_url(target_url)
+    if url is None:
+        raise SyncError(f"{target_url} is a remote's top level, which holds no sync stamp.")
+    stamp = Stamp(id=uuid.uuid4().hex, prev=prev, at=now_iso(), machine=socket.gethostname())
+    payload = json.dumps(
+        {"id": stamp.id, "prev": stamp.prev, "at": stamp.at, "machine": stamp.machine}
+    )
+    result = run_rclone(
+        ["rcat", url, *_STAMP_NET_FLAGS],
+        check=False,
+        timeout=_STAMP_RUN_TIMEOUT,
+        input=payload + "\n",
+    )
+    if result.returncode != 0:
+        tail = "\n".join((result.stderr or "").strip().splitlines()[-3:])
+        raise SyncError(
+            f"rclone could not write the sync stamp in {target_url} "
+            f"(exit {result.returncode}):\n{tail}"
+        )
+    return stamp
+
+
+def read_stamp_record(workdir: Path) -> StampRecord:
+    """This machine's :class:`StampRecord`; an empty one when there is none to read."""
+    try:
+        payload = json.loads((workdir / STAMP_RECORD_NAME).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return StampRecord()
+    if not isinstance(payload, dict):
+        return StampRecord()
+    seen = payload.get("seen")
+    written = payload.get("written")
+    return StampRecord(
+        seen=seen if isinstance(seen, str) else None,
+        written=written if isinstance(written, str) else None,
+        owed=payload.get("owed") is True,
+        pending=payload.get("pending") is True,
+    )
+
+
+def write_stamp_record(workdir: Path, record: StampRecord) -> None:
+    path = workdir / STAMP_RECORD_NAME
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp.write_text(
+        json.dumps(
+            {
+                "seen": record.seen,
+                "written": record.written,
+                "owed": record.owed,
+                "pending": record.pending,
+            }
+        ),
+        encoding="utf-8",
+    )
+    replace_file(tmp, path)
+
+
+#: The id given to a stamp that cannot be read (see :func:`read_remote_stamp`).
+_UNREADABLE_STAMP = "unreadable-"
+
+
+def stamp_overwritten(record: StampRecord, current: Stamp | None) -> bool:
+    """Whether this machine's last stamp was replaced by one that did not see it.
+
+    Then the machine that replaced it may have missed what this one uploaded,
+    so this one writes a new stamp after its next sync. A stamp that cannot be
+    read (damaged, or two files of one name, which Google Drive allows, read as
+    one) tells nothing of who wrote last: it reads as moved when it changes,
+    never as replacing this machine's stamp, which would keep both machines
+    writing and syncing.
+    """
+    if record.written is None:
+        return False
+    if current is None:
+        return True
+    if current.id.startswith(_UNREADABLE_STAMP):
+        return False
+    return record.written not in (current.id, current.prev)
+
+
+def _acknowledged(record: StampRecord, current: Stamp | None) -> StampRecord:
+    """Forget ``written`` once a later stamp names it as ``prev``: another machine saw it."""
+    if record.written is not None and current is not None and current.prev == record.written:
+        return replace(record, written=None)
+    return record
+
+
+@dataclass(frozen=True)
+class StampCheck:
+    """What a look at the remote stamp found: whether to sync, and whether a stamp is owed."""
+
+    moved: bool
+    owed: bool
+
+
+def check_remote_stamp(workdir: Path, target_url: str) -> StampCheck:
+    """Compare the remote stamp with this machine's record: one small read.
+
+    ``moved`` when another machine wrote a stamp since this one's last sync,
+    or replaced this one's stamp without seeing it.
+
+    Raises:
+        SyncError: rclone could not read the stamp.
+    """
+    record = read_stamp_record(workdir)
+    current = read_remote_stamp(target_url)
+    current_id = current.id if current is not None else None
+    moved = current_id != record.seen or stamp_overwritten(record, current)
+    return StampCheck(moved=moved, owed=record.owed or record.pending)
+
+
+class StampRound:
+    """One sync's dealings with the stamp: read it before the sync, write it after.
+
+    :func:`two_way_sync` goes through it, so a sync from the terminal and the
+    GUI's auto sync signal each other. A cloud folder it finds without a stamp
+    gets one, even when the sync changed nothing there: the stamp also marks
+    the folder as synced two-way, which :func:`require_one_way` reads.
+    """
+
+    def __init__(
+        self,
+        workdir: Path,
+        target_url: str,
+        record: StampRecord,
+        pre: Stamp | None,
+        *,
+        pre_known: bool,
+        overwritten: bool,
+        active: bool,
+    ) -> None:
+        self.workdir = workdir
+        self.target_url = target_url
+        self.record = record
+        self.pre = pre
+        self.pre_known = pre_known
+        self.overwritten = overwritten
+        self.active = active
+
+    @classmethod
+    def begin(cls, workdir: Path, target_url: str, *, mark: bool = True) -> StampRound:
+        """Read the stamp before a sync. A failed read is not an error here: the sync says.
+
+        With ``mark``, the record on disk says a sync started (``pending``), so
+        that one killed before :meth:`finish` still leaves its stamp owed.
+        """
+        record = read_stamp_record(workdir)
+        if stamp_url(target_url) is None:
+            return cls(
+                workdir, target_url, record, None,
+                pre_known=False, overwritten=False, active=False,
+            )
+        if mark:
+            _write_record_quietly(workdir, replace(record, pending=True))
+        try:
+            pre = read_remote_stamp(target_url)
+        except SyncError:
+            return cls(
+                workdir, target_url, record, None,
+                pre_known=False, overwritten=False, active=True,
+            )
+        return cls(
+            workdir, target_url, _acknowledged(record, pre), pre,
+            pre_known=True, overwritten=stamp_overwritten(record, pre), active=True,
+        )
+
+    def _seen_after(self) -> str | None:
+        # The stamp read BEFORE the sync, never one read after: a stamp written
+        # while this sync ran may stand for changes its listing missed.
+        if self.pre_known:
+            return self.pre.id if self.pre is not None else None
+        return self.record.seen
+
+    @property
+    def moved(self) -> bool:
+        """The stamp read at :meth:`begin` is not the one this machine last synced from."""
+        if not self.pre_known:
+            return False
+        current = self.pre.id if self.pre is not None else None
+        return current != self.record.seen or self.overwritten
+
+    def mark_pending(self) -> None:
+        """Before one more pass after :meth:`finish`: if it is cut off, a stamp is owed."""
+        if self.active:
+            _write_record_quietly(self.workdir, replace(self.record, pending=True))
+
+    def finish(self, *, remote_changed: bool, may_write: bool = True) -> bool:
+        """Write a new stamp when the remote changed (or one is owed); record what was seen.
+
+        ``may_write`` False defers an owed write (a sync cut short at exit) to
+        the next sync or auto-sync check. Returns whether a stamp was written.
+        It may be called again after another pass: a stamp it wrote is then
+        the one the next is written after.
+        """
+        if not self.active:
+            return False
+        unmarked = self.pre_known and self.pre is None
+        owe = (
+            remote_changed
+            or self.record.owed
+            or self.record.pending
+            or self.overwritten
+            or unmarked
+        )
+        written = False
+        record = self.record
+        if owe and may_write:
+            prev = self.pre.id if self.pre_known and self.pre is not None else None
+            try:
+                new = write_remote_stamp(self.target_url, prev=prev)
+            except SyncError:
+                record = replace(record, seen=self._seen_after(), owed=True, pending=False)
+            else:
+                record = StampRecord(seen=new.id, written=new.id)
+                written = True
+                self.pre, self.pre_known, self.overwritten = new, True, False
+        else:
+            record = replace(record, seen=self._seen_after(), owed=owe, pending=False)
+        self.record = record
+        _write_record_quietly(self.workdir, record)
+        return written
+
+
+def _write_record_quietly(workdir: Path, record: StampRecord) -> None:
+    try:
+        write_stamp_record(workdir, record)
+    except OSError:
+        pass
+
+
+def write_owed_stamp(workdir: Path, target_url: str) -> bool:
+    """Write the stamp an earlier sync owes, when nothing else is to sync.
+
+    ``False``, with nothing written, when the stamp moved since this machine's
+    last sync: a stamp written now would name that one as seen, though its
+    changes never came down here. The caller syncs instead, and that sync
+    writes the owed stamp. ``True`` when the stamp cannot be read: it stays
+    owed, and the next look tries again.
+    """
+    stamps = StampRound.begin(workdir, target_url, mark=False)
+    if not stamps.pre_known:
+        return True
+    if stamps.moved:
+        return False
+    stamps.finish(remote_changed=False)
+    return True
+
+
 def rclone_version() -> tuple[int, int, int] | None:
     """The installed rclone's version, or ``None`` if it cannot be read.
 
     Goes through :func:`run_rclone`, so a missing rclone raises its usual
     install hint and tests can fake the version there.
     """
-    result = run_rclone(["version"], check=False)
+    result = run_rclone(["version"], check=False, timeout=_GATE_TIMEOUT)
     match = re.search(r"rclone v(\d+)\.(\d+)\.(\d+)", result.stdout or "")
     if match is None:
         return None
@@ -1170,20 +2078,56 @@ def local_snapshot(vault: Path) -> Snapshot:
     return out
 
 
-def _read_snapshot(path: Path) -> Snapshot | None:
+@dataclass(frozen=True)
+class SavedSnapshot:
+    """The record a sync leaves of the library's synced files (``litman-snapshot.json``).
+
+    ``files`` is what the sync left, except that a file changed here while
+    it ran, and not by the sync, keeps the state it had before: it still
+    reads as a change to take up. ``recheck`` says such files could not be
+    told from the ones the sync brought down, so the next look must sync.
+    """
+
+    files: Snapshot
+    recheck: bool = False
+
+
+def read_saved_snapshot(path: Path) -> SavedSnapshot | None:
     try:
         payload = json.loads(path.read_text(encoding="utf-8"))
         files = payload["files"]
-        return {str(rel): (int(v[0]), int(v[1])) for rel, v in files.items()}
-    except (OSError, ValueError, KeyError, TypeError, IndexError):
+        return SavedSnapshot(
+            files={str(rel): (int(v[0]), int(v[1])) for rel, v in files.items()},
+            recheck=payload.get("recheck") is True,
+        )
+    except (OSError, ValueError, KeyError, TypeError, IndexError, AttributeError):
         return None
 
 
-def _write_snapshot(path: Path, snapshot: Snapshot) -> None:
+def _read_snapshot(path: Path) -> Snapshot | None:
+    saved = read_saved_snapshot(path)
+    return saved.files if saved is not None else None
+
+
+def _write_snapshot(path: Path, snapshot: Snapshot, *, recheck: bool = False) -> None:
     tmp = path.with_suffix(path.suffix + ".tmp")
-    payload = {"files": {rel: list(v) for rel, v in sorted(snapshot.items())}}
+    payload: dict[str, Any] = {"files": {rel: list(v) for rel, v in sorted(snapshot.items())}}
+    if recheck:
+        payload["recheck"] = True
     tmp.write_text(json.dumps(payload), encoding="utf-8")
     replace_file(tmp, path)
+
+
+def local_changes_pending(vault: Path, target_url: str) -> bool:
+    """Whether a synced file here changed since the last sync (the exact comparison).
+
+    True with no record of a last sync to compare with, and when that sync
+    asked for a second look.
+    """
+    saved = read_saved_snapshot(sync_workdir(vault.resolve(), target_url) / SNAPSHOT_NAME)
+    if saved is None or saved.recheck:
+        return True
+    return diff_snapshots(saved.files, local_snapshot(vault)).total > 0
 
 
 @dataclass(frozen=True)
@@ -1514,6 +2458,103 @@ def parse_bisync_deltas(report: Iterable[str]) -> BisyncDeltas | None:
             deleted=frozenset(kinds["deleted"]),
         )
     return BisyncDeltas(local=sides["Path1"], cloud=sides["Path2"])
+
+
+#: One operation bisync queued, after the date and time:
+#: ``INFO  : - Path1             Queue copy to Path2       - remote:lib/papers/x/notes.md``
+#: (padded with more spaces). A conflict's operations are printed at NOTICE.
+_OP_LINE_RE = re.compile(
+    r"^(?:INFO|NOTICE)\s*: - (Path1|Path2) +"
+    r"(Queue copy to Path1|Queue copy to Path2|Queue delete|Renaming Path1 copy|"
+    r"Renaming Path2 copy) +- (.+)$"
+)
+#: A full comparison (first sync, ``--first-from``): no per-file operations.
+_RESYNC_LINE_RE = re.compile(r"^INFO\s*: - Path[12] +Resync is copying files to +- Path[12]\s*$")
+#: The line that names the library folder as bisync prints it, operations and all.
+_PATH1_ROOT_RE = re.compile(r'^INFO\s*: Synching Path1 (".*") with Path2 ".*"\s*$')
+#: The operations that change the cloud copy.
+_PATH2_OPS = frozenset({"Queue copy to Path2", "Renaming Path2 copy"})
+
+
+@dataclass(frozen=True)
+class BisyncOps:
+    """What one bisync run did to each side, read from its operation lines.
+
+    ``remote_changed``: it may have copied, renamed or deleted something in
+    the cloud. ``path1_writes``: the library files it wrote or deleted here,
+    relative with ``/``; ``None`` when they cannot be told.
+    """
+
+    remote_changed: bool
+    path1_writes: frozenset[str] | None
+
+
+def parse_bisync_ops(run: BisyncRun) -> BisyncOps:
+    """Read which side one bisync run changed, from its operation lines.
+
+    Cross-checked with the per-side change counts bisync prints, so a change
+    in rclone's wording over-reports instead of going unnoticed: a side with
+    changes counted and no operation read for the other side reads as "the
+    other side may have changed". Over-reporting costs one sync that finds
+    nothing to do. A full comparison, or a run that printed no count at all,
+    may have changed both sides.
+    """
+    lines = [*run.report, *run.lines]
+    unknown = BisyncOps(remote_changed=True, path1_writes=None)
+    if any(_RESYNC_LINE_RE.match(line) for line in lines):
+        return unknown
+    root: str | None = None
+    counts: dict[str, int] = {}
+    nothing_changed = False
+    path2_ops = 0
+    path1_targets: list[str] = []
+    for line in lines:
+        match = _OP_LINE_RE.match(line)
+        if match is not None:
+            side, what, target = match.groups()
+            if what in _PATH2_OPS or (what == "Queue delete" and side == "Path2"):
+                path2_ops += 1
+            else:
+                path1_targets.append(target)
+            continue
+        match = _DELTA_COUNT_RE.match(line)
+        if match is not None:
+            counts[match.group(1)] = sum(int(n) for n in match.groups()[1:])
+            continue
+        if _NO_DELTAS_RE.match(line):
+            nothing_changed = True
+            continue
+        match = _PATH1_ROOT_RE.match(line)
+        if match is not None and root is None:
+            root = _unquote_bisync_path(match.group(1))
+    if not counts and not nothing_changed:
+        return unknown
+    remote_changed = path2_ops > 0 or counts.get("Path1", 0) > 0
+    if counts.get("Path2", 0) > 0 and not path1_targets:
+        return BisyncOps(remote_changed=remote_changed, path1_writes=None)
+    writes: set[str] = set()
+    for target in path1_targets:
+        rel = _relative_to_root(_unquote_bisync_path(target), root)
+        if rel is None:
+            return BisyncOps(remote_changed=remote_changed, path1_writes=None)
+        if rel:
+            writes.add(rel)
+    return BisyncOps(remote_changed=remote_changed, path1_writes=frozenset(writes))
+
+
+def _relative_to_root(target: str | None, root: str | None) -> str | None:
+    """``target`` relative to the library folder bisync printed (``""`` for the folder itself).
+
+    ``None`` when it is not under that folder, or either cannot be read.
+    """
+    if target is None or not root:
+        return None
+    prefix = root if root.endswith("/") else root + "/"
+    if target == prefix.rstrip("/"):
+        return ""
+    if not target.startswith(prefix):
+        return None
+    return target[len(prefix):].strip("/")
 
 
 def _by_unit(paths: Iterable[str]) -> dict[str, set[str]]:
@@ -1864,6 +2905,60 @@ class BisyncRun:
     report: tuple[str, ...]
 
 
+@dataclass
+class SyncControl:
+    """How a sync run by the GUI is steered from outside: stopped, or kept short.
+
+    ``interrupt`` asks rclone to stop and save its state (SIGINT; on Windows a
+    windowless process cannot send one, so it waits for ``kill``) and runs no
+    further pass. ``kill`` stops rclone at once; the next sync recovers.
+    ``skip_git`` skips bringing the code checkouts in. ``own_group`` starts
+    rclone in a process group of its own, so a Ctrl+C in the terminal that
+    runs ``lit gui`` stops the GUI, not the auto sync's rclone.
+    """
+
+    interrupt: threading.Event = field(default_factory=threading.Event)
+    kill: threading.Event = field(default_factory=threading.Event)
+    skip_git: threading.Event = field(default_factory=threading.Event)
+    own_group: bool = False
+
+
+def _popen_group_kwargs(own_group: bool) -> dict[str, Any]:
+    """Popen arguments that start rclone in its own process group, or none."""
+    if not own_group:
+        return {}
+    if sys.platform == "win32":
+        return {"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP | hidden_console_flags()}
+    return {"start_new_session": True}
+
+
+def _interrupt(proc: subprocess.Popen[str]) -> None:
+    """Ask rclone to stop and save its state; a no-op on Windows (see :class:`SyncControl`)."""
+    if sys.platform == "win32" or proc.poll() is not None:
+        return
+    try:
+        proc.send_signal(signal.SIGINT)
+    except OSError:
+        pass
+
+
+def _watch_control(
+    proc: subprocess.Popen[str], control: SyncControl, done: threading.Event
+) -> None:
+    """Carry ``control``'s requests to ``proc`` until it ends."""
+    interrupted = False
+    while not done.wait(0.2):
+        if control.kill.is_set():
+            try:
+                proc.kill()
+            except OSError:
+                pass
+            return
+        if control.interrupt.is_set() and not interrupted:
+            _interrupt(proc)
+            interrupted = True
+
+
 def _bisync_env() -> dict[str, str]:
     """This process's environment, less the variables that change rclone's log."""
     return {
@@ -1875,7 +2970,10 @@ def _bisync_env() -> dict[str, str]:
 
 
 def run_bisync(
-    args: list[str], on_log: Callable[[str], None] | None = None
+    args: list[str],
+    on_log: Callable[[str], None] | None = None,
+    *,
+    control: SyncControl | None = None,
 ) -> BisyncRun:
     """Run ``rclone <args>``; hand each line the user should see to ``on_log`` as it comes.
 
@@ -1885,18 +2983,25 @@ def run_bisync(
     the output after one: those are not part of it but a crash report, say,
     and are shown once rclone has exited. On Ctrl+C, rclone (same process
     group) gets the interrupt too and saves its state; it is given time for
-    that before the interrupt goes on.
+    that before the interrupt goes on. Any other way out of this function
+    (a SIGTERM made into ``SystemExit``, say) reached litman alone, so rclone
+    is asked to stop first. ``control`` steers the run from another thread.
     """
     _require_rclone()
+    own_group = control is not None and control.own_group
+    popen_kwargs = _popen_group_kwargs(own_group)
+    popen_kwargs.setdefault("creationflags", hidden_console_flags())
     try:
         proc = subprocess.Popen(
-            [RCLONE_BIN, *args],
+            [RCLONE_BIN, *_never_ask_args(), *args],
+            stdin=subprocess.DEVNULL if _NEVER_ASK.get() else None,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             text=True,
             encoding="utf-8",
             errors="replace",
             env=_bisync_env(),
+            **popen_kwargs,
         )
     except FileNotFoundError as e:
         raise SyncError(
@@ -1913,6 +3018,9 @@ def run_bisync(
         if on_log is not None and line.strip():
             on_log(line)
 
+    done = threading.Event()
+    if control is not None:
+        threading.Thread(target=_watch_control, args=(proc, control, done), daemon=True).start()
     try:
         assert proc.stdout is not None
         for raw in proc.stdout:
@@ -1931,12 +3039,18 @@ def run_bisync(
         returncode = proc.wait()
         for line in held:
             show(line)
-    except BaseException:
+    except BaseException as err:
+        # A terminal's Ctrl+C reached rclone too, unless it runs in a group of
+        # its own; a second SIGINT would make it stop without saving its state.
+        if own_group or not isinstance(err, KeyboardInterrupt):
+            _interrupt(proc)
         try:
             proc.communicate(timeout=100)
         except (subprocess.TimeoutExpired, KeyboardInterrupt):
             proc.kill()
         raise
+    finally:
+        done.set()
     return BisyncRun(returncode, tuple(lines), tuple(report))
 
 
@@ -1958,13 +3072,13 @@ def _bisync_failure(returncode: int, lines: list[str], workdir: Path) -> SyncErr
             if re.search(r"too many deletes[^\n]*on path2", text)
             else ("on this machine", "in the cloud")
         )
-        return SyncError(
+        return SyncStoppedError(
             f"rclone stopped: more than half of the files were deleted {here}, so "
             f"nothing was deleted {there}. If that is intended, run "
             f"`lit sync --force`; the deleted files go to the backup.\n{tail}"
         )
     if "all files were changed" in text:
-        return SyncError(
+        return SyncStoppedError(
             "rclone stopped: every file changed on both sides since the last sync, "
             f"so nothing was copied. If that is expected, run `lit sync --force`.\n{tail}"
         )
@@ -1983,7 +3097,7 @@ def _bisync_failure(returncode: int, lines: list[str], workdir: Path) -> SyncErr
     if "lock file found" in text:
         # rclone's last lines end with its own way out (delete the lock by
         # hand); the message names the one to take.
-        return SyncError(_lock_message(workdir))
+        return BisyncLockedError(_lock_message(workdir))
     if returncode == 7 and "retryable" not in text:
         return SyncChoiceRequiredError(
             _choice_message("rclone cannot continue from its records of the last sync.")
@@ -1999,6 +3113,41 @@ def _bisync_failure(returncode: int, lines: list[str], workdir: Path) -> SyncErr
         f"rclone could not finish the sync (exit {returncode}). Run `lit sync` "
         f"again; rclone's last lines say why:\n{tail}"
     )
+
+
+#: How the GUI's auto sync treats a failed sync: ``needs-user`` stops it until
+#: the user acts, ``busy`` retries soon, ``offline`` retries with a growing pause.
+SyncErrorKind = Literal["needs-user", "busy", "offline"]
+
+#: What rclone says when its sign-in to a provider has expired or been revoked.
+_AUTH_EXPIRED_RE = re.compile(
+    r"invalid_grant|token expired|expired_access_token|couldn't fetch token|"
+    r"refresh token has expired|config reconnect",
+    re.IGNORECASE,
+)
+
+
+def classify_sync_error(err: BaseException) -> tuple[SyncErrorKind, str]:
+    """``(kind, reason)`` for a failed sync, for the GUI's auto sync.
+
+    Needs the user (``reason``): ``choice`` (``--first-from``, a changed
+    filter set, records gone, an emptied side), ``safety-stop`` (rclone's
+    too-many-deletes or all-changed stop), ``auth`` (the sign-in expired),
+    ``lock`` (the file system refuses the sync locks). Busy: another sync
+    holds litman's lock or rclone's. Anything else, the network included, is
+    taken as offline.
+    """
+    if isinstance(err, (SyncBusyError, BisyncLockedError)):
+        return "busy", "busy"
+    if isinstance(err, SyncLockError):
+        return "needs-user", "lock"
+    if isinstance(err, SyncChoiceRequiredError):
+        return "needs-user", "choice"
+    if isinstance(err, SyncStoppedError):
+        return "needs-user", "safety-stop"
+    if _AUTH_EXPIRED_RE.search(str(err)):
+        return "needs-user", "auth"
+    return "offline", "offline"
 
 
 def _reserve_backup_name(local_root: Path) -> str:
@@ -2018,6 +3167,35 @@ def _reserve_backup_name(local_root: Path) -> str:
         except FileExistsError:
             name = f"{base}-{n}"
             n += 1
+
+
+def keep_replaced_copy(vault: Path, rel: str) -> Path:
+    """Copy ``<vault>/<rel>`` to the conflicts backup, before a save replaces it.
+
+    For a GUI save over a file that changed since the page read it (a sync
+    brought another machine's copy, an agent rewrote it): the save wins, and
+    the copy it replaces goes where a sync puts the older copy of a conflict,
+    ``<data dir>/sync-backup/<vault-key>/conflicts/<time>/<rel>``. Keyed by
+    the configured remote, or by the library alone when it has no ``sync:``.
+    Returns the backup's path.
+
+    Raises:
+        OSError: the copy could not be made.
+    """
+    from litman.core.config import load_config
+
+    vault = vault.resolve()
+    try:
+        configured = load_config(vault).sync
+        target = configured.target_url() if configured is not None else ""
+    except (LitmanError, OSError):
+        target = ""
+    root = sync_data_dir() / "sync-backup" / vault_key(vault, target) / "conflicts"
+    root.mkdir(parents=True, exist_ok=True)
+    dest = root / _reserve_backup_name(root) / Path(*rel.split("/"))
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(vault / Path(*rel.split("/")), dest)
+    return dest
 
 
 def _drop_if_empty(path: Path) -> None:
@@ -2066,6 +3244,10 @@ class TwoWayResult:
     why recording or bringing them failed, the file sync having gone through.
     ``repos_recorded`` names the repos whose commit this sync recorded for the
     first time, and took up for the other machines to follow.
+
+    ``unsynced`` lists the files that changed here while the sync ran, and
+    not through it: they may not have gone up, and the next sync takes them.
+    ``stamp_written`` says this sync wrote a new auto-sync stamp.
     """
 
     target_url: str
@@ -2086,6 +3268,8 @@ class TwoWayResult:
     repos: RepoSyncReport | None = None
     repos_error: str | None = None
     repos_recorded: tuple[str, ...] = ()
+    unsynced: tuple[str, ...] = ()
+    stamp_written: bool = False
 
 
 def two_way_sync(
@@ -2096,6 +3280,11 @@ def two_way_sync(
     force: bool = False,
     on_log: Callable[[str], None] | None = None,
     git_progress: bool = False,
+    lock_wait: float = SYNC_LOCK_WAIT,
+    on_lock_wait: Callable[[LockHolder | None], None] | None = None,
+    control: SyncControl | None = None,
+    by: str = "lit sync",
+    trigger: RunTrigger = "terminal",
 ) -> TwoWayResult:
     """Sync ``vault`` with ``target_url`` both ways through ``rclone bisync``.
 
@@ -2126,26 +3315,72 @@ def two_way_sync(
        gets this machine's, and one more pass takes it up.
     5. Record the result in the sync-state file, then rebuild INDEX.json,
        views/ and the project links from TRUTH (none of them travels).
+       How the run ended, with its conflicts, repos left behind or error, is
+       kept there too (:class:`LastRun`, ``trigger`` saying who ran it), for
+       ``lit sync status``; a run another sync held off leaves it as it was.
 
     Every file a run replaces or deletes goes to a backup folder: on this
     machine under ``<data dir>/sync-backup/<vault-key>/``, in the cloud under
     ``<path>-litman-backup/``, one folder per run.
 
+    The whole sync holds the library's sync lock, waiting up to ``lock_wait``
+    seconds for another sync to end (``on_lock_wait`` hears the holder when
+    the wait starts); rclone's passes also hold the lock the GUI's saves
+    wait on (:mod:`litman.core.sync_lock`). ``by`` names this sync in the
+    lock. Before the passes the auto-sync stamp is read, and after a sync
+    that changed the cloud a new one is written (:class:`StampRound`).
+    ``control`` steers a sync the GUI runs (:class:`SyncControl`).
+
     Raises:
         SyncChoiceRequiredError: the run needs the user's ``--first-from``.
+        SyncBusyError: another sync of this library held the lock.
         SyncError: rclone is missing or too old, its record names would be
             too long, the remote cannot be listed, or bisync failed (its last
             log lines are in the message).
     """
     vault = vault.resolve()
-    require_bisync_rclone()
-    paths = bisync_paths(vault, target_url)
+    try:
+        require_bisync_rclone()
+        paths = bisync_paths(vault, target_url)
+        if not bisync_initialised(paths.workdir):
+            # rclone has not written these record names yet; nothing is written
+            # before they are known to fit.
+            require_bisync_names_fit(vault, target_url)
+        paths.workdir.mkdir(parents=True, exist_ok=True)
+        with hold_sync_lock(paths.workdir, by=by, wait=lock_wait, on_wait=on_lock_wait):
+            result = _two_way_sync_held(
+                vault,
+                target_url,
+                paths,
+                first_from=first_from,
+                force=force,
+                on_log=on_log,
+                git_progress=git_progress,
+                control=control or SyncControl(),
+            )
+            record_run(vault, run_from_result(result, trigger))
+            return result
+    except (SyncBusyError, BisyncLockedError):
+        # Another sync's run: the record stays that run's.
+        raise
+    except (LitmanError, OSError) as err:
+        record_run(vault, run_from_error(err, trigger))
+        raise
+
+
+def _two_way_sync_held(
+    vault: Path,
+    target_url: str,
+    paths: BisyncPaths,
+    *,
+    first_from: FirstFrom | None,
+    force: bool,
+    on_log: Callable[[str], None] | None,
+    git_progress: bool,
+    control: SyncControl,
+) -> TwoWayResult:
+    """:func:`two_way_sync`, once it holds the sync lock."""
     initialised = bisync_initialised(paths.workdir)
-    if not initialised:
-        # rclone has not written these record names yet; nothing is written
-        # before they are known to fit.
-        require_bisync_names_fit(vault, target_url)
-    paths.workdir.mkdir(parents=True, exist_ok=True)
     paths.local_backup_root.mkdir(parents=True, exist_ok=True)
 
     # rclone keeps a hash of the filters file from the last full comparison and
@@ -2203,7 +3438,9 @@ def two_way_sync(
         repos_error = str(err)
 
     baseline = _read_snapshot(paths.snapshot_file) if mode == "sync" else None
+    stamps = StampRound.begin(paths.workdir, target_url)
     before = local_snapshot(vault)
+    ops: list[BisyncOps] = []
     backups: list[str] = []
     conflicts: list[SyncConflict] = []
     deleted_folders: list[DeletedFolderConflict] = []
@@ -2218,109 +3455,141 @@ def two_way_sync(
             vault, target_url, paths,
             backup_name=name, resync_mode=resync_mode, force=force,
         )
-        run = run_bisync(args, on_log)
+        run = run_bisync(args, on_log, control=control)
         if run.returncode != 0:
             raise _bisync_failure(run.returncode, list(run.lines), paths.workdir)
+        ops.append(parse_bisync_ops(run))
         return run
 
+    repos: RepoSyncReport | None = None
+    recorded: list[str] = []
+    # litman's own fix-ups made after the last pass (a conflict's copy moved
+    # out, TAXONOMY.md values put back): no pass took them up.
+    unsent = False
     try:
-        try:
-            ensure_truth_unlocked(vault)
-            if mode == "sync":
-                first = run_pass(None)
-            else:
-                # bisync needs both roots to exist; mkdir is a no-op on one that does.
-                run_rclone(["mkdir", target_url])
-                first = run_pass("path1" if mode == "first-local" else "path2")
-            # What a pass leaves to clean up: a conflict's older copy, and the
-            # files of a folder deleted on one machine and changed on the
-            # other (the deletion wins; bisync's per-file report tells such a
-            # folder from a single deleted file, and when it cannot be read
-            # nothing is moved). Both are moved out, and the next pass takes
-            # the removal to the cloud. A pass only finds new conflicts if
-            # someone edits the same file again while it runs; after three
-            # such passes the copies are still moved out here, and the next
-            # `lit sync` removes them from the cloud. A full comparison
-            # (first sync, --first-from) deletes nothing, so it has no
-            # deleted folders to settle.
-            run_name = backups[-1]
-            found = sweep_conflicts(vault, paths.conflicts_root / run_name)
-            conflicts.extend(found)
-            if mode == "sync":
-                deltas = parse_bisync_deltas(first.report)
-                if deltas is None:
-                    deletions_unchecked = True
-                else:
-                    deleted_folders = resolve_deleted_folder_conflicts(
-                        vault,
-                        find_deleted_folder_conflicts(deltas, local_snapshot(vault)),
-                        paths.conflicts_root / run_name,
-                    )
-            sweep_partials(vault, paths.local_backup_root / run_name)
-            # Conflicts whose TAXONOMY.md values are not added back yet.
-            pending = list(found)
-            needs_pass = bool(found or deleted_folders)
-            extra_passes = 0
-            while extra_passes < 4:
-                if not needs_pass:
-                    # Values a TAXONOMY.md conflict dropped are added back only
-                    # once a pass settles nothing new. After a conflict where
-                    # the cloud's copy won, rclone's listings leave the file
-                    # out until a pass finds both copies equal; written back
-                    # before that, it differs on both sides and comes back as
-                    # a second conflict.
-                    needs_pass, error = _restore_taxonomy(vault, pending, restored)
-                    restore_error = restore_error or error
-                    pending = []
-                    if not needs_pass:
-                        break
-                # A TAXONOMY.md written back above is locked again; Windows
-                # would refuse to replace it.
+        with hold_pass_lock(paths.workdir):
+            try:
                 ensure_truth_unlocked(vault)
-                run_pass(None)
-                extra_passes += 1
-                found = sweep_conflicts(vault, paths.conflicts_root / backups[-1])
+                if mode == "sync":
+                    first = run_pass(None)
+                else:
+                    # bisync needs both roots to exist; mkdir is a no-op on one that does.
+                    run_rclone(["mkdir", target_url])
+                    first = run_pass("path1" if mode == "first-local" else "path2")
+                # What a pass leaves to clean up: a conflict's older copy, and the
+                # files of a folder deleted on one machine and changed on the
+                # other (the deletion wins; bisync's per-file report tells such a
+                # folder from a single deleted file, and when it cannot be read
+                # nothing is moved). Both are moved out, and the next pass takes
+                # the removal to the cloud. A pass only finds new conflicts if
+                # someone edits the same file again while it runs; after three
+                # such passes the copies are still moved out here, and the next
+                # `lit sync` removes them from the cloud. A full comparison
+                # (first sync, --first-from) deletes nothing, so it has no
+                # deleted folders to settle.
+                run_name = backups[-1]
+                found = sweep_conflicts(vault, paths.conflicts_root / run_name)
                 conflicts.extend(found)
-                pending += found
-                # The folder of a deletion that won comes back empty: in the
-                # pass that met the deletion, rclone recorded the folder as
-                # gone on both sides while it re-created it to hold the changed
-                # file, so the next pass copies it back as new. Remove it again;
-                # one more pass then deletes it everywhere for good.
-                shells = _empty_folder_shells(vault, deleted_folders)
-                for shell in shells:
-                    _remove_empty_dirs(shell)
-                needs_pass = bool(found or shells)
-            if pending:
-                # The passes ran out first (someone kept editing): add the
-                # values back anyway; the next `lit sync` takes them up.
-                _changed, error = _restore_taxonomy(vault, pending, restored)
-                restore_error = restore_error or error
-        finally:
-            ensure_truth_locked(vault)
-            for name in backups:
-                _drop_if_empty(paths.local_backup_root / name)
+                if mode == "sync":
+                    deltas = parse_bisync_deltas(first.report)
+                    if deltas is None:
+                        deletions_unchecked = True
+                    else:
+                        deleted_folders = resolve_deleted_folder_conflicts(
+                            vault,
+                            find_deleted_folder_conflicts(deltas, local_snapshot(vault)),
+                            paths.conflicts_root / run_name,
+                        )
+                sweep_partials(vault, paths.local_backup_root / run_name)
+                # Conflicts whose TAXONOMY.md values are not added back yet.
+                pending = list(found)
+                needs_pass = bool(found or deleted_folders)
+                extra_passes = 0
+                while extra_passes < 4:
+                    if not needs_pass:
+                        # Values a TAXONOMY.md conflict dropped are added back only
+                        # once a pass settles nothing new. After a conflict where
+                        # the cloud's copy won, rclone's listings leave the file
+                        # out until a pass finds both copies equal; written back
+                        # before that, it differs on both sides and comes back as
+                        # a second conflict.
+                        needs_pass, error = _restore_taxonomy(vault, pending, restored)
+                        restore_error = restore_error or error
+                        pending = []
+                        if not needs_pass:
+                            break
+                    if control.interrupt.is_set():
+                        # Asked to stop (the GUI is closing): the next sync
+                        # takes the rest to the cloud.
+                        break
+                    # A TAXONOMY.md written back above is locked again; Windows
+                    # would refuse to replace it.
+                    ensure_truth_unlocked(vault)
+                    run_pass(None)
+                    extra_passes += 1
+                    found = sweep_conflicts(vault, paths.conflicts_root / backups[-1])
+                    conflicts.extend(found)
+                    pending += found
+                    # The folder of a deletion that won comes back empty: in the
+                    # pass that met the deletion, rclone recorded the folder as
+                    # gone on both sides while it re-created it to hold the changed
+                    # file, so the next pass copies it back as new. Remove it again;
+                    # one more pass then deletes it everywhere for good.
+                    shells = _empty_folder_shells(vault, deleted_folders)
+                    for shell in shells:
+                        _remove_empty_dirs(shell)
+                    needs_pass = bool(found or shells)
+                # Still a pass to make: the loop was stopped or ran out.
+                unsent = needs_pass
+                if pending:
+                    # The passes ran out first (someone kept editing): add the
+                    # values back anyway; the next `lit sync` takes them up.
+                    changed_here, error = _restore_taxonomy(vault, pending, restored)
+                    restore_error = restore_error or error
+                    unsent = unsent or changed_here
+            finally:
+                ensure_truth_locked(vault)
+                for name in backups:
+                    _drop_if_empty(paths.local_backup_root / name)
+
+        # What went up so far is the other machines' to know now: the git
+        # step below can take minutes, and a run cut off there (an agent's
+        # time limit, Ctrl+C) would otherwise leave no stamp at all.
+        stamp_written = stamps.finish(
+            remote_changed=any(o.remote_changed for o in ops),
+            may_write=not control.interrupt.is_set(),
+        )
 
         # Code checkouts follow the commits their repo-meta.yaml records; git
         # runs with TRUTH locked again, and before the rebuild, which links
-        # the checkouts into their projects.
-        repos, recorded, repos_error = _bring_repos_in(
-            vault, paths, progress=git_progress, error=repos_error
-        )
-        if recorded:
+        # the checkouts into their projects. Not when the GUI is closing: a
+        # clone can take minutes, and the next sync brings them in.
+        if not (control.skip_git.is_set() or control.interrupt.is_set()):
+            repos, recorded, repos_error = _bring_repos_in(
+                vault, paths, progress=git_progress, error=repos_error
+            )
+        if recorded and not control.interrupt.is_set():
             # A commit recorded here for the first time goes up in this same
             # sync: a machine syncing next finds it and follows, instead of
             # recording its own, which would conflict.
-            try:
-                ensure_truth_unlocked(vault)
-                run_pass(None)
-                found = sweep_conflicts(vault, paths.conflicts_root / backups[-1])
-                conflicts.extend(found)
-                _changed, error = _restore_taxonomy(vault, found, restored)
-                restore_error = restore_error or error
-            finally:
-                ensure_truth_locked(vault)
-                _drop_if_empty(paths.local_backup_root / backups[-1])
+            stamps.mark_pending()
+            passes_before = len(ops)
+            with hold_pass_lock(paths.workdir):
+                try:
+                    ensure_truth_unlocked(vault)
+                    run_pass(None)
+                    found = sweep_conflicts(vault, paths.conflicts_root / backups[-1])
+                    conflicts.extend(found)
+                    changed_here, error = _restore_taxonomy(vault, found, restored)
+                    restore_error = restore_error or error
+                    unsent = bool(found) or changed_here
+                finally:
+                    ensure_truth_locked(vault)
+                    _drop_if_empty(paths.local_backup_root / backups[-1])
+            stamp_written = stamps.finish(
+                remote_changed=any(o.remote_changed for o in ops[passes_before:]),
+                may_write=not control.interrupt.is_set(),
+            ) or stamp_written
     except SyncChoiceRequiredError:
         _stamp_quietly(vault, "needs-choice")
         raise
@@ -2329,19 +3598,43 @@ def two_way_sync(
         raise
 
     after = local_snapshot(vault)
-    try:
-        _write_snapshot(paths.snapshot_file, after)
-    except OSError:
-        # Only the next run's "went up" count needs it; that count is then
-        # reported as not counted.
-        pass
+    # A change made here while a pass ran, which the pass then replaced or
+    # deleted: rclone kept it in the pass's backup folder. Reported as a
+    # conflict the cloud's copy won.
+    conflicts.extend(
+        _replaced_during(
+            vault, before, [paths.local_backup_root / name for name in backups], ops
+        )
+    )
     conflict_paths = frozenset(
         [c.path for c in conflicts]
         + [f"{d.folder}/{rel}" for d in deleted_folders for rel in d.moved]
     )
     # A repo-meta.yaml this sync recorded a commit in changed here, not there.
     recorded_paths = frozenset(f"codes/{name}/repo-meta.yaml" for name in recorded)
-    came_down = diff_snapshots(before, after, ignore=conflict_paths | recorded_paths)
+    # litman's own fix-ups changed here too, and went up in a later pass.
+    fixups = conflict_paths | recorded_paths
+    unsynced, recheck = _changed_during(
+        before, after, ops, fixups, _path1_listing(paths.workdir)
+    )
+    # Fix-ups no pass took up: the next look syncs once more for them.
+    recheck = recheck or unsent
+    # What the next sync compares with: what this one left, except that a file
+    # changed here meanwhile keeps its state from before, so it still reads as
+    # a change to take up.
+    saved = dict(after)
+    for rel in unsynced:
+        if rel in before:
+            saved[rel] = before[rel]
+        else:
+            saved.pop(rel, None)
+    try:
+        _write_snapshot(paths.snapshot_file, saved, recheck=recheck)
+    except OSError:
+        # Only the next run's "went up" count and the GUI's auto sync need it;
+        # the count is then reported as not counted, and the auto sync syncs.
+        pass
+    came_down = diff_snapshots(before, after, ignore=fixups | frozenset(unsynced))
     went_up: FileChanges | None
     if mode == "sync":
         went_up = (
@@ -2349,16 +3642,11 @@ def two_way_sync(
             if baseline is not None
             else None
         )
-        remote_changed = (
-            went_up is None or went_up.total > 0 or bool(conflicts) or bool(deleted_folders)
-        )
     elif mode == "first-local" and first_from is None:
         went_up = diff_snapshots({}, before)
-        remote_changed = bool(before) or bool(conflicts)
     else:
         went_up = None
-        remote_changed = True
-    remote_changed = remote_changed or bool(recorded)
+    remote_changed = any(o.remote_changed for o in ops)
     _stamp_quietly(vault, "conflicts" if conflicts or deleted_folders else "ok")
 
     rebuild: dict[str, Any] | None = None
@@ -2366,7 +3654,10 @@ def two_way_sync(
     try:
         from litman.core.correctors import reconcile_derived
 
-        rebuild = reconcile_derived(vault, project_refs=True)
+        # Held off the GUI's saves: one landing while INDEX.json is rebuilt
+        # from a read taken before it would be missing from the new one.
+        with hold_pass_lock(paths.workdir):
+            rebuild = reconcile_derived(vault, project_refs=True)
     except (LitmanError, OSError) as err:
         rebuild_error = str(err)
 
@@ -2394,8 +3685,148 @@ def two_way_sync(
         repos=repos,
         repos_error=repos_error,
         repos_recorded=tuple(recorded),
+        unsynced=unsynced,
+        stamp_written=stamp_written,
     )
 
+
+def _changed_during(
+    before: Snapshot,
+    after: Snapshot,
+    ops: list[BisyncOps],
+    fixups: frozenset[str],
+    listing: Snapshot | None,
+) -> tuple[tuple[str, ...], bool]:
+    """The files that changed here during a sync, and not through it.
+
+    Returns them, and whether such files could not be told apart from the
+    ones the sync wrote here (a full comparison, or a report that cannot be
+    read): then the next look must sync anyway. ``fixups`` are litman's own
+    changes, which went up in a later pass. A file the sync wrote here is one
+    of them too when it no longer is as rclone's ``listing`` of this side
+    records it: something wrote it after rclone did.
+    """
+    diff = diff_snapshots(before, after, ignore=fixups)
+    changed = {*diff.added, *diff.changed, *diff.deleted}
+    if not changed:
+        return (), False
+    writes: set[str] = set()
+    for o in ops:
+        if o.path1_writes is None:
+            return (), True
+        writes |= o.path1_writes
+    unsynced = changed - writes
+    written_here = changed & writes
+    if written_here:
+        if listing is None:
+            return tuple(sorted(unsynced)), True
+        unsynced |= {rel for rel in written_here if listing.get(rel) != after.get(rel)}
+    return tuple(sorted(unsynced)), False
+
+
+#: A file's line in rclone bisync's listing of one side: size, hash, ID,
+#: modification time, quoted path.
+_LISTING_LINE_RE = re.compile(
+    r'^- +(\d+) \S+ \S+ '
+    r"(\d{4})-(\d\d)-(\d\d)T(\d\d):(\d\d):(\d\d)(?:\.(\d{1,9}))?"
+    r'(Z|[+-]\d\d:?\d\d) (".*"|\S.*)$'
+)
+
+
+def _listing_time_ns(match: re.Match[str]) -> int:
+    year, month, day, hour, minute, second = (int(match.group(i)) for i in range(2, 8))
+    fraction = match.group(8) or ""
+    zone = match.group(9)
+    offset = 0
+    if zone != "Z":
+        digits = zone[1:].replace(":", "")
+        offset = (int(digits[:2]) * 60 + int(digits[2:])) * 60
+        if zone[0] == "-":
+            offset = -offset
+    seconds = calendar.timegm((year, month, day, hour, minute, second)) - offset
+    return seconds * 1_000_000_000 + int(fraction.ljust(9, "0"))
+
+
+def _path1_listing(workdir: Path) -> Snapshot | None:
+    """``{path: (size, mtime_ns)}`` of the files rclone recorded on this side after the run.
+
+    ``None`` when the listing cannot be found or read.
+    """
+    try:
+        names = [n for n in os.listdir(workdir) if n.endswith(".path1.lst")]
+    except OSError:
+        return None
+    if len(names) != 1:
+        return None
+    out: Snapshot = {}
+    try:
+        with open(workdir / names[0], encoding="utf-8") as f:
+            for line in f:
+                line = line.rstrip("\r\n")
+                if not line.startswith("-"):
+                    continue
+                match = _LISTING_LINE_RE.match(line)
+                if match is None:
+                    return None
+                rel = _unquote_bisync_path(match.group(10))
+                if rel is None:
+                    return None
+                out[rel] = (int(match.group(1)), _listing_time_ns(match))
+    except (OSError, ValueError, OverflowError):
+        return None
+    return out
+
+
+def _replaced_during(
+    vault: Path, before: Snapshot, backup_dirs: list[Path], ops: list[BisyncOps]
+) -> list[SyncConflict]:
+    """Changes made here while a pass ran that the pass then replaced or deleted.
+
+    rclone keeps every file it replaces or deletes on this side in the pass's
+    backup folder. One that is not as it was before the sync changed in
+    between: rclone listed it first, the cloud's copy then went over it. A
+    later pass's backup of a file an earlier pass wrote is that pass's own
+    copy, and is left out; so are the passes after one whose writes here
+    cannot be told.
+    """
+    rows: list[SyncConflict] = []
+    written: set[str] = set()
+    for backup_dir, run_ops in zip(backup_dirs, ops, strict=False):
+        for dirpath, _dirnames, filenames in os.walk(backup_dir):
+            rel_dir = os.path.relpath(dirpath, backup_dir).replace(os.sep, "/")
+            prefix = "" if rel_dir == "." else rel_dir + "/"
+            for name in filenames:
+                rel = prefix + name
+                if rel in written or _CONFLICT_SUFFIX_RE.search(rel):
+                    continue
+                if _two_way_file_excluded(rel, name):
+                    continue
+                full = os.path.join(dirpath, name)
+                try:
+                    st = os.lstat(full)
+                except OSError:
+                    continue
+                if before.get(rel) == (st.st_size, st.st_mtime_ns):
+                    continue
+                try:
+                    kept_mtime: float | None = os.stat(vault / rel).st_mtime
+                except OSError:
+                    kept_mtime = None
+                parts = rel.split("/")
+                rows.append(
+                    SyncConflict(
+                        path=rel,
+                        paper_id=parts[1] if len(parts) >= 3 and parts[0] == "papers" else None,
+                        kept="cloud",
+                        kept_mtime=kept_mtime,
+                        moved_mtime=st.st_mtime,
+                        backup=Path(full),
+                    )
+                )
+        if run_ops.path1_writes is None:
+            break
+        written |= run_ops.path1_writes
+    return rows
 
 def _bring_repos_in(
     vault: Path, paths: BisyncPaths, *, progress: bool, error: str | None

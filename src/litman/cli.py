@@ -546,8 +546,11 @@ class LitGroup(click.Group):
         * sync: ``.litman-sync-state.yaml`` ``last_push`` and ``last_sync``
           both > :data:`SYNC_STALE_DAYS`, AND only when a remote is configured
           (``lit-config.yaml`` ``sync`` set) → "run ``lit sync``" once this
-          machine uses two-way sync (``last_sync`` set), else "run
-          ``lit sync push``". Either command within the window silences it.
+          machine syncs two-way or has tried to (``last_sync`` or
+          ``last_sync_result`` set, or its two-way records exist in litman's
+          local data folder), else "run ``lit sync push``": push refuses a
+          library that syncs two-way. Either command within the window
+          silences it.
 
         Both are stateless (recomputed every command, no "already shown" flag),
         so an ignored tip re-appears on the next command and only clears once
@@ -562,8 +565,9 @@ class LitGroup(click.Group):
 
         Reads only the registry plus, for the sync arm, two bounded vault-root
         files (``lit-config.yaml`` + ``.litman-sync-state.yaml``) gated behind
-        the hung-mount-safe :meth:`_cheap_active_vault` resolver — never
-        per-paper metadata (invariant #15).
+        the hung-mount-safe :meth:`_cheap_active_vault` resolver, and one
+        listing of this library's two-way records in litman's local data
+        folder — never per-paper metadata (invariant #15).
 
         Wrapped so a failure never crashes the user's command (dual to the
         pre-dispatch drift hook's defensive wrapper).
@@ -621,16 +625,28 @@ class LitGroup(click.Group):
             if vault is not None:
                 try:
                     from litman.core.config import load_config
-                    from litman.core.sync import read_sync_state
+                    from litman.core.sync import (
+                        bisync_initialised,
+                        read_sync_state,
+                        sync_workdir,
+                    )
 
                     state = read_sync_state(vault)
-                    if load_config(vault).sync is not None and all(
+                    sync_config = load_config(vault).sync
+                    if sync_config is not None and all(
                         _timestamp_is_stale(
                             stamp, now=now, stale_days=SYNC_STALE_DAYS
                         )
                         for stamp in (state.last_push, state.last_sync)
                     ):
-                        if state.last_sync is not None:
+                        two_way = (
+                            state.last_sync is not None
+                            or state.last_sync_result is not None
+                            or bisync_initialised(
+                                sync_workdir(vault, sync_config.target_url())
+                            )
+                        )
+                        if two_way:
                             _emit(
                                 f"[dim]tip: no `lit sync` in {SYNC_STALE_DAYS}+ "
                                 "days. Run it to sync this library with the "

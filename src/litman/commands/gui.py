@@ -51,6 +51,7 @@ import logging
 import os
 import re
 import shutil
+import signal
 import socket
 import subprocess
 import sys
@@ -65,6 +66,7 @@ from typing import Any
 import click
 from platformdirs import user_cache_dir
 from rich.console import Console
+from rich.markup import escape
 
 from litman.cli import _launched_without_console
 from litman.commands._options import library_option, vault_option
@@ -659,6 +661,89 @@ def _stop_server_when_window_closes(
                 break
         time.sleep(poll)
     server.should_exit = True
+
+
+def _raise_exit(signum: int, frame: Any) -> None:
+    raise SystemExit(128 + signum)
+
+
+def _hangup_as_term(signum: int, frame: Any) -> None:
+    """A closed terminal (SIGHUP) ends the run as SIGTERM does.
+
+    Raised again as SIGTERM, so that while the server runs uvicorn takes it
+    and stops gracefully, and the sync before exit still runs.
+    """
+    signal.raise_signal(signal.SIGTERM)
+
+
+#: The handlers ``lit gui`` sets for its run: SIGTERM, and on POSIX SIGHUP.
+_EXIT_SIGNALS: tuple[tuple[str, Any], ...] = (
+    ("SIGTERM", _raise_exit),
+    ("SIGHUP", _hangup_as_term),
+)
+
+
+def _exit_through_finally_on_sigterm() -> Any:
+    """Make SIGTERM raise ``SystemExit`` (and SIGHUP do as SIGTERM); return what they replaced.
+
+    Signal handlers can be set from the main thread only; elsewhere (a test
+    calling the command from a thread) nothing changes and ``None`` comes
+    back. Windows has no SIGHUP.
+    """
+    previous: dict[int, Any] = {}
+    for name, handler in _EXIT_SIGNALS:
+        signum = getattr(signal, name, None)
+        if signum is None:
+            continue
+        try:
+            previous[signum] = signal.signal(signum, handler)
+        except (ValueError, OSError):
+            return None
+    return previous
+
+
+def _restore_sigterm(previous: Any) -> None:
+    if previous is None:
+        return
+    for signum, handler in previous.items():
+        try:
+            signal.signal(signum, handler)
+        except (ValueError, OSError, TypeError):
+            pass
+
+
+def _say_safely(message: str) -> None:
+    """Print, unless the terminal is gone (closed window, SIGHUP): never a reason to fail."""
+    try:
+        console.print(message)
+    except Exception:
+        pass
+
+
+def _sync_before_exit(app: Any) -> None:
+    """Sync once more when files changed here since the last sync; at most a minute.
+
+    The auto sync's exit sync (:meth:`litman.server.sync_scheduler.SyncScheduler.final_sync`):
+    nothing when the auto sync never ran (no ``sync:``, a test's app), after a
+    self-update, or when nothing changed. A Ctrl+C skips it. Nothing that
+    goes wrong in it stops the exit: it is said, and the next start syncs.
+    """
+    scheduler = getattr(app.state, "sync_scheduler", None)
+    if scheduler is None or not scheduler.started:
+        return
+
+    def say() -> None:
+        _say_safely("[dim]Syncing changes before exit (Ctrl+C to skip)…[/]")
+
+    try:
+        scheduler.final_sync(on_start=say)
+    except KeyboardInterrupt:
+        pass
+    except Exception as err:
+        _say_safely(
+            f"[dim]The sync before exit did not finish ({escape(str(err))}); "
+            "the next start syncs.[/]"
+        )
 
 
 # Shutdown escalation for a window launch, in seconds from the moment the
@@ -1632,6 +1717,11 @@ def gui_cmd(
         # its manual hint instead of arming a restart that cannot work.
         pass
 
+    # SIGTERM (a logout, `kill`) and SIGHUP (the terminal closed) end the run
+    # through the `finally` below, as Ctrl+C does, so the sync before exit
+    # still runs. uvicorn takes SIGTERM while it serves and raises it again
+    # once it has stopped, into this handler.
+    previous_sigterm = _exit_through_finally_on_sigterm()
     try:
         # macOS --window: prefer a window this process owns. The Dock badges a
         # window with the owning process's bundle, so a WKWebView here wears
@@ -1824,3 +1914,10 @@ def gui_cmd(
         # window returning while the server thread still winds down, a
         # launch handed to another process. Idempotent.
         unregister_gui(getattr(app.state, "gui_registration", None))
+        # Last: the window is gone and the server down, so nothing visible
+        # waits on it. Reached by a closed window (both shells), the page
+        # gate, Ctrl+C, SIGTERM and a closed terminal alike.
+        try:
+            _sync_before_exit(app)
+        finally:
+            _restore_sigterm(previous_sigterm)

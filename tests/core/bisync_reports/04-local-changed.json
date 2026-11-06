@@ -1,0 +1,43 @@
+{
+ "scenario": "04-local-changed",
+ "rclone": "1.75.2",
+ "returncode": 0,
+ "report": [
+  "INFO  : Setting --ignore-listing-checksum as neither --checksum nor --compare checksum are set.",
+  "INFO  : Bisyncing with Comparison Settings: ",
+  "{",
+  "\t\"Modtime\": true,",
+  "\t\"Size\": true,",
+  "\t\"Checksum\": false,",
+  "\t\"HashType1\": 0,",
+  "\t\"HashType2\": 0,",
+  "\t\"NoSlowHash\": false,",
+  "\t\"SlowHashSyncOnly\": false,",
+  "\t\"SlowHashDetected\": true,",
+  "\t\"DownloadHash\": false",
+  "}",
+  "INFO  : lock file renewed for 5m0s. New expiration: 2026-11-06 08:16:38.651921198 +0100 CET m=+300.055646007",
+  "INFO  : Synching Path1 \"<P>/vault/\" with Path2 \"fake-cloud:<P>/cloud/lib/\"",
+  "INFO  : Using filters file <P>/wd/filters.txt",
+  "INFO  : Building Path1 and Path2 listings",
+  "INFO  : Path1 checking for diffs",
+  "INFO  : - Path1             File changed: size (larger), time (newer)   - papers/a/notes.md",
+  "INFO  : Path1:    1 changes:    0 new,    1 modified,    0 deleted",
+  "INFO  : (Modified:    1 newer,    0 older,    1 larger,    0 smaller)",
+  "INFO  : Path2 checking for diffs",
+  "INFO  : Applying changes",
+  "INFO  : - Path1             Queue copy to Path2                         - fake-cloud:<P>/cloud/lib/papers/a/notes.md",
+  "INFO  : - Path1             Do queued copies to                         - Path2",
+  "INFO  : papers/a/notes.md: Moved (server-side)",
+  "INFO  : papers/a/notes.md: Copied (new)",
+  "INFO  : papers/a: Set directory modification time (using SetModTime)",
+  "INFO  : papers: Set directory modification time (using SetModTime)",
+  "INFO  : Updating listings",
+  "INFO  : Validating listings for Path1 \"<P>/vault/\" vs Path2 \"fake-cloud:<P>/cloud/lib/\"",
+  "INFO  : Bisync successful"
+ ],
+ "lines": [
+  "NOTICE:           9 B / 9 B, 100%, 0 B/s, ETA -"
+ ],
+ "cloud_changed": true
+}

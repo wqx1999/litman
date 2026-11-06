@@ -4155,3 +4155,163 @@ def test_a_record_that_cannot_be_written_never_stops_the_gui(
     with TestClient(app) as client:
         assert app.state.gui_registration is None
         assert client.get("/api/si/ping").status_code == 200
+
+
+# ---------------------------------------------------------------------------
+# The auto sync's sync before exit: after the server stops, on every way out
+# ---------------------------------------------------------------------------
+
+
+def _exit_sync_recorded(monkeypatch: pytest.MonkeyPatch, order: list[str]) -> None:
+    from litman.server.sync_scheduler import SyncScheduler
+
+    monkeypatch.setattr(SyncScheduler, "started", property(lambda self: True))
+
+    def final_sync(self: Any, **kwargs: Any) -> bool:
+        order.append("exit sync")
+        return True
+
+    monkeypatch.setattr(SyncScheduler, "final_sync", final_sync)
+
+
+def test_gui_syncs_before_exit_once_the_server_has_stopped(
+    monkeypatch: pytest.MonkeyPatch, gui_harness: Any, vault_with_paper: tuple[Path, str]
+) -> None:
+    import signal
+
+    vault, _pid = vault_with_paper
+    order: list[str] = []
+
+    class _Server(_FakeServer):
+        def run(self) -> None:
+            order.append("served")
+
+    monkeypatch.setattr("uvicorn.Server", _Server)
+    _exit_sync_recorded(monkeypatch, order)
+    sigterm = signal.getsignal(signal.SIGTERM)
+
+    result = CliRunner().invoke(gui_cmd, ["--library", str(vault), "--no-browser"])
+
+    assert result.exit_code == 0, result.output
+    assert order == ["served", "exit sync"]
+    assert signal.getsignal(signal.SIGTERM) is sigterm
+
+
+def test_a_sigterm_still_runs_the_sync_before_exit(
+    monkeypatch: pytest.MonkeyPatch, gui_harness: Any, vault_with_paper: tuple[Path, str]
+) -> None:
+    import signal
+
+    vault, _pid = vault_with_paper
+    order: list[str] = []
+
+    class _Server(_FakeServer):
+        def run(self) -> None:
+            # What uvicorn does once it has stopped: raise the signal it caught
+            # again, into the handler it found when it started.
+            order.append("served")
+            signal.raise_signal(signal.SIGTERM)
+
+    monkeypatch.setattr("uvicorn.Server", _Server)
+    _exit_sync_recorded(monkeypatch, order)
+
+    result = CliRunner().invoke(gui_cmd, ["--library", str(vault), "--no-browser"])
+
+    assert result.exit_code == 128 + signal.SIGTERM, result.output
+    assert order == ["served", "exit sync"]
+
+
+def test_no_exit_sync_when_the_auto_sync_never_ran(
+    monkeypatch: pytest.MonkeyPatch, gui_harness: Any, vault_with_paper: tuple[Path, str]
+) -> None:
+    from litman.server.sync_scheduler import SyncScheduler
+
+    vault, _pid = vault_with_paper
+    called: list[str] = []
+    monkeypatch.setattr(
+        SyncScheduler, "final_sync", lambda self, **kw: called.append("exit sync") or True
+    )
+
+    result = CliRunner().invoke(gui_cmd, ["--library", str(vault), "--no-browser"])
+
+    assert result.exit_code == 0, result.output
+    assert called == []
+
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="Windows has no SIGHUP")
+def test_a_closed_terminal_still_runs_the_sync_before_exit(
+    monkeypatch: pytest.MonkeyPatch, gui_harness: Any, vault_with_paper: tuple[Path, str]
+) -> None:
+    """SIGHUP's default ends the process at once, finally blocks and all."""
+    import signal
+
+    vault, _pid = vault_with_paper
+    order: list[str] = []
+
+    class _Server(_FakeServer):
+        def run(self) -> None:
+            order.append("served")
+            signal.raise_signal(signal.SIGHUP)
+
+    monkeypatch.setattr("uvicorn.Server", _Server)
+    _exit_sync_recorded(monkeypatch, order)
+    sighup = signal.getsignal(signal.SIGHUP)
+
+    result = CliRunner().invoke(gui_cmd, ["--library", str(vault), "--no-browser"])
+
+    assert result.exit_code == 128 + signal.SIGTERM, result.output
+    assert order == ["served", "exit sync"]
+    assert signal.getsignal(signal.SIGHUP) is sighup
+
+
+def test_a_dead_terminal_never_breaks_the_sync_before_exit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from litman.commands import gui as gui_mod
+    from litman.server.sync_scheduler import SyncScheduler
+
+    synced: list[str] = []
+
+    def final_sync(self: Any, *, on_start: Any = None, **kwargs: Any) -> bool:
+        on_start()  # the "Syncing changes before exit" line
+        synced.append("synced")
+        return True
+
+    class _Gone:
+        def print(self, *args: Any, **kwargs: Any) -> None:
+            raise OSError(5, "Input/output error")
+
+    monkeypatch.setattr(SyncScheduler, "started", property(lambda self: True))
+    monkeypatch.setattr(SyncScheduler, "final_sync", final_sync)
+    monkeypatch.setattr(gui_mod, "console", _Gone())
+    app = SimpleNamespace(state=SimpleNamespace(sync_scheduler=SyncScheduler(SimpleNamespace())))
+
+    gui_mod._sync_before_exit(app)
+
+    assert synced == ["synced"]
+
+
+def test_an_exit_sync_that_breaks_still_puts_the_signal_handlers_back(
+    monkeypatch: pytest.MonkeyPatch, gui_harness: Any, vault_with_paper: tuple[Path, str]
+) -> None:
+    import signal
+
+    from litman.server.sync_scheduler import SyncScheduler
+
+    vault, _pid = vault_with_paper
+    monkeypatch.setattr(SyncScheduler, "started", property(lambda self: True))
+
+    def broken(self: Any, **kwargs: Any) -> bool:
+        raise RuntimeError("a bug in the exit sync")
+
+    monkeypatch.setattr(SyncScheduler, "final_sync", broken)
+    sigterm = signal.getsignal(signal.SIGTERM)
+
+    result = CliRunner().invoke(gui_cmd, ["--library", str(vault), "--no-browser"])
+
+    assert result.exit_code == 0, result.output
+    assert "The sync before exit did not finish (a bug in the exit sync)" in " ".join(
+        result.output.split()
+    )
+    assert signal.getsignal(signal.SIGTERM) is sigterm

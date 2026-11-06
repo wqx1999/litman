@@ -13,6 +13,7 @@ Guarded with ``importorskip`` so the suite still collects when the optional
 
 from __future__ import annotations
 
+import hashlib
 from collections.abc import Callable
 from pathlib import Path
 
@@ -52,7 +53,12 @@ def test_put_overwrites_pdf_on_disk(
         headers={"Content-Type": "application/pdf"},
     )
     assert resp.status_code == 200
-    assert resp.json() == {"ok": True, "bytes": len(new_bytes)}
+    st = pdf_path.stat()
+    assert resp.json() == {
+        "ok": True,
+        "bytes": len(new_bytes),
+        "version": f"{st.st_mtime_ns}:{st.st_size}",
+    }
 
     # The overwrite actually happened on disk.
     assert pdf_path.read_bytes() == new_bytes
@@ -271,7 +277,11 @@ def test_put_discussion_full_overwrite(
         f"/api/paper/{paper_id}/discussion", json={"text": new_text}
     )
     assert resp.status_code == 200
-    assert resp.json() == {"ok": True, "bytes": len(new_text.encode("utf-8"))}
+    assert resp.json() == {
+        "ok": True,
+        "bytes": len(new_text.encode("utf-8")),
+        "version": hashlib.sha256(md_path.read_bytes()).hexdigest(),
+    }
 
     on_disk = md_path.read_text(encoding="utf-8")
     assert on_disk == new_text  # exact overwrite

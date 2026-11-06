@@ -28,6 +28,7 @@ from collections.abc import Callable, Iterator
 from dataclasses import replace
 from datetime import datetime, timedelta
 from pathlib import Path
+from typing import Any
 
 import pytest
 from click.testing import CliRunner, Result
@@ -40,6 +41,7 @@ from litman.core import sync as core_sync
 from litman.core.library import create_vault
 from litman.core.sync import (
     BISYNC_MIN_VERSION,
+    SYNC_STAMP_FILENAME,
     SYNC_STATE_FILENAME,
     SetupPayload,
     SyncState,
@@ -187,12 +189,17 @@ _LOCAL_ONLY = ("INDEX.json", "lit-config.yaml", SYNC_STATE_FILENAME)
 
 
 def _tree(root: Path) -> dict[str, bytes]:
-    """``{relative path: bytes}`` of the files two-way sync carries."""
+    """``{relative path: bytes}`` of the files two-way sync carries.
+
+    The auto-sync stamp, which only the cloud side holds, is left out too.
+    """
     out: dict[str, bytes] = {}
     for path in sorted(root.rglob("*")):
         rel = path.relative_to(root).as_posix()
         parts = rel.split("/")
         if parts[0] in ("views", ".litman-staging") or rel in _LOCAL_ONLY:
+            continue
+        if rel == SYNC_STAMP_FILENAME:
             continue
         if len(parts) > 3 and parts[0] == "codes" and parts[2] == "repo":
             continue
@@ -336,7 +343,12 @@ def test_first_sync_with_a_library_on_both_sides_is_refused_and_changes_nothing(
     assert _sync(a).exit_code == 0
     b = _machine(tmp_path, cloud, "b")
     _write_paper(b, "b1")
-    before_b = {**_tree(b), **{n: (b / n).read_bytes() for n in _LOCAL_ONLY if (b / n).exists()}}
+
+    def files_of_b() -> dict[str, bytes]:
+        local = [n for n in _LOCAL_ONLY if n != SYNC_STATE_FILENAME and (b / n).exists()]
+        return {**_tree(b), **{n: (b / n).read_bytes() for n in local}}
+
+    before_b, state_b = files_of_b(), read_sync_state(b)
     before_cloud = _tree(cloud / "lib")
 
     result = _sync(b)
@@ -344,9 +356,12 @@ def test_first_sync_with_a_library_on_both_sides_is_refused_and_changes_nothing(
     assert result.exit_code == sync_cmd.EXIT_SYNC_NEEDS_CHOICE == 20
     assert "both hold a library" in result.output
     assert "--first-from cloud" in result.output
-    after_b = {**_tree(b), **{n: (b / n).read_bytes() for n in _LOCAL_ONLY if (b / n).exists()}}
-    assert after_b == before_b
+    assert files_of_b() == before_b
     assert _tree(cloud / "lib") == before_cloud
+    # Only this machine's record of its last run changed: it says why nothing synced.
+    after = read_sync_state(b)
+    assert replace(after, last_run=None) == replace(state_b, last_run=None)
+    assert after.last_run is not None and after.last_run.result == "needs-choice"
 
 
 @needs_rclone
@@ -600,7 +615,10 @@ def test_a_library_one_character_over_is_refused_before_anything_is_touched(
     assert not folder.exists()
     assert not workdir.exists()
     assert _tree(vault) == tree
-    assert read_sync_state(vault) == state
+    # Only this machine's record of its last run changed: it says why nothing synced.
+    after = read_sync_state(vault)
+    assert replace(after, last_run=None) == replace(state, last_run=None)
+    assert after.last_run is not None and after.last_run.error == str(refused.exception)
 
     # The limit is rclone's: without the check, rclone itself cannot save its
     # records for this pair.
@@ -910,7 +928,7 @@ def test_a_too_old_rclone_is_named_with_the_way_to_upgrade(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     def fake_run_rclone(
-        args: list[str], *, capture: bool = True, check: bool = True
+        args: list[str], *, capture: bool = True, check: bool = True, **kwargs: Any
     ) -> subprocess.CompletedProcess[str]:
         stdout = {"version": "rclone v1.66.0\n- os/version: test\n", "listremotes": "fake-cloud:\n"}
         return subprocess.CompletedProcess(args, 0, stdout=stdout[args[0]], stderr="")
@@ -1400,9 +1418,9 @@ def _recording_runs(monkeypatch: pytest.MonkeyPatch) -> list[core_sync.BisyncRun
     real = core_sync.run_bisync
 
     def recording(
-        args: list[str], on_log: Callable[[str], None] | None = None
+        args: list[str], on_log: Callable[[str], None] | None = None, **kwargs: Any
     ) -> core_sync.BisyncRun:
-        run = real(args, on_log)
+        run = real(args, on_log, **kwargs)
         runs.append(run)
         return run
 
@@ -1492,10 +1510,10 @@ def test_an_unreadable_report_moves_no_folder_out_and_says_so(
     real = core_sync.run_bisync
 
     def reworded(
-        args: list[str], on_log: Callable[[str], None] | None = None
+        args: list[str], on_log: Callable[[str], None] | None = None, **kwargs: Any
     ) -> core_sync.BisyncRun:
         # As if a later rclone worded its per-file report differently.
-        run = real(args, on_log)
+        run = real(args, on_log, **kwargs)
         report = tuple(line.replace("File was deleted", "File gone") for line in run.report)
         return replace(run, report=report)
 
@@ -1882,7 +1900,7 @@ def test_taxonomy_values_come_back_when_taxonomy_changes_again_during_the_sync(
     passes: list[int] = []
 
     def edited(
-        args: list[str], on_log: Callable[[str], None] | None = None
+        args: list[str], on_log: Callable[[str], None] | None = None, **kwargs: Any
     ) -> core_sync.BisyncRun:
         n = len(passes)
         passes.append(n)
@@ -1899,7 +1917,7 @@ def test_taxonomy_values_come_back_when_taxonomy_changes_again_during_the_sync(
                     encoding="utf-8",
                 )
                 _touch(path, now - age + n)
-        return real(args, on_log)
+        return real(args, on_log, **kwargs)
 
     monkeypatch.setattr(core_sync, "run_bisync", edited)
     result = _sync(b)
