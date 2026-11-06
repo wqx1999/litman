@@ -22,7 +22,7 @@ import pytest
 
 from litman.core import locking
 from litman.core import sync as core_sync
-from litman.exceptions import SyncError
+from litman.exceptions import SyncError, SyncStoppedError
 from litman.server import sync_scheduler as sched_mod
 from litman.server.sync_scheduler import SyncScheduler
 from tests.commands.test_sync_bisync import (
@@ -531,15 +531,108 @@ def test_switching_libraries_syncs_a_change_left_on_the_old_one(
     assert ma.status["state"] == "not-configured"
 
 
+class _Reads:
+    """A scheduler's guard that keeps the status each hold of it leaves: what a poll can read."""
+
+    def __init__(self, scheduler: SyncScheduler) -> None:
+        self._lock = threading.Lock()
+        self._scheduler = scheduler
+        self.seen: list[tuple[int, str, Any]] = []
+
+    def __enter__(self) -> None:
+        self._lock.acquire()
+
+    def __exit__(self, *exc: object) -> None:
+        status = self._scheduler._status
+        self.seen.append((status.seq, status.state, status.notice))
+        self._lock.release()
+
+
+def test_a_poll_never_reads_a_sync_counted_before_it_ended(
+    tmp_path: Path, cloud: Path
+) -> None:
+    """The page tells the notice it reads with a new ``seq`` once. Read with
+    the state still ``running``, that notice is the last sync's: told twice,
+    and the new one never."""
+    ma, _mb, _clock = _machines(tmp_path, cloud)
+    reads = _Reads(ma.scheduler)
+    ma.scheduler._guard = reads  # type: ignore[assignment]
+    _settle_start(ma)
+    real = ma.scheduler.sync_fn
+
+    def stopped(*args: object, **kwargs: object) -> core_sync.TwoWayResult:
+        raise SyncStoppedError("rclone stopped: too many deletes")
+
+    ma.scheduler.sync_fn = stopped
+    ma.scheduler.request_sync()
+    ma.step()
+    ma.scheduler.sync_fn = real
+    ma.scheduler.request_sync()
+    ma.step()
+
+    first: dict[int, tuple[str, Any]] = {}
+    for seq, state, notice in reads.seen:
+        first.setdefault(seq, (state, notice))
+    assert sorted(first) == [0, 1, 2, 3]
+    assert first[1] == ("ok", None)
+    assert first[2][0] == "error" and first[2][1]["kind"] == "stopped"
+    assert first[3] == ("ok", None)
+
+
+class _Looks:
+    """Counts the looks of a scheduler's thread, and the syncs it starts."""
+
+    def __init__(self, scheduler: SyncScheduler) -> None:
+        self.begun = self.done = self.syncs = 0
+        #: Whether the last look that ended started a sync.
+        self.synced = False
+        step, sync_fn = scheduler.step, scheduler.sync_fn
+
+        def look(now: float | None = None) -> None:
+            self.begun += 1
+            before = self.syncs
+            try:
+                step(now)
+            finally:
+                self.synced = self.syncs != before
+                self.done += 1
+
+        def sync(*args: Any, **kwargs: Any) -> core_sync.TwoWayResult:
+            self.syncs += 1
+            return sync_fn(*args, **kwargs)
+
+        scheduler.step = look  # type: ignore[method-assign]
+        scheduler.sync_fn = sync
+
+
+def _settle(scheduler: SyncScheduler, looks: _Looks) -> None:
+    """Wait until a look of the thread's, begun after this call, finds nothing due.
+
+    Each round wakes the thread for a look now rather than at its next tick;
+    a look that started a sync calls for another.
+    """
+    deadline = time.monotonic() + 60
+    while True:
+        begun = looks.begun
+        scheduler._wake.set()
+        while looks.done <= begun:
+            assert time.monotonic() < deadline, f"The auto sync never settled: {scheduler.status()}"
+            time.sleep(0.05)
+        if not looks.synced:
+            return
+
+
 def test_the_real_thread_syncs_on_start_and_stops(tmp_path: Path, cloud: Path) -> None:
     a, _b = _two_synced_machines(tmp_path, cloud)
     scheduler = SyncScheduler(SimpleNamespace(vault=a.resolve()))
+    looks = _Looks(scheduler)
     scheduler.start()
     try:
-        deadline = time.monotonic() + 60
-        while scheduler.status()["seq"] == 0 and time.monotonic() < deadline:
-            time.sleep(0.1)
+        _settle(scheduler, looks)
         assert scheduler.status()["state"] == "ok"
+        # The start sync and no other: on a quiet library the look right
+        # after it finds nothing due.
+        assert looks.syncs == 1
     finally:
         scheduler.stop()
         assert scheduler._thread is not None
@@ -555,10 +648,9 @@ def test_the_real_thread_syncs_on_start_and_stops(tmp_path: Path, cloud: Path) -
 def _started(vault: Path) -> SyncScheduler:
     """A scheduler whose thread ran its start sync and stands by."""
     scheduler = SyncScheduler(SimpleNamespace(vault=vault.resolve()))
+    looks = _Looks(scheduler)
     scheduler.start()
-    deadline = time.monotonic() + 60
-    while scheduler.status()["seq"] == 0 and time.monotonic() < deadline:
-        time.sleep(0.1)
+    _settle(scheduler, looks)
     assert scheduler.status()["state"] == "ok"
     return scheduler
 

@@ -452,9 +452,8 @@ class SyncScheduler:
         if kind == "needs-user":
             lib.stopped = True
             lib.stopped_record = self._sync_record(lib)
-            with self._guard:
-                self._status.seq += 1
             self._set(
+                bump_seq=True,
                 state="error",
                 reason=reason,
                 message=message,
@@ -485,9 +484,8 @@ class SyncScheduler:
         lib.settled_token = None if lib.dirty else token
         lib.next_stamp_check = now + STAMP_EVERY_S
         notice = _notice(result)
-        with self._guard:
-            self._status.seq += 1
         self._set(
+            bump_seq=True,
             state="conflicts" if result.conflicts or result.deleted_folders else "ok",
             reason=None,
             message=None,
@@ -633,8 +631,17 @@ class SyncScheduler:
 
     # -- status ------------------------------------------------------------------
 
-    def _set(self, **changes: Any) -> None:
+    def _set(self, *, bump_seq: bool = False, **changes: Any) -> None:
+        """Change the status in one hold of the guard: a poll reads all of a change or none.
+
+        ``bump_seq`` counts one more sync or stop for the page, which tells
+        the ``notice`` it reads with a new ``seq`` once. Counted apart, a poll
+        could read the new count with the state still ``running`` and the
+        last sync's notice: the page would tell that one again, never this one.
+        """
         with self._guard:
+            if bump_seq:
+                self._status.seq += 1
             for key, value in changes.items():
                 setattr(self._status, key, value)
             lib = self._library
