@@ -24,9 +24,12 @@ _NOT_INITIALISED = (
 
 @router.get("/sync/status")
 def get_sync_status(request: Request) -> dict[str, Any]:
-    """``{state, remote, lastOkAt, nextTryAt, runningSince, reason, message, seq, notice}``.
+    """``{state, remote, lastOkAt, nextTryAt, runningSince, reason, message, seq, notice,
+    holder, reposWithWork}``.
 
     ``state`` is ``not-configured`` for a library with no ``sync:``.
+    ``reposWithWork`` counts the code repos the last sync found with changes
+    only on this machine; ``lit sync status`` names them.
     """
     scheduler = request.app.state.sync_scheduler
     status: dict[str, Any] | None = scheduler.status_for(request.app.state.vault)

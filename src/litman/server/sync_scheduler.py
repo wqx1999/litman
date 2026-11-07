@@ -137,6 +137,9 @@ class _Status:
     notice: dict[str, Any] | None = None
     #: Who holds the library's sync lock, while the auto sync waits for it.
     holder: dict[str, str | None] | None = None
+    #: How many code repos the last sync found with changes only on this
+    #: machine (:func:`_repos_with_work`).
+    repos_with_work: int = 0
     vault: Path | None = None
 
 
@@ -327,6 +330,14 @@ class SyncScheduler:
         except (LitmanError, OSError):
             return None
 
+    def _recorded_work(self, lib: _Library) -> int:
+        """How many code repos the last run's record found with changes only on this machine."""
+        try:
+            run = core_sync.read_sync_state(lib.vault).last_run
+        except (LitmanError, OSError):
+            return 0
+        return run.repos_with_work_total if run is not None else 0
+
     def _due(self, lib: _Library, now: float) -> str | None:
         """Why to sync now, or None."""
         assert lib.target_url is not None and lib.workdir is not None
@@ -343,6 +354,7 @@ class SyncScheduler:
                 message=None,
                 last_ok_at=self._last_sync(lib),
                 notice=None,
+                repos_with_work=self._recorded_work(lib),
             )
         if lib.busy_retry_at is not None:
             if now < lib.busy_retry_at:
@@ -498,6 +510,7 @@ class SyncScheduler:
             next_try_at=None,
             last_ok_at=self._last_sync(lib) or _iso(self._wall()),
             notice=notice,
+            repos_with_work=_repos_with_work(result),
         )
 
     # -- the exit sync ----------------------------------------------------------
@@ -669,6 +682,7 @@ class SyncScheduler:
                 "seq": st.seq,
                 "notice": st.notice,
                 "holder": st.holder,
+                "reposWithWork": st.repos_with_work,
             }
 
     def status_for(self, vault: Path) -> dict[str, Any] | None:
@@ -725,6 +739,17 @@ def _notice(result: core_sync.TwoWayResult) -> dict[str, Any] | None:
         "deletedFolders": deleted,
         "reposNotRestored": repos,
     }
+
+
+def _repos_with_work(result: core_sync.TwoWayResult) -> int:
+    """How many code repos ``result`` found with changes only on this machine, for
+    the page's line: each repo once, and none the notice names as not synced
+    already (a checkout with only untracked files whose move failed is both).
+
+    Not part of the notice: it is no toast and no activity-log row.
+    """
+    named = {row.name for row in core_sync.repo_rows(result)}
+    return sum(1 for work in core_sync.work_rows(result) if work.name not in named)
 
 
 class SaveGate:

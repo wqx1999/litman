@@ -97,8 +97,9 @@ class RepoSyncReport:
     not_restored: tuple[RepoNotRestored, ...] = ()
     #: Checkouts with changed or untracked files: they stay on this machine.
     uncommitted: tuple[str, ...] = ()
-    #: Checkouts with commits no remote has: no other machine can fetch them.
-    unpushed: tuple[str, ...] = ()
+    #: Checkouts with commits no remote has, and how many: no other machine
+    #: can fetch them.
+    unpushed: dict[str, int] = field(default_factory=dict)
     #: ``codes/<name>/`` folders holding only a checkout: the repo was removed.
     left_behind: tuple[str, ...] = ()
     #: The commit each checkout is at now, for :func:`write_last_heads`.
@@ -179,7 +180,7 @@ def bring_repos_in(vault: Path, *, depth: int, progress: bool = False) -> RepoSy
     restored: list[RepoRestored] = []
     not_restored: list[RepoNotRestored] = []
     uncommitted: list[str] = []
-    unpushed: list[str] = []
+    unpushed: dict[str, int] = {}
     heads: dict[str, str] = {}
     unrecorded: dict[str, tuple[str, str | None]] = {}
     for meta in list_repos(vault):
@@ -240,13 +241,13 @@ def bring_repos_in(vault: Path, *, depth: int, progress: bool = False) -> RepoSy
             if state.changed or state.untracked:
                 uncommitted.append(name)
             if state.unpushed:
-                unpushed.append(name)
+                unpushed[name] = state.unpushed
 
     return RepoSyncReport(
         restored=tuple(restored),
         not_restored=tuple(not_restored),
         uncommitted=tuple(uncommitted),
-        unpushed=tuple(unpushed),
+        unpushed=unpushed,
         left_behind=tuple(_left_behind(vault)),
         heads=heads,
         unrecorded=unrecorded,

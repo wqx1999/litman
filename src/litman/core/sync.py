@@ -649,6 +649,20 @@ class RunRepo:
 
 
 @dataclass(frozen=True)
+class RunRepoWork:
+    """A code checkout holding changes of the user's that no other machine gets.
+
+    ``uncommitted``: changed or untracked files. ``unpushed``: how many
+    commits no remote has. The run went through: this is for the user to
+    know, not a failure.
+    """
+
+    name: str
+    uncommitted: bool = False
+    unpushed: int = 0
+
+
+@dataclass(frozen=True)
 class LastRun:
     """How this machine's last two-way sync run ended, for ``lit sync status``.
 
@@ -662,8 +676,10 @@ class LastRun:
     ``safety-stop``, ``choice``, ``lock`` or ``rclone``. ``error`` is the
     whole error text. ``sign_in``, for ``auth``, says how the user signs in
     again (:attr:`litman.exceptions.SyncAuthError.sign_in`), so that reading
-    the record needs no rclone. The lists hold the first
-    :data:`RUN_RECORD_CAP` entries; the totals count all of them.
+    the record needs no rclone. ``repos_with_work`` names the code checkouts
+    holding changes only this machine has (:class:`RunRepoWork`). The lists
+    hold the first :data:`RUN_RECORD_CAP` entries; the totals count all of
+    them.
     """
 
     at: str
@@ -676,6 +692,8 @@ class LastRun:
     repos: tuple[RunRepo, ...] = ()
     repos_total: int = 0
     sign_in: str | None = None
+    repos_with_work: tuple[RunRepoWork, ...] = ()
+    repos_with_work_total: int = 0
 
 
 def repo_rows(result: TwoWayResult) -> list[RunRepo]:
@@ -696,6 +714,17 @@ def repo_rows(result: TwoWayResult) -> list[RunRepo]:
     return rows
 
 
+def work_rows(result: TwoWayResult) -> list[RunRepoWork]:
+    """The code checkouts ``result`` found holding changes only this machine has, by name."""
+    report = result.repos
+    if report is None:
+        return []
+    return [
+        RunRepoWork(name, name in report.uncommitted, report.unpushed.get(name, 0))
+        for name in sorted({*report.uncommitted, *report.unpushed})
+    ]
+
+
 def run_from_result(result: TwoWayResult, trigger: RunTrigger) -> LastRun:
     """The record of a run that went through."""
     settled = [RunConflict(c.path, c.kept, str(c.backup)) for c in result.conflicts] + [
@@ -703,6 +732,7 @@ def run_from_result(result: TwoWayResult, trigger: RunTrigger) -> LastRun:
         for d in result.deleted_folders
     ]
     repos = repo_rows(result)
+    work = work_rows(result)
     return LastRun(
         at=now_iso(),
         trigger=trigger,
@@ -711,6 +741,8 @@ def run_from_result(result: TwoWayResult, trigger: RunTrigger) -> LastRun:
         conflicts_total=len(settled),
         repos=tuple(repos[:RUN_RECORD_CAP]),
         repos_total=len(repos),
+        repos_with_work=tuple(work[:RUN_RECORD_CAP]),
+        repos_with_work_total=len(work),
     )
 
 
@@ -760,6 +792,12 @@ def _last_run_to(run: LastRun) -> dict[str, Any]:
             {"name": r.name, "kind": r.kind, "what": r.what, "way-out": r.way_out}
             for r in run.repos
         ]
+    if run.repos_with_work_total:
+        out["repos-with-work-total"] = run.repos_with_work_total
+        out["repos-with-work"] = [
+            {"name": w.name, "uncommitted": w.uncommitted, "unpushed": w.unpushed}
+            for w in run.repos_with_work
+        ]
     return out
 
 
@@ -780,6 +818,10 @@ def _last_run_from(data: object) -> LastRun | None:
         value = data.get(key)
         return value if isinstance(value, int) and value >= listed else listed
 
+    def commits(source: dict[Any, Any]) -> int:
+        value = source.get("unpushed")
+        return value if isinstance(value, int) and value > 0 else 0
+
     at, trigger, result = text(data, "at"), text(data, "trigger"), text(data, "result")
     if at is None or trigger is None or result is None:
         return None
@@ -796,6 +838,11 @@ def _last_run_from(data: object) -> LastRun | None:
         )
         for r in rows("repos")
     )
+    work = tuple(
+        RunRepoWork(name, r.get("uncommitted") is True, commits(r))
+        for r in rows("repos-with-work")
+        if (name := text(r, "name")) is not None
+    )
     return LastRun(
         at=at,
         trigger=trigger,
@@ -807,6 +854,8 @@ def _last_run_from(data: object) -> LastRun | None:
         conflicts_total=count("conflicts-total", len(conflicts)),
         repos=repos,
         repos_total=count("repos-total", len(repos)),
+        repos_with_work=work,
+        repos_with_work_total=count("repos-with-work-total", len(work)),
     )
 
 
@@ -3608,7 +3657,8 @@ def two_way_sync(
        views/ and the project links from TRUTH (none of them travels).
        How the run ended, with its conflicts, repos left behind or error, is
        kept there too (:class:`LastRun`, ``trigger`` saying who ran it), for
-       ``lit sync status``; a run another sync held off leaves it as it was.
+       ``lit sync status``, with the repos holding changes only this machine
+       has; a run another sync held off leaves it as it was.
 
     Every file a run replaces or deletes goes to a backup folder: on this
     machine under ``<data dir>/sync-backup/<vault-key>/``, in the cloud under

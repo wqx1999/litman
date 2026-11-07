@@ -2,7 +2,8 @@
 
 Every run ``two_way_sync`` starts, from a terminal or from the GUI, leaves a
 record in the per-machine state file: when, who, how it ended, its conflicts
-with their backups, the repos it left behind, or its whole error. ``lit sync
+with their backups, the repos it left behind, or its whole error, and the
+repos holding changes only this machine has. ``lit sync
 status`` prints it, even when the cloud cannot be listed, and then the folders
 of conflict backups made here in the last days, which outlast the record.
 While the record says a run did not go through, every other command says so.
@@ -36,6 +37,7 @@ from litman.core.sync import (
     FileChanges,
     LastRun,
     RunConflict,
+    RunRepoWork,
     SyncConflict,
     TwoWayResult,
     bisync_paths,
@@ -48,6 +50,7 @@ from litman.core.sync import (
     run_from_result,
 )
 from litman.core.vault_registry import add_vault, load_registry, save_registry
+from litman.core.vault_token import gui_token, synced_token
 from litman.exceptions import SyncChoiceRequiredError, SyncError
 from tests.commands.test_sync_bisync import (
     _edit_metadata,
@@ -379,6 +382,118 @@ def test_each_repo_row_tells_the_page_its_kind_and_keeps_its_words_for_status(
     assert run.repos[0].way_out == not_restored.way_out
     # The reverse: a sync that left no repo behind has nothing to tell.
     assert sched_mod._notice(_result(0)) is None
+
+
+def _with_work(report: RepoSyncReport) -> TwoWayResult:
+    return replace(_result(0), repos=report)
+
+
+def test_the_record_names_each_repo_with_changes_only_here_and_the_page_counts_it_once(
+    tmp_path: Path,
+) -> None:
+    """Both kinds in one repo make one row; the page's number leaves out a repo
+    its line already counts as not synced."""
+    from litman.server import sync_scheduler as sched_mod
+
+    result = _with_work(
+        RepoSyncReport(
+            not_restored=(RepoNotRestored("tool", "not moved to abc1234: x", "Try again."),),
+            uncommitted=("tool", "other"),
+            unpushed={"other": 1, "third": 3},
+        )
+    )
+
+    record_run(tmp_path, run_from_result(result, "auto"))
+
+    run = _last_run(tmp_path)
+    assert run.repos_with_work == (
+        RunRepoWork("other", uncommitted=True, unpushed=1),
+        RunRepoWork("third", unpushed=3),
+        RunRepoWork("tool", uncommitted=True),
+    )
+    assert run.repos_with_work_total == 3
+    assert [r.name for r in run.repos] == ["tool"]
+    notice = sched_mod._notice(result)
+    assert notice is not None
+    assert [r["name"] for r in notice["reposNotRestored"]] == ["tool"]
+    assert sched_mod._repos_with_work(result) == 2  # other and third; tool is not synced
+    # Not part of the notice: a run with only these tells the page nothing once.
+    only_work = _with_work(RepoSyncReport(uncommitted=("tool",)))
+    assert sched_mod._notice(only_work) is None
+    assert sched_mod._repos_with_work(only_work) == 1
+    # The reverse: a run with none has no rows and nothing to count.
+    assert run_from_result(_result(0), "auto").repos_with_work_total == 0
+    assert sched_mod._repos_with_work(_result(0)) == 0
+
+
+@pytest.mark.parametrize("n", [RUN_RECORD_CAP, RUN_RECORD_CAP + 5])
+def test_the_repos_with_changes_only_here_are_bounded_and_all_counted(
+    tmp_path: Path, n: int
+) -> None:
+    names = tuple(f"repo{i:02d}" for i in range(n))
+
+    record_run(tmp_path, run_from_result(_with_work(RepoSyncReport(uncommitted=names)), "terminal"))
+
+    run = _last_run(tmp_path)
+    assert run.repos_with_work_total == n
+    assert len(run.repos_with_work) == min(n, RUN_RECORD_CAP)
+    assert run.repos_with_work[0] == RunRepoWork("repo00", uncommitted=True)
+
+
+def test_status_lists_the_repos_with_changes_only_here_with_their_way_out(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    run = LastRun(
+        at="2026-11-07T10:00:00+01:00",
+        trigger="auto",
+        result="ok",
+        repos_with_work=(
+            RunRepoWork("DiffDock", uncommitted=True),
+            RunRepoWork("PepINVENT", unpushed=2),
+            RunRepoWork("tool", uncommitted=True, unpushed=1),
+        ),
+        repos_with_work_total=5,
+    )
+    out = io.StringIO()
+    monkeypatch.setattr(sync_cmd, "console", Console(file=out, width=40))
+
+    sync_cmd._print_last_run(run, "gdrive:lib")
+
+    lines = [line.strip() for line in out.getvalue().splitlines() if line.strip()]
+    assert lines[0].startswith("Last run:")
+    assert lines[1:] == [
+        "Code repos with changes only on this machine:",
+        "• DiffDock: uncommitted changes. Commit and push them, or undo them.",
+        "• PepINVENT: 2 commits no remote has. Push them so your other machines can fetch them.",
+        "• tool: uncommitted changes. Commit and push them, or undo them.",
+        "• tool: 1 commit no remote has. Push it so your other machines can fetch it.",
+        "• … and 2 more repos",
+    ]
+    # The reverse: a run with none prints no such part.
+    quiet = io.StringIO()
+    monkeypatch.setattr(sync_cmd, "console", Console(file=quiet, width=40))
+    sync_cmd._print_last_run(replace(run, repos_with_work=(), repos_with_work_total=0), "x:y")
+    assert "only on this machine" not in quiet.getvalue()
+    assert "Last run:" in quiet.getvalue()
+
+
+def test_the_record_moves_neither_the_pages_token_nor_the_auto_syncs(tmp_path: Path) -> None:
+    """Per machine and never synced: writing it sets off no page refresh and no sync."""
+    vault = create_vault(tmp_path)
+    registry = tmp_path / "registry.yaml"
+    before = (gui_token(vault, registry), synced_token(vault))
+
+    record_run(vault, run_from_result(_with_work(RepoSyncReport(uncommitted=("tool",))), "auto"))
+
+    assert _last_run(vault).repos_with_work_total == 1
+    assert (gui_token(vault, registry), synced_token(vault)) == before
+    # The control: a file both tokens watch moves both.
+    taxonomy = vault / "TAXONOMY.md"
+    locking.unlock_truth_file(taxonomy)
+    with taxonomy.open("a", encoding="utf-8") as out:
+        out.write("\n")
+    after = (gui_token(vault, registry), synced_token(vault))
+    assert after[0] != before[0] and after[1] != before[1]
 
 
 # ---------------------------------------------------------------------------

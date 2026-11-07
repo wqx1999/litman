@@ -117,8 +117,14 @@ export function describeSync(
       }
     case 'ok': {
       // Code repos the last sync left behind: the log button shows which.
+      // Repos with changes only on this machine are only counted here; the
+      // log does not name them.
       const behind = notice?.reposNotRestored?.length ?? 0
-      if (behind) return { line: t.line.okRepos(when ?? t.ago.now, behind), syncNow: true, viewLog: true }
+      const work = status.reposWithWork ?? 0
+      const at = when ?? t.ago.now
+      if (behind && work) return { line: t.line.okReposWork(at, behind, work), syncNow: true, viewLog: true }
+      if (behind) return { line: t.line.okRepos(at, behind), syncNow: true, viewLog: true }
+      if (work) return { ...bare, line: t.line.okWork(at, work), syncNow: true }
       return { ...bare, line: when ? t.line.ok(when) : t.line.okUnknown, syncNow: true }
     }
     case 'conflicts': {

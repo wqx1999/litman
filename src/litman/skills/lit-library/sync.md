@@ -49,3 +49,5 @@ The same file changed on both computers: the newer copy was kept, the older one 
 ## Code repos (exit `22`)
 
 Papers sync first. Each code repo then follows by commit, fetched from its upstream; the summary names every repo that did not follow, why, and the next step, and the next `lit sync` tries again. A long first fetch can outlast your shell tool's time limit: let it finish, or ask the user to run `lit code restore-all` in a terminal of their own. A slow or blocked network (GitHub from mainland China, say): a proxy (`https_proxy`) or a GitHub mirror only on the user's yes, for that one command; fetching by commit lets git check what a mirror sends. A checkout left behind by a repo removed on another computer, or one holding changes of the user's, is theirs to move or delete, never yours.
+
+Asked whether their code synced, or the cloud button says code repos have changes only on this machine → `lit sync status` names each repo with uncommitted changes or commits no remote has: tell the user which. Commit or push only when they ask; no git write unasked.

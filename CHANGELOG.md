@@ -39,7 +39,10 @@ own entry. Read those before you upgrade, whatever the number says.
   commit from the repo's upstream and moves its own checkout there, unless it
   holds changes of yours. A repo that cannot follow (offline, or imported from a
   local folder) never stops the sync: the summary says why and what to do, and the
-  next `lit sync` tries again.
+  next `lit sync` tries again. Changes you made in a checkout never travel: a repo
+  holding uncommitted changes, or commits no remote has, is listed by
+  `lit sync status` with what to do, and the cloud button counts it as having
+  changes only on this computer.
 - **The GUI syncs by itself while it runs.** For a library that has had its first
   `lit sync` on this computer, the window syncs when it starts, about a minute
   after a change, when another computer has synced, and once more as it closes. A

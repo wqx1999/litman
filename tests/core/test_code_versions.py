@@ -85,7 +85,7 @@ def test_a_checkout_is_restored_at_the_recorded_commit_and_still_pulls(
     restore_at_commit(upstream.url, repo, c1, "main", depth=1)
 
     assert read_head(repo) == (c1, "main")
-    assert checkout_state(repo) == CheckoutState(changed=False, untracked=False, unpushed=False)
+    assert checkout_state(repo) == CheckoutState(changed=False, untracked=False, unpushed=0)
     assert git("status", "-sb", cwd=repo).splitlines()[0] == "## main...origin/main"
     assert _shallow(repo)
     with pytest.raises(subprocess.CalledProcessError):
@@ -107,7 +107,7 @@ def test_a_detached_record_is_restored_detached_and_counts_as_clean(
     restore_at_commit(upstream.url, repo, c2, None, depth=0)
 
     assert read_head(repo) == (c2, None)
-    assert checkout_state(repo) == CheckoutState(changed=False, untracked=False, unpushed=False)
+    assert checkout_state(repo) == CheckoutState(changed=False, untracked=False, unpushed=0)
     assert repo_changes(repo.parent) == ("clean", "")
 
 
@@ -150,7 +150,7 @@ def test_a_shallow_checkout_moves_back_and_forth_and_stays_shallow(
 
     assert read_head(repo) == (c2, "main")
     assert _shallow(repo)
-    assert checkout_state(repo) == CheckoutState(changed=False, untracked=False, unpushed=False)
+    assert checkout_state(repo) == CheckoutState(changed=False, untracked=False, unpushed=0)
     # c2 and origin/main's c3 are two pieces of history git cannot connect:
     # the pull follows the tip instead of fast-forwarding.
     assert git_pull(repo, depth=1)["after_sha"] == c3
@@ -203,14 +203,19 @@ def test_what_a_checkout_holds_of_the_users_own(tmp_path: Path, upstream: Upstre
     git("add", "results.csv", cwd=repo)
     git("commit", "-q", "-m", "mine", cwd=repo)
     committed = checkout_state(repo)
+    (repo / "more.csv").write_bytes(b"3,4\n")
+    git("add", "more.csv", cwd=repo)
+    git("commit", "-q", "-m", "more", cwd=repo)
+    two_commits = checkout_state(repo)
 
-    assert edited == CheckoutState(changed=True, untracked=False, unpushed=False)
+    assert edited == CheckoutState(changed=True, untracked=False, unpushed=0)
     assert edited.has_work
-    assert dropping_only == CheckoutState(changed=False, untracked=False, unpushed=False)
-    assert untracked == CheckoutState(changed=False, untracked=True, unpushed=False)
+    assert dropping_only == CheckoutState(changed=False, untracked=False, unpushed=0)
+    assert untracked == CheckoutState(changed=False, untracked=True, unpushed=0)
     assert not untracked.has_work
-    assert committed == CheckoutState(changed=False, untracked=False, unpushed=True)
+    assert committed == CheckoutState(changed=False, untracked=False, unpushed=1)
     assert committed.has_work
+    assert two_commits == CheckoutState(changed=False, untracked=False, unpushed=2)
 
 
 @needs_git
@@ -231,8 +236,8 @@ def test_a_commit_fetched_by_hand_into_a_shallow_clone_is_not_the_users(
     git("add", "mine.py", cwd=repo)
     git("commit", "-q", "-m", "mine", cwd=repo)
 
-    assert fetched == CheckoutState(changed=False, untracked=False, unpushed=False)
-    assert checkout_state(repo) == CheckoutState(changed=False, untracked=False, unpushed=True)
+    assert fetched == CheckoutState(changed=False, untracked=False, unpushed=0)
+    assert checkout_state(repo) == CheckoutState(changed=False, untracked=False, unpushed=1)
 
 
 # --- recording the commit ---------------------------------------------------------

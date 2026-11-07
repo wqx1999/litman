@@ -1054,7 +1054,8 @@ def sync_status_cmd(local_only: bool, library: Path | None, vault_name: str | No
     sync carries them, and the last two-way sync is shown instead. Below the
     table comes this machine's last two-way run (a terminal ``lit sync`` or
     the GUI's): how it ended, its conflicts with their backups, the code
-    repos it left behind, or its whole error with what to do. Then the
+    repos it left behind, or its whole error with what to do; and the code
+    repos it found with changes only on this machine. Then the
     folders of conflict backups made here in the last days, but the last
     run's. Those two parts show even when the cloud cannot be reached.
 
@@ -1190,7 +1191,9 @@ def _print_last_run(run: LastRun, target: str) -> None:
 
     One line says when, who and how it ended; then the whole error, each
     conflict with its backup, each repo left behind with its way out, and
-    what to do. Printed unwrapped, so a long path stays whole.
+    what to do; then the code repos with changes only on this machine
+    (:func:`_print_repos_with_work`). Printed unwrapped, so a long path stays
+    whole.
     """
 
     def say(text: str) -> None:
@@ -1222,6 +1225,39 @@ def _print_last_run(run: LastRun, target: str) -> None:
     way_out = _run_way_out(run, target)
     if way_out:
         say(f"[bold]What to do:[/] {escape(way_out)}")
+    _print_repos_with_work(run)
+
+
+def _print_repos_with_work(run: LastRun) -> None:
+    """The code repos ``run`` found with changes only on this machine, each with
+    its way out; nothing when there are none.
+
+    Information, not a stop: the run went through, and these change neither
+    how ``lit sync`` exits nor ``What to do:``. A repo with both kinds gets a
+    line for each.
+    """
+    if not run.repos_with_work_total:
+        return
+
+    def say(text: str) -> None:
+        console.print(text, soft_wrap=True, highlight=False)
+
+    console.print()
+    say("[bold]Code repos with changes only on this machine:[/]")
+    for work in run.repos_with_work:
+        name = escape(work.name)
+        if work.uncommitted:
+            say(f"  • {name}: uncommitted changes. Commit and push them, or undo them.")
+        if work.unpushed:
+            n = work.unpushed
+            them = "it" if n == 1 else "them"
+            say(
+                f"  • {name}: {n} commit{'' if n == 1 else 's'} no remote has. "
+                f"Push {them} so your other machines can fetch {them}."
+            )
+    left = run.repos_with_work_total - len(run.repos_with_work)
+    if left > 0:
+        say(f"  • … and {left} more repos")
 
 
 def _run_conflict_text(c: RunConflict) -> str:

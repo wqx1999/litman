@@ -18,6 +18,7 @@ import time
 from collections.abc import Iterator
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from rich.console import Console
@@ -404,6 +405,97 @@ def test_a_commit_no_remote_has_is_named_on_both_machines(
         f"Push {mine[:7]} from the machine that made it; the next `lit sync` fetches it."
     ) in on_b.output
     assert _head(b) == (c3, "main")
+
+
+def _commit(repo: Path, *names: str) -> None:
+    """One commit per name, adding that file: commits no remote has."""
+    for name in names:
+        (repo / name).write_bytes(f"print({name!r})\n".encode())
+        git("add", name, cwd=repo)
+        git("commit", "-q", "-m", name, cwd=repo)
+
+
+def test_changes_only_here_are_recorded_by_a_terminal_run_and_a_gui_run(
+    tmp_path: Path, cloud: Path, upstream: Upstream
+) -> None:
+    """An uncommitted change and two commits no remote has: named in the record
+    and in `lit sync status` (with `--local` too), counted in the GUI's status.
+    Information only: the exit code and `What to do:` do not change."""
+    from litman.server.sync_scheduler import SyncScheduler
+
+    a = _with_repo(tmp_path, cloud, upstream)
+    # The reverse first: with nothing of the user's, no such part.
+    quiet = _sync(a, "status", "--local")
+    assert quiet.exit_code == 0, quiet.output
+    assert "only on this machine" not in quiet.output
+    repo = a / "codes" / "tool" / "repo"
+    _commit(repo, "one.py", "two.py")
+    (repo / "code.py").write_bytes(b"print('edited')\n")
+    work = (core_sync.RunRepoWork("tool", uncommitted=True, unpushed=2),)
+
+    synced = _sync(a)
+
+    assert synced.exit_code == 0, synced.output
+    run = core_sync.read_sync_state(a).last_run
+    assert run is not None
+    assert (run.trigger, run.result, run.repos_with_work, run.repos_with_work_total) == (
+        "terminal", "ok", work, 1,
+    )
+    for args in (("status",), ("status", "--local")):
+        shown = _sync(a, *args)
+        assert shown.exit_code == 0, shown.output
+        assert "Code repos with changes only on this machine:" in shown.output
+        assert "• tool: uncommitted changes. Commit and push them, or undo them." in shown.output
+        assert (
+            "• tool: 2 commits no remote has. Push them so your other machines can fetch them."
+        ) in shown.output
+        assert "What to do" not in shown.output
+
+    # The GUI's auto sync: the same record, and its status counts the repo.
+    scheduler = SyncScheduler(SimpleNamespace(vault=a.resolve()))
+    scheduler.step()
+
+    status = scheduler.status()
+    assert (status["state"], status["reposWithWork"], status["notice"]) == ("ok", 1, None)
+    run = core_sync.read_sync_state(a).last_run
+    assert run is not None
+    assert (run.trigger, run.result, run.repos_with_work) == ("auto", "ok", work)
+
+
+def test_a_checkout_that_did_not_follow_is_not_counted_again_for_its_new_files(
+    tmp_path: Path, cloud: Path, upstream: Upstream
+) -> None:
+    """Untracked files alone do not keep a checkout from moving; when the move
+    fails, it is both not synced and with changes only here. The record names it
+    both ways; the GUI's line counts it once, as not synced, next to a repo with
+    a change of its own."""
+    from litman.server.sync_scheduler import SyncScheduler
+
+    a, b = _two_machines_with_a_repo(tmp_path, cloud, upstream)
+    other = make_bare_upstream(tmp_path / "other-up", n_commits=1)
+    assert _lit("code", "add", other.url, "--name", "other", vault=a).exit_code == 0
+    _commit(a / "codes" / "tool" / "repo", "mine.py")
+    assert _sync(a).exit_code == 0
+    fetched = _sync(b)
+    assert fetched.exit_code == sync_cmd.EXIT_SYNC_REPOS_DIFFER, fetched.output
+    assert _head(b, "other") == (other.commits[-1], "main")
+    (b / "codes" / "tool" / "repo" / "results.csv").write_bytes(b"1,2\n")
+    (b / "codes" / "other" / "repo" / "code.py").write_bytes(b"print('mine')\n")
+    scheduler = SyncScheduler(SimpleNamespace(vault=b.resolve()))
+
+    scheduler.step()
+
+    status = scheduler.status()
+    assert status["state"] == "ok"
+    assert [r["name"] for r in status["notice"]["reposNotRestored"]] == ["tool"]
+    assert status["reposWithWork"] == 1  # other; tool is counted as not synced
+    run = core_sync.read_sync_state(b).last_run
+    assert run is not None
+    assert [r.name for r in run.repos] == ["tool"]
+    assert run.repos_with_work == (
+        core_sync.RunRepoWork("other", uncommitted=True),
+        core_sync.RunRepoWork("tool", uncommitted=True),
+    )
 
 
 def test_a_detached_checkout_is_followed_detached(

@@ -31,7 +31,7 @@ export const errors = {
       'duplicate-author': (p: ErrorParams) => `Duplicate author: ${p.name}`,
       'authors-empty': () => 'Authors cannot be empty.',
       'project-path-missing': (p: ErrorParams) =>
-        `The folder of project “${p.project}” does not exist on this computer.`,
+        `The folder of project “${p.project}” does not exist on this machine.`,
       'project-gone': (p: ErrorParams) => `Project “${p.name}” is no longer in the list.`,
     },
     siDeleteFailed: (file: string) => `Could not delete ${file}.`,
@@ -39,7 +39,7 @@ export const errors = {
     siOpen: {
       'si-missing': (p: ErrorParams) => `${p.file} not found.`,
       'cannot-open': (p: ErrorParams) =>
-        `Could not open ${p.file} on this computer; downloading it instead.`,
+        `Could not open ${p.file} on this machine; downloading it instead.`,
     },
   },
 

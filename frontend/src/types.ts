@@ -306,6 +306,11 @@ export interface SyncStatus {
   /** While another sync holds the library's lock (`reason: 'busy'`): who
    * (`lit sync`, `lit gui`) and since when (ISO). */
   holder?: { by: string | null; since: string | null } | null
+  /** How many code repos the last sync found with changes only on this
+   * machine (uncommitted, or commits no remote has), each counted once and
+   * none that `notice` already names as not synced. Only the popover's line
+   * counts them: no toast, no log row. */
+  reposWithWork?: number
 }
 
 /** A notes / discussion file as read: its text and the version it was read at. */

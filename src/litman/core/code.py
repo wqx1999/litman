@@ -1492,8 +1492,8 @@ class CheckoutState:
     changed: bool
     #: A file git does not track (what a file manager leaves aside).
     untracked: bool
-    #: A commit on HEAD or a local branch that no remote has.
-    unpushed: bool
+    #: How many commits on HEAD or a local branch no remote has.
+    unpushed: int
 
     @property
     def has_work(self) -> bool:
@@ -1502,7 +1502,7 @@ class CheckoutState:
         Untracked files do not count: they stay, and git refuses a move that
         would overwrite one.
         """
-        return self.changed or self.unpushed
+        return self.changed or self.unpushed > 0
 
 
 def checkout_state(repo_dir: Path) -> CheckoutState | None:
@@ -1537,7 +1537,7 @@ def checkout_state(repo_dir: Path) -> CheckoutState | None:
             changed = True
         elif not is_file_manager_dropping(rel.rsplit("/", 1)[-1]):
             untracked = True
-    return CheckoutState(changed=changed, untracked=untracked, unpushed=bool(local))
+    return CheckoutState(changed=changed, untracked=untracked, unpushed=len(local))
 
 
 def _shallow_edge(repo: Path) -> set[str]:

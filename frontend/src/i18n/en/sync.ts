@@ -7,6 +7,8 @@
  * to the agent the user asks. */
 
 const reposNotSynced = (n: number) => (n === 1 ? '1 code repo not synced' : `${n} code repos not synced`)
+const reposWithWork = (n: number) =>
+  n === 1 ? '1 code repo has changes only on this machine' : `${n} code repos have changes only on this machine`
 
 export const sync = {
   button: {
@@ -23,6 +25,12 @@ export const sync = {
     okUnknown: 'Synced.',
     // The last sync left `n` code repos behind (the activity log names them).
     okRepos: (ago: string, n: number) => `Last synced ${ago}. ${reposNotSynced(n)}.`,
+    // `n` code repos hold changes no other machine gets: uncommitted, or
+    // commits no remote has.
+    okWork: (ago: string, n: number) => `Last synced ${ago}. ${reposWithWork(n)}.`,
+    // Both: `n` repos left behind, and `work` other repos with changes only here.
+    okReposWork: (ago: string, n: number, work: number) =>
+      `Last synced ${ago}. ${reposNotSynced(n)}, ${work} with changes only on this machine.`,
     running: 'Syncing…',
     // `since`: a clock time, "10:07"; null when not known.
     busy: (since: string | null) =>

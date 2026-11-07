@@ -17,6 +17,8 @@ export const sync: Messages['sync'] = {
     ok: (ago) => `上次同步：${ago}`,
     okUnknown: '已同步',
     okRepos: (ago, n) => `上次同步：${ago}，${reposNotSynced(n)}`,
+    okWork: (ago, n) => `上次同步：${ago}，${n} 个代码仓库有改动仅在本机`,
+    okReposWork: (ago, n, work) => `上次同步：${ago}，${reposNotSynced(n)}，${work} 个有改动仅在本机`,
     running: '正在同步…',
     busy: (since) => (since ? `另一个同步正在进行（${since} 开始）` : '另一个同步正在进行'),
     conflicts: (ago, n) => (n > 0 ? `上次同步：${ago}，${n} 处冲突` : `上次同步：${ago}，存在冲突`),

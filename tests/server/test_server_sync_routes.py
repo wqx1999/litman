@@ -337,8 +337,9 @@ def test_sync_now_is_queued_for_the_auto_sync(vault_with_paper: tuple[Path, str]
     assert status["remote"] == f"fake-cloud:{_TARGET_PATH}"
     assert set(status) >= {
         "state", "remote", "lastOkAt", "nextTryAt", "runningSince",
-        "reason", "message", "seq", "notice",
+        "reason", "message", "seq", "notice", "reposWithWork",
     }
+    assert status["reposWithWork"] == 0
 
 
 def test_a_test_app_never_starts_the_auto_sync(vault_with_paper: tuple[Path, str]) -> None:

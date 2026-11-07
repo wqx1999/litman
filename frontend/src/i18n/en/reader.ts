@@ -133,8 +133,8 @@ export const reader = {
     pageCount: (n: number) => (n === 1 ? '1 page' : `${n} pages`),
     loadFailed: 'Failed to load PDF.',
     // The server has no paper.pdf for this paper (e.g. not yet synced to this
-    // computer).
-    notOnThisComputer: 'No PDF for this paper on this computer.',
+    // machine).
+    notOnThisComputer: 'No PDF for this paper on this machine.',
     loading: 'Loading PDF…',
     // The note box in the popover beside a selected highlight / drawing.
     notePlaceholder: 'Add a note…',
