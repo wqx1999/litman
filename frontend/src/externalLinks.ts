@@ -102,9 +102,11 @@ export function routeExternalLinks(notify: (message: string, variant: 'error') =
     opening.add(href)
     openUrlOutside(href)
       .catch((err: unknown) => {
+        // This machine's browser did not take it (no desktop, no browser): the
+        // server says why in the GUI log. No answer at all: the page's line.
         notify(
           err instanceof ApiError
-            ? err.message
+            ? getT().errors.linkOpenedHere
             : getT().reader.externalLinks.noAnswer,
           'error',
         )

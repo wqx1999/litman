@@ -43,11 +43,13 @@ class Citation:
     entry is a human-readable note (unverified abbreviation, missing volume,
     preprint venue, ...) — the CLI prints them to stderr and the webUI shows
     them next to the copied text, but they are NEVER embedded in ``text`` so the
-    citation stays paste-clean.
+    citation stays paste-clean. ``codes`` names each, in the same order, for
+    the webUI's own short line.
     """
 
     text: str
     warnings: list[str] = field(default_factory=list)
+    codes: list[str] = field(default_factory=list)
 
 
 def _norm(name: str) -> str:
@@ -119,6 +121,11 @@ def format_acs(meta: dict[str, Any]) -> Citation:
     - nothing usable -> a placeholder string + warning.
     """
     warnings: list[str] = []
+    codes: list[str] = []
+
+    def note(code: str, warning: str) -> None:
+        codes.append(code)
+        warnings.append(warning)
 
     journal = (meta.get("journal") or "").strip()
     booktitle = (meta.get("booktitle") or "").strip()
@@ -131,30 +138,32 @@ def format_acs(meta: dict[str, Any]) -> Citation:
     if journal:
         venue, known = abbreviate_journal(journal)
         if not known:
-            warnings.append(
+            note(
+                "cite-abbrev-unknown",
                 f"journal abbreviation not in the shipped table — using "
-                f"{journal!r} verbatim; verify against ISO4/CASSI before citing"
+                f"{journal!r} verbatim; verify against ISO4/CASSI before citing",
             )
     elif booktitle:
         venue = booktitle
-        warnings.append(
+        note(
+            "cite-not-journal",
             "non-journal venue (proceedings/book chapter) — ACS journal "
-            "abbreviation style may not apply"
+            "abbreviation style may not apply",
         )
     elif arxiv_id:
         venue = f"arXiv:{arxiv_id}"
-        warnings.append("preprint — no journal; cited as an arXiv preprint")
+        note("cite-preprint", "preprint — no journal; cited as an arXiv preprint")
     else:
         venue = ""
-        warnings.append("no journal or venue in metadata — citation is incomplete")
+        note("cite-no-venue", "no journal or venue in metadata — citation is incomplete")
 
     # --- missing-field notes (only meaningful for a journal article) ---
     if not year:
-        warnings.append("no year in metadata")
+        note("cite-no-year", "no year in metadata")
     if journal and not volume:
-        warnings.append("no volume in metadata")
+        note("cite-no-volume", "no volume in metadata")
     if journal and not pages:
-        warnings.append("no pages in metadata")
+        note("cite-no-pages", "no pages in metadata")
 
     # --- assemble "<venue> <year>, <volume>, <pages>." ---
     text = venue
@@ -169,4 +178,4 @@ def format_acs(meta: dict[str, Any]) -> Citation:
     if not text:
         text = "(insufficient metadata for a citation)"
 
-    return Citation(text=text, warnings=warnings)
+    return Citation(text=text, warnings=warnings, codes=codes)

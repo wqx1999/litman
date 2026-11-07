@@ -28,8 +28,16 @@ import {
   type ViewHistory,
   type ViewPos,
 } from './view-history'
-import { fetchPdfVersion, pdfUrl, putPdfAnnotations } from '../api'
-import { useT } from '../i18n'
+import {
+  ApiError,
+  OfflineError,
+  fetchPdfVersion,
+  logPageFailure,
+  pdfUrl,
+  putPdfAnnotations,
+} from '../api'
+import { describe, errorLine } from '../apiErrors'
+import { getT, useT } from '../i18n'
 import { isEditingTarget } from '../useKeyboardShortcuts'
 
 // pdf.js needs its worker registered once, before any document is parsed. The
@@ -220,6 +228,8 @@ interface Props {
   /** A save replaced a paper.pdf that had changed since it was loaded; the
    * other copy is at `backup`. */
   onSaveReplaced?: (paperId: string, file: string, backup: string) => void
+  /** Show a toast: a save that did not land says so (the edits stay). */
+  onNotify?: (message: string) => void
 }
 
 const MIN_SCALE = 0.5
@@ -414,9 +424,12 @@ export default function PdfView({
   pdfSrc,
   reloadToken = 0,
   onSaveReplaced,
+  onNotify,
 }: Props) {
   const t = useT()
   const tx = t.reader.pdfView
+  const onNotifyRef = useRef(onNotify)
+  onNotifyRef.current = onNotify
   // paper.pdf's version (mtime:size) when each document was loaded, read
   // BEFORE its bytes: a change in between can then only read as a change at
   // save time, never be missed. Sent with every save of that document; the
@@ -494,7 +507,9 @@ export default function PdfView({
   // closure changes (same pattern as commitNoteRef above).
   const onNavigateRef = useRef<() => void>(() => {})
 
-  const [error, setError] = useState<string | null>(null)
+  // Why the document did not load: no paper.pdf on the server (a 404), or
+  // anything else. pdf.js's own message goes to the console only.
+  const [error, setError] = useState<'missing' | 'failed' | null>(null)
   const [pageCount, setPageCount] = useState(0)
   const [scale, setScale] = useState(DEFAULT_SCALE)
   const [editMode, setEditMode] = useState<EditMode>('none')
@@ -879,6 +894,26 @@ export default function PdfView({
     await runQueued(() => writeAnnotations(doc, id))
   }, [commitPending, runQueued, writeAnnotations])
 
+  // A save that did not land: one line for the person (the edits are kept,
+  // and the next save retries), the full text for the agent. A refusal from
+  // the server is in its GUI log already; a failure of pdf.js itself (it could
+  // not produce the annotated copy) never reached the server, so it is put
+  // there now.
+  const reportSaveFailure = useCallback((err: unknown) => {
+    const e = getT().errors
+    let line: string | null = e.pdfNotSaved
+    if (err instanceof ApiError || err instanceof OfflineError) {
+      line = errorLine(err, e.pdfNotSaved, {})
+    } else {
+      logPageFailure(
+        `save PDF annotations of ${paperIdRef.current}`,
+        describe(err),
+        'pdf-not-saved',
+      )
+    }
+    if (line) onNotifyRef.current?.(line)
+  }, [])
+
   // Explicit user save (Save button / ⌘-Ctrl+S): flush with visible state +
   // a brief "Saved ✓" confirmation. savingRef guards a double-fire.
   const saveNow = useCallback(async () => {
@@ -890,11 +925,12 @@ export default function PdfView({
       setSavedFlash(true)
     } catch (err) {
       console.error('Failed to save annotations:', err)
+      reportSaveFailure(err)
     } finally {
       savingRef.current = false
       setSaving(false)
     }
-  }, [flush, isDirtyDoc])
+  }, [flush, isDirtyDoc, reportSaveFailure])
 
   // Hide the read-only hover-note tooltip. Defined up here (not with the other
   // hover logic below) so the wheel-zoom effect can list it as a dep without a
@@ -1272,7 +1308,15 @@ export default function PdfView({
       })
       .catch((err: unknown) => {
         if (!cancelled) {
-          setError(err instanceof Error ? err.message : String(err))
+          console.error('Failed to load PDF:', err)
+          // An answer from the server (a 404, a 500) is in its GUI log
+          // already; pdf.js's own failure (a damaged file) is put there now.
+          if (!(err instanceof pdfjsLib.ResponseException)) {
+            logPageFailure(`open PDF of ${paperIdRef.current}`, describe(err))
+          }
+          setError(
+            err instanceof pdfjsLib.ResponseException && err.missing ? 'missing' : 'failed',
+          )
         }
       })
 
@@ -1363,6 +1407,7 @@ export default function PdfView({
         runQueued(() => writeAnnotations(doc, id))
           .catch((err: unknown) => {
             console.error('Failed to embed PDF annotations:', err)
+            reportSaveFailure(err)
           })
           .finally(teardown)
       } else if (inflightRef.current) {
@@ -1933,7 +1978,7 @@ export default function PdfView({
       >
         {error && (
           <div className="absolute inset-x-0 top-0 z-10 p-6 text-sm text-red-700">
-            {tx.loadFailed(error)}
+            {error === 'missing' ? tx.notOnThisComputer : tx.loadFailed}
           </div>
         )}
         {!error && pageCount === 0 && (

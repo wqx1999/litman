@@ -19,11 +19,13 @@ import httpx
 
 from litman import __version__
 from litman.core.textclean import clean_metadata_text
-from litman.exceptions import ImporterError
+from litman.exceptions import ImporterError, coded
 
 _CROSSREF_URL = "https://api.crossref.org/works/{doi}"
 _USER_AGENT = f"litman/{__version__} (mailto:qingxinwong2@gmail.com)"
 _TIMEOUT_SECONDS = 10.0
+# The GUI's code for every way CrossRef failed to answer (not "no such DOI").
+_UNREACHABLE = "crossref-unreachable"
 
 
 def fetch_crossref(doi: str, client: httpx.Client | None = None) -> dict[str, Any]:
@@ -46,27 +48,39 @@ def fetch_crossref(doi: str, client: httpx.Client | None = None) -> dict[str, An
                 follow_redirects=True,
             )
         except httpx.HTTPError as e:
-            raise ImporterError(
-                f"CrossRef request failed for DOI {doi!r}: {e}"
+            raise coded(
+                ImporterError(f"CrossRef request failed for DOI {doi!r}: {e}"),
+                _UNREACHABLE,
             ) from e
 
         if resp.status_code == 404:
-            raise ImporterError(f"DOI not found in CrossRef: {doi!r}")
+            raise coded(
+                ImporterError(f"DOI not found in CrossRef: {doi!r}"), "doi-not-found"
+            )
         if resp.status_code != 200:
-            raise ImporterError(
-                f"CrossRef returned HTTP {resp.status_code} for DOI {doi!r}"
+            raise coded(
+                ImporterError(
+                    f"CrossRef returned HTTP {resp.status_code} for DOI {doi!r}"
+                ),
+                _UNREACHABLE,
             )
 
         try:
             data = resp.json()
         except ValueError as e:
-            raise ImporterError(
-                f"CrossRef response was not valid JSON for DOI {doi!r}: {e}"
+            raise coded(
+                ImporterError(
+                    f"CrossRef response was not valid JSON for DOI {doi!r}: {e}"
+                ),
+                _UNREACHABLE,
             ) from e
 
         if "message" not in data:
-            raise ImporterError(
-                f"CrossRef response missing 'message' key for DOI {doi!r}"
+            raise coded(
+                ImporterError(
+                    f"CrossRef response missing 'message' key for DOI {doi!r}"
+                ),
+                _UNREACHABLE,
             )
 
         return cast(dict[str, Any], data["message"])

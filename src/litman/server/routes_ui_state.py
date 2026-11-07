@@ -41,6 +41,7 @@ from litman.core.ui_state import (
     save_ui_lang,
     save_whatsnew_seen,
 )
+from litman.server.errors import api_error
 
 router = APIRouter(prefix="/api")
 
@@ -157,5 +158,5 @@ async def put_ui_lang(request: Request) -> dict[str, str]:
     try:
         save_ui_lang(lang)
     except ValueError as exc:
-        raise HTTPException(status_code=422, detail=str(exc)) from exc
+        raise api_error(422, exc) from exc
     return {"lang": lang}

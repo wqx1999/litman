@@ -1,6 +1,6 @@
 ---
 name: lit-reading
-description: "Read side of the litman vault: grounds a discussion of a paper, or its SI, in the user's own library. NOT for adding or changing papers — that's lit-library. Use when the user talks about a paper they are reading, asks about its supplementary information ('Table S3', '补充材料'), looks for related work in the vault, connects a paper to their project, or wants the discussion logged. Triggers: '这篇文章…' / 'this paper…', '继续读' / 'continue reading', '读完了' / '这篇一般' / 'done with this paper', '跟这篇相关的还有哪些' / 'related work', '我在 notes 里写过 X 吗' / 'search my notes', '最近读了啥' / 'what did I read recently', '记下这次讨论' / 'log this discussion', '误删了那篇' / 'restore a paper I deleted', '清一下 inbox' / 'triage my inbox', '我的库还干净吗' / 'is my library clean'. Reads the vault and the PDF; writes notes.md and discussion.md only when asked."
+description: "Read side of the litman vault: grounds a discussion of a paper, or its SI, in the user's own library. NOT for adding or changing papers — that's lit-library. Use when the user talks about a paper they are reading, asks about its supplementary information ('Table S3', '补充材料'), looks for related work in the vault, connects a paper to their project, or wants the discussion logged. Triggers: '这篇文章…' / 'this paper…', '继续读' / 'continue reading', '读完了' / '这篇一般' / 'done with this paper', '跟这篇相关的还有哪些' / 'related work', '我在 notes 里写过 X 吗' / 'search my notes', '最近读了啥' / 'what did I read recently', '记下这次讨论' / 'log this discussion', '误删了那篇' / 'restore a paper I deleted', '清一下 inbox' / 'triage my inbox', '我的库还干净吗' / 'is my library clean', '界面报错' / 'the litman window shows an error'. Reads the vault and the PDF; writes notes.md and discussion.md only when asked."
 ---
 
 # lit-reading — vault-aware reading companion
@@ -156,6 +156,10 @@ At a natural moment, or when the user asks ("我的库还干净吗"), **run `lit
 ## B14 — `lit open`
 
 Suggest `lit open '<id>'` by default; run it when the user asks ("打开这篇" / "open it for me"). It changes no state. `lit open '<id>' --si si-NN` opens one SI file the same way, always with the id (Rule 13); exit 2 with an `SI path:` line (no desktop here, or no app for the type) → relay the path, or point to the file's chip in the litman page's Supplementary row.
+
+## A message from the litman window
+
+The user quotes or describes what the litman window said — a toast, a red line in a dialog, a ? or ✕ in the SI window, 「改动未保存」, "Could not delete si-01.pdf" → **run `lit gui-log` first** (a read: just do it). It lists what the window could not do, newest first: when, in which library, the request, and the full text, which says what to do. Match the entry by time and wording, tell the user in plain words what happened, and fix it the way the text says (writes through lit-library). Nothing there → the window never reached litman (its server was stopped or closed): say so and ask what they did.
 
 ## `tip:` lines
 

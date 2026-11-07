@@ -13,6 +13,12 @@ own entry. Read those before you upgrade, whatever the number says.
 
 ### Added
 
+- **The GUI in Chinese.** The interface now comes in Simplified Chinese as well as
+  English, What's New included. It follows the system language; to choose one,
+  use the switch in the **?** panel, or the language menu in the corner of the
+  welcome card before you create a library. The choice is kept for this computer,
+  so the app window and a browser tab agree. Your papers, notes and file names stay
+  as they are.
 - **One library on several computers.** `lit sync` with no subcommand now syncs
   both ways through [rclone](https://rclone.org/) 1.74.2 or newer and any cloud it
   supports: what you changed on this computer goes up, and what changed on your
@@ -42,9 +48,40 @@ own entry. Read those before you upgrade, whatever the number says.
   sync stops, and the other `lit` commands end with one line saying so until a
   sync goes through, so your agent sees it too. `lit sync status` says why and
   what to do.
+- **Read commands tell an agent what it missed.** A `lit list` filter such as
+  `--topic peptide` that no paper carries and `TAXONOMY.md` does not register now
+  gets a note naming the registered values spelled like it, each with its paper
+  count, so an agent no longer reads an empty list as "nothing on peptides".
+  `lit show --format json` adds `_paths`, the paths of the paper's folder, PDF,
+  notes, discussion, SI files and code clones. An ambiguous paper id lists at most
+  10 candidates.
+- **`lit gui-log` shows what the window could not do.** When the GUI fails at
+  something, it shows one short line, and the full text, with what to do, goes
+  to a log on this computer. `lit gui-log` prints the last 7 days of it, newest
+  first, so when you tell your agent what the window said, it can read the rest
+  and fix it. `lit uninstall` removes the log.
 
 ### Changed
 
+- **The GUI's messages are short and say what happened.** Errors, notices and
+  hover texts, in both languages, now state what happened, without commands,
+  file paths, guesses at the cause or the server's own error text. In the
+  Chinese UI, server errors used to show in English. The full text is in
+  `lit gui-log`. The health panel names its groups in words and no longer lists
+  commands; its findings stay in English.
+- **`lit link` links a project with no folder on this computer.** A project
+  added on another computer arrives through sync in `TAXONOMY.md` only, and
+  linking a paper to it was refused, in the GUI too. Now only the paper's record
+  changes, and a note says so; the computer that has the folder adds the paper's
+  link and its row in `REFERENCES.md` at its next sync. `lit unlink` works the
+  same way.
+- **`lit list`, `lit show` and the `list` subcommands print JSON off a terminal.**
+  With no `--format`, they print a table at a terminal and JSON anywhere else: in
+  an agent's shell, a pipe or a file. An agent's shell got a table squeezed into
+  80 columns, with every column but the id cut short. A script of yours that reads
+  the table needs `--format table`.
+- **`lit search` shows the first 20 hits.** A note says how many matched and the
+  `--limit` that shows them all.
 - **`lit sync push` and `pull` refuse a library that syncs two-way.** Once a
   library has synced with `lit sync`, on this computer or another, a push would
   overwrite what your other computers synced, and a pull would delete files the
@@ -54,6 +91,30 @@ own entry. Read those before you upgrade, whatever the number says.
 
 ### Fixed
 
+- **A second library no longer collides with the first.** The GUI's New library
+  dialog offered the name `literature_vault` even when a library already had it,
+  so creating one failed unless you changed the name. It now offers the first
+  free name, such as `literature_vault_2`.
+- **A write the disk refused no longer lands later.** When the disk refused a
+  change, for example a PDF another program held open on Windows or a file in a
+  read-only folder, `lit` and the GUI said it failed, yet the next command or
+  start of the GUI wrote it anyway, and the file lost its read-only protection.
+  A refused write now changes nothing and the file stays read-only. If part of a
+  change was already written when the disk refused the rest, the rest still
+  lands the next time litman opens the library, and the GUI says so.
+- **A failed PDF save says so.** When annotations could not be written to a PDF,
+  because another program had it open on Windows or it was read-only, the save
+  failed without a word. A toast now says the annotations were not saved; your
+  edits stay in the tab, so you can save again.
+- **`lit search` no longer matches the heading litman writes.** The first line of
+  `notes.md` and `discussion.md` holds the paper's title or id, so a query found in
+  an id matched that paper's files whether or not you had written about it. Search
+  now skips that line and the notes placeholder line, as it already skipped
+  litman's comments.
+- **A Chinese comma no longer gives a paper the wrong id.** In the GUI's author
+  fields, a full-width comma (`，`), as a Chinese input method types it, was not
+  read as the comma between family and given names, so `Zhang，San` made a wrong
+  id. It now turns into `, ` as you type.
 - **A save in the GUI keeps the version it replaces.** When an agent rewrote
   `notes.md` or `discussion.md` while you had it open with edits of your own,
   saving overwrote the agent's version without a word. Your save still goes

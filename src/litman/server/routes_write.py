@@ -39,6 +39,7 @@ from litman.core.id import is_valid_id
 from litman.core.notes import ensure_discussion_scaffold, ensure_wikilink_reminder
 from litman.core.sync import keep_replaced_copy
 from litman.core.vault_token import fingerprint, md_version
+from litman.server.errors import ApiError, api_error, write_refused
 
 router = APIRouter(prefix="/api")
 
@@ -73,9 +74,9 @@ def _keep_if_changed(
             return {}
         backup = keep_replaced_copy(vault, rel)
     except OSError as exc:
-        raise HTTPException(
-            status_code=500,
-            detail=(
+        raise api_error(
+            500,
+            (
                 f"{rel} changed on disk and a copy of it could not be kept "
                 f"({exc.strerror or exc}), so nothing was saved. Try again."
             ),
@@ -91,6 +92,30 @@ def _save(
     with staged_write(vault) as sw:
         sw.write_bytes(rel, data)
     return kept
+
+
+async def _saved(
+    vault: Path,
+    rel: str,
+    data: bytes,
+    base: str | None,
+    version_of: Callable[[Path], str],
+    code: str | None = None,
+) -> dict[str, Any]:
+    """:func:`_save`, with a write the disk refused answered in words.
+
+    A file held open by another program (Windows locks a PDF a viewer has
+    open), a read-only file or a full disk: the file on disk is as it was,
+    and the answer says so and what to do. ``code`` names the failure for the
+    page (the PDF tab's own line; the notes tab uses its fixed one).
+    """
+    try:
+        return await run_in_threadpool(_save, vault, rel, data, base, version_of)
+    except ApiError as exc:
+        exc.code = exc.code or code
+        raise
+    except OSError as exc:
+        raise write_refused(exc, vault, rel, code, again="save again") from exc
 
 
 @router.put("/paper/{paper_id}/pdf-annotations")
@@ -115,15 +140,17 @@ async def put_pdf_annotations(request: Request, paper_id: str) -> dict[str, obje
 
     pdf_path = vault / "papers" / paper_id / "paper.pdf"
     if not pdf_path.is_file():
-        raise HTTPException(status_code=404, detail=f"No paper.pdf for {paper_id!r}.")
+        raise api_error(
+            404, f"No paper.pdf for {paper_id!r}.", "pdf-not-saved", id=paper_id
+        )
 
     body = await request.body()
     if not body:
         raise HTTPException(status_code=400, detail="Empty request body.")
 
     rel = f"papers/{paper_id}/paper.pdf"
-    kept = await run_in_threadpool(
-        _save, vault, rel, body, request.query_params.get("base"), fingerprint
+    kept = await _saved(
+        vault, rel, body, request.query_params.get("base"), fingerprint, "pdf-not-saved"
     )
 
     return {"ok": True, "bytes": len(body), "version": fingerprint(pdf_path), **kept}
@@ -179,14 +206,14 @@ async def put_notes(request: Request, paper_id: str) -> dict[str, object]:
         raise HTTPException(status_code=404, detail=f"Invalid paper id: {paper_id!r}.")
 
     if not (vault / "papers" / paper_id).is_dir():
-        raise HTTPException(status_code=404, detail=f"No such paper: {paper_id!r}.")
+        raise api_error(404, f"No such paper: {paper_id!r}.", "paper-not-found", id=paper_id)
 
     text, base = await _md_text_body(request)
     healed = ensure_wikilink_reminder(text)
 
     rel = f"papers/{paper_id}/notes.md"
     data = healed.encode("utf-8")
-    kept = await run_in_threadpool(_save, vault, rel, data, base, _read_md_version)
+    kept = await _saved(vault, rel, data, base, _read_md_version)
 
     return {"ok": True, "bytes": len(data), "version": md_version(data), **kept}
 
@@ -209,13 +236,13 @@ async def put_discussion(request: Request, paper_id: str) -> dict[str, object]:
         raise HTTPException(status_code=404, detail=f"Invalid paper id: {paper_id!r}.")
 
     if not (vault / "papers" / paper_id).is_dir():
-        raise HTTPException(status_code=404, detail=f"No such paper: {paper_id!r}.")
+        raise api_error(404, f"No such paper: {paper_id!r}.", "paper-not-found", id=paper_id)
 
     text, base = await _md_text_body(request)
     healed = ensure_discussion_scaffold(text, paper_id)
 
     rel = f"papers/{paper_id}/discussion.md"
     data = healed.encode("utf-8")
-    kept = await run_in_threadpool(_save, vault, rel, data, base, _read_md_version)
+    kept = await _saved(vault, rel, data, base, _read_md_version)
 
     return {"ok": True, "bytes": len(data), "version": md_version(data), **kept}

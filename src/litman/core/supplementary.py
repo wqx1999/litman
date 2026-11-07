@@ -72,6 +72,7 @@ from litman.exceptions import (
     LitmanError,
     PaperNotFoundError,
     SupplementaryError,
+    coded,
 )
 
 SUPPLEMENTARY_FIELD = "supplementary"
@@ -226,6 +227,10 @@ class Verdict:
     other_id: str | None = None
     sha256: str = ""
     size: int = 0
+    # ``reason`` as a code and its params, for the GUI's SI window, which
+    # shows a short line in the person's language instead.
+    code: str = ""
+    params: tuple[tuple[str, str], ...] = ()
 
 
 @dataclass
@@ -237,6 +242,10 @@ class SiAddResult:
     # Post-commit best-effort hiccups (INDEX lag, a source that could not be
     # removed); the SI is in the library either way.
     warnings: list[str] = field(default_factory=list)
+    # ``warnings`` as codes, in the same order, for the GUI's SI window:
+    # ``index-not-updated`` (the library's index lags) or ``source-left`` (a
+    # copy stayed behind where it was dropped from; the SI itself is fine).
+    warning_codes: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -818,25 +827,29 @@ def _verdict_for(
     size = item.path.stat().st_size
     sha = _sha256_file(item.path)
 
-    def rejected(reason: str, other: str | None = None) -> Verdict:
-        return Verdict("rejected", None, reason, other, sha, size)
+    def rejected(
+        reason: str, code: str, other: str | None = None, **params: str
+    ) -> Verdict:
+        return Verdict(
+            "rejected", None, reason, other, sha, size, code, tuple(params.items())
+        )
 
     # Empty: a download that never finished. Before a, so two empty files are
     # each refused as empty, not as copies of each other.
     if size == 0:
-        return rejected("empty file")
+        return rejected("empty file", "si-empty")
 
     # a — already here (recorded, or earlier in this same batch)
     if sha in ctx.recorded_shas:
-        return rejected("already in the library")
+        return rejected("already in the library", "si-in-library")
     if sha in seen:
-        return rejected(f"same file as {seen[sha]}")
+        return rejected(f"same file as {seen[sha]}", "si-same-file", name=seen[sha])
     seen[sha] = item.original
 
     # d, byte for byte: the one way to recognise an article that has no text
     # layer (a scan), which the word comparison below has to skip.
     if size == ctx.article_size() and sha == ctx.article_sha():
-        return rejected("this is the article itself")
+        return rejected("this is the article itself", "si-is-article")
 
     pages = _pdf_text(item.path, [1, 2]) if _looks_like_pdf(item.path) else None
     page_words = _words(" ".join(pages)) if pages else set()
@@ -850,13 +863,14 @@ def _verdict_for(
         union = first_page | article_words
         jaccard = len(first_page & article_words) / len(union)
         if first_page and jaccard >= _ARTICLE_JACCARD:
-            return rejected("this is the article itself")
+            return rejected("this is the article itself", "si-is-article")
 
     # b / c — the DOI number in the file name. The two conditions exclude
     # each other (b needs this paper's number absent, c needs it present).
     if ctx.paper.key.strength(item.original):
         return Verdict(
-            "ok", "filename", "name matches the paper's DOI", None, sha, size
+            "ok", "filename", "name matches the paper's DOI", None, sha, size,
+            "si-doi-match",
         )
     named_other, best_strength = None, 0
     for other in ctx.others:
@@ -864,7 +878,10 @@ def _verdict_for(
         if strength > best_strength:
             named_other, best_strength = other.paper_id, strength
     if named_other is not None:
-        return rejected(f"looks like the SI of {named_other}", named_other)
+        return rejected(
+            f"looks like the SI of {named_other}", "si-other-paper", named_other,
+            id=named_other,
+        )
 
     # e / f — the title on the first pages. A short title is matched by any SI
     # from the same field, so it decides nothing either way.
@@ -872,7 +889,7 @@ def _verdict_for(
         if ctx.paper.title_key in page_key:
             return Verdict(
                 "ok", "title", "first pages carry the paper's title",
-                None, sha, size,
+                None, sha, size, "si-title-match",
             )
         # The longest title found: a title inside a longer one is on the page
         # whenever that one is.
@@ -883,12 +900,15 @@ def _verdict_for(
             if other.title_key in page_key and len(other.title_key) > longest:
                 titled_other, longest = other.paper_id, len(other.title_key)
         if titled_other is not None:
-            return rejected(f"looks like the SI of {titled_other}", titled_other)
+            return rejected(
+                f"looks like the SI of {titled_other}", "si-other-paper", titled_other,
+                id=titled_other,
+            )
 
     # g
     return Verdict(
         "unverified", None, "can't confirm it belongs to this paper",
-        None, sha, size,
+        None, sha, size, "si-unconfirmed",
     )
 
 
@@ -1123,9 +1143,13 @@ def recorded_si_file(
             None,
         )
     if record is None:
-        raise SupplementaryError(
-            f"{paper_id} has no SI file {name!r}. "
-            f"`lit show {shell_arg(paper_id)}` lists its SI files."
+        raise coded(
+            SupplementaryError(
+                f"{paper_id} has no SI file {name!r}. "
+                f"`lit show {shell_arg(paper_id)}` lists its SI files."
+            ),
+            "si-missing",
+            file=name,
         )
     _refuse_bad_folder(vault, paper_id)
     path = vault / "papers" / paper_id / SI_DIRNAME / name
@@ -1137,11 +1161,12 @@ def recorded_si_file(
             f"({exc.__class__.__name__}). Fix its permissions, then retry."
         ) from exc
     if kind != "file":
-        raise SupplementaryError(
+        error = SupplementaryError(
             f"papers/{paper_id}/{SI_DIRNAME}/{name} is "
             f"{'missing' if kind == 'missing' else 'not a plain file'}. "
             "`lit health-check` says how to fix it."
         )
+        raise coded(error, "si-missing", file=name) if kind == "missing" else error
     return path, record
 
 
@@ -1353,6 +1378,7 @@ def add_supplementary(
             lock_truth_file(si_dir / name)
 
     warnings: list[str] = []
+    warning_codes: list[str] = []
     try:
         _reconcile(vault, paper_id, meta, all_papers)
     except Exception as exc:
@@ -1360,6 +1386,7 @@ def add_supplementary(
             f"INDEX/views rebuild failed ({exc.__class__.__name__}); the SI "
             "was added. Run `lit refresh-views` to reconcile."
         )
+        warning_codes.append("index-not-updated")
 
     for index in moving:
         source = items[index].path
@@ -1386,11 +1413,13 @@ def add_supplementary(
                 f"({exc.__class__.__name__}); the SI was still added. "
                 "Delete it manually if no longer needed."
             )
+            warning_codes.append("source-left")
 
     return SiAddResult(
         records=new_records,
         paths=[si_dir / record["file"] for record in new_records],
         warnings=warnings,
+        warning_codes=warning_codes,
     )
 
 

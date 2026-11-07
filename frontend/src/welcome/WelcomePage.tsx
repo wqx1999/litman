@@ -8,7 +8,8 @@ import {
   unregisterVault,
 } from '../api'
 import type { FsAnchor } from '../api'
-import { useT } from '../i18n'
+import { getT, useT } from '../i18n'
+import { errorLine } from '../apiErrors'
 import type { VaultsPayload } from '../types'
 import { anchorIcon } from '../ui/icons'
 import { LangMenu } from '../ui/LangSwitch'
@@ -44,7 +45,15 @@ export default function WelcomePage({
   const T = useT()
   const t = T.browse.welcome
   const [parentDir, setParentDir] = useState('~')
-  const [name, setName] = useState('literature_vault')
+  // The server's offer for the name: the default, or the first free
+  // `<default>_<n>` when a library (a moved one, say) already holds it.
+  const offered = vaults?.suggestedName ?? 'literature_vault'
+  const [name, setName] = useState(offered)
+  // Follow the offer as it arrives, until the user types a name of their own.
+  const [nameTouched, setNameTouched] = useState(false)
+  useEffect(() => {
+    if (!nameTouched) setName(offered)
+  }, [offered, nameTouched])
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
   // The moved entry the user is locating (its new path is typed inline).
@@ -89,7 +98,7 @@ export default function WelcomePage({
       await createVault(parentDir.trim(), name.trim() || undefined)
       onEnter() // unmounts this page once `served` flips
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e))
+      setError(errorLine(e, null, getT().errors.vault))
       setBusy(false)
     }
   }
@@ -102,7 +111,7 @@ export default function WelcomePage({
       await putActiveVault(vaultName)
       onEnter()
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e))
+      setError(errorLine(e, null, getT().errors.vault))
       setBusy(false)
     }
   }
@@ -121,7 +130,7 @@ export default function WelcomePage({
       await setVaultPath(vaultName, p)
       onEnter()
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e))
+      setError(errorLine(e, null, getT().errors.vault))
       setBusy(false)
     }
   }
@@ -138,7 +147,7 @@ export default function WelcomePage({
       setForgetting(null)
       await onRefresh()
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e))
+      setError(errorLine(e, null, getT().errors.vault))
     } finally {
       setBusy(false)
     }
@@ -168,7 +177,7 @@ export default function WelcomePage({
               {anchorIcon(loc.kind, 'h-5 w-5 shrink-0 text-stone-500')}
               <span className="min-w-0 truncate">
                 {loc.label} <span className="text-stone-400">/</span>{' '}
-                {name.trim() || 'literature_vault'}
+                {name.trim() || offered}
               </span>
             </div>
           </div>
@@ -191,7 +200,10 @@ export default function WelcomePage({
               value={name}
               disabled={busy}
               spellCheck={false}
-              onChange={(e) => setName(e.target.value)}
+              onChange={(e) => {
+                setNameTouched(true)
+                setName(e.target.value)
+              }}
               onKeyDown={(e) => {
                 if (e.key === 'Enter') create()
               }}

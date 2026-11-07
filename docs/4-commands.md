@@ -27,12 +27,12 @@ same help as `lit <cmd> --help`.
 
 A few commands do **not** take `--library` / `--vault`, because they create a
 vault, target the registry, or touch no vault at all: `init`, `setup`,
-`install-completion`, `install-skill`, `uninstall`, `self-update`, `pdf-text`,
-`help`, and every `lit vault` subcommand.
+`install-completion`, `install-skill`, `uninstall`, `self-update`, `gui-log`,
+`pdf-text`, `help`, and every `lit vault` subcommand.
 
-**Output of the read commands.** `lit list`, `lit show` and every `list`
-subcommand (`vault`, `project`, `code`, `taxonomy`, `trash`) print a table when
-you type them at a terminal and JSON anywhere else — an agent's shell, a pipe,
+**Output of the read commands.** `lit list`, `lit show`, `lit gui-log` and every
+`list` subcommand (`vault`, `project`, `code`, `taxonomy`, `trash`) print a table
+when you type them at a terminal and JSON anywhere else — an agent's shell, a pipe,
 a file. `--format table` or `--format json` picks one explicitly. `lit search`
 and `lit related` print JSON unless given `--format table`.
 
@@ -194,8 +194,8 @@ Reverse of `lit setup`: remove the bundled skills (from every agent skills
 directory litman knows), the desktop shortcut, the shell-completion block, the
 vault registry (the list of vault names/paths), the machine-level agent
 preferences, the other files litman keeps beside the registry (Web UI pins, the
-update-check cache, the self-update log, and the records a stopped `lit gui`
-leaves), and the browser profile the `lit gui --window` app window runs against
+update-check cache, the self-update log, the GUI log, and the records a stopped
+`lit gui` leaves), and the browser profile the `lit gui --window` app window runs against
 (a sandboxed browser keeps that profile somewhere its sandbox allows, so both
 locations are swept). A file of your own there is left, and so is its folder.
 It does not remove the `lit` CLI
@@ -648,9 +648,12 @@ for what each field means.
 
 Link a paper to a project: add the `projects` tag, write a folder link under
 `<project>/litman_reflib/<id>/`, and regenerate
-`<project>/litman_reflib/REFERENCES.md`. The
-project must be registered in `lit-config.yaml` (via `lit project add`) and its
-directory must exist on disk **before** linking.
+`<project>/litman_reflib/REFERENCES.md`. The project must be registered
+(`lit project add`), and a folder registered for it on this machine must exist.
+A project listed in `TAXONOMY.md` with no folder on this machine, as one added
+on another computer arrives through `lit sync`, links too: only the paper's tag
+changes here, a note says so, and a computer that has the folder adds the link
+at its next `lit sync`.
 
 If a real folder already sits where a link belongs — a project directory copied
 from another machine turns every link into one — it is settled on the way: a
@@ -670,7 +673,7 @@ lit link --rebuild-all
 | Flag | What it does |
 |---|---|
 | `--paper-doi <doi>` | Look the paper up by DOI. Mutually exclusive with the positional id and `--rebuild-all`. |
-| `--project <name>` | Project name (must be registered in `lit-config.yaml`). |
+| `--project <name>` | Project name (one `lit project list` shows). |
 | `--relevance <text>` | Set the `relevance-<project>` field in one shot. Otherwise left untouched. |
 | `--priority <A\|B\|C>` | Grade the paper for this project (`priority-<project>`) in one shot. Otherwise the link is left ungraded. |
 | `--rebuild-all` | Cross-machine recovery: rebuild every project's links + `REFERENCES.md` from each paper's `projects` field. Skips `<id>` / `--project`. |
@@ -680,6 +683,7 @@ lit link --rebuild-all
 Reverse a link: drop the `projects` tag, the folder link, the `REFERENCES.md` entry,
 the `priority-<project>` grade, and (by default) the `relevance-<project>` field. Code links under the project
 are removed only if no other linked paper there still references the same repo.
+For a project with no folder on this machine only the tag and the two fields go.
 
 ```
 lit unlink <id> --project <name>
@@ -1194,6 +1198,10 @@ terminal; `lit sync status` says why and what to do. Saving a note or a PDF
 that a sync (or an agent) changed after you opened it keeps your version and
 backs up the one it replaced (see `lit sync`).
 
+**When something fails.** The window says what failed in one short line, in
+your language. The whole message, with what to do about it, goes to the GUI log:
+`lit gui-log` prints it.
+
 | Dot | The popover says, for example | Note |
 |---|---|---|
 | none | Cloud sync is not set up. | The library has no `sync:`; `lit sync setup` adds one. |
@@ -1209,6 +1217,32 @@ code paths — this page (the CLI) stays the complete surface. The web server
 (fastapi + uvicorn) ships as a core dependency; a corrupted install missing it
 prints a reinstall hint (`uv tool install --force litman` or `pipx install
 --force litman`).
+
+### `lit gui-log`
+
+Print what the litman window could not do, newest first. The window shows a
+failure as one short line; each entry here holds the rest: when, in which
+library, the request, the code behind the window's line, and the full message
+with what to do. It also holds what the window flagged without failing: an SI
+file it could not confirm or refused, project folders a delete could not clean
+up, an automatic update that failed. An unexpected server error carries its
+traceback (in `--format json`).
+
+```
+lit gui-log
+lit gui-log --days 30
+lit gui-log --format json
+```
+
+| Flag | What it does |
+|---|---|
+| `--days <n>` | How many days back to look. Default 7. When the log has entries but none that recent, it says when the newest is from. |
+| `--limit <n>` | Show at most this many entries. Default 20. |
+| `--format table\|json` | `json` prints the log's own entries. Default: `table` at a terminal, `json` anywhere else. |
+
+The log is `gui-log.jsonl` beside the registry, one per machine. Past 1 MB it
+moves to `gui-log.1.jsonl` and a new one starts, so the two hold about 2 MB at
+most. `lit uninstall` removes both.
 
 ### `lit agent`
 

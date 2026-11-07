@@ -31,6 +31,9 @@ from litman.commands.install_completion import (
 )
 from litman.core import gui_registry, update_check
 from litman.core.agent_prefs import prefs_path, remove_prefs, save_default_agent
+from litman.core.gui_log import GuiLog
+from litman.core.gui_log import log_path as gui_log_path
+from litman.core.gui_log import old_log_path as old_gui_log_path
 from litman.core.gui_registry import (
     gui_dir,
     gui_record_files,
@@ -1058,6 +1061,30 @@ def test_uninstall_removes_update_check_and_self_update_files_and_the_config_dir
     assert "update-check cache" in normalized
     assert "self-update log (self-update.log, self-update-failed)" in normalized
     assert not any(p.exists() for p in leftovers)
+    assert not reg.parent.exists()
+
+
+@pytest.mark.no_skills_isolation
+def test_uninstall_removes_the_gui_log_and_says_so(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _redirect(tmp_path, monkeypatch)
+    reg = _seed_artifacts(tmp_path)
+    log = GuiLog()
+    log.record(kind="error", text="Change not saved.", status=500)
+    old_gui_log_path().write_text("{}\n", encoding="utf-8")  # one log moved aside
+    assert gui_log_path().is_file() and old_gui_log_path().is_file()
+
+    plan = CliRunner().invoke(cli, ["uninstall", "--dry-run"])
+    assert plan.exit_code == 0, plan.output
+    assert "GUI log" in " ".join(plan.output.split())
+    assert gui_log_path().is_file()
+
+    result = CliRunner().invoke(cli, ["uninstall", "--yes"])
+
+    assert result.exit_code == 0, result.output
+    assert "GUI log (gui-log.jsonl, gui-log.1.jsonl)" in " ".join(result.output.split())
+    assert not gui_log_path().exists() and not old_gui_log_path().exists()
     assert not reg.parent.exists()
 
 

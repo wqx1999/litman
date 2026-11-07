@@ -2,7 +2,6 @@ import { useEffect, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { fetchRmPreview, type RmPreview } from '../api'
 import { useT } from '../i18n'
-import { rich } from '../i18n/rich'
 import { useEscapeLayer } from '../ui/escapeStack'
 import { modalBackdropProps } from '../ui/modalShell'
 
@@ -33,7 +32,7 @@ export default function RemovePaperConfirm({
   const t = useT()
   const tx = t.reader.removePaper
   const [preview, setPreview] = useState<RmPreview | null>(null)
-  const [error, setError] = useState<string | null>(null)
+  const [failed, setFailed] = useState(false)
 
   // Mid-delete the layer stays registered with no handler: Escape must not
   // dismiss this dialog while the write is in flight, and must not fall through
@@ -45,10 +44,10 @@ export default function RemovePaperConfirm({
   useEffect(() => {
     let alive = true
     setPreview(null)
-    setError(null)
+    setFailed(false)
     fetchRmPreview(paperId)
       .then((p) => alive && setPreview(p))
-      .catch((e) => alive && setError(e instanceof Error ? e.message : String(e)))
+      .catch(() => alive && setFailed(true))
     return () => {
       alive = false
     }
@@ -73,7 +72,8 @@ export default function RemovePaperConfirm({
     if (reposUnbound.length) lines.push(tx.reposUnbound(reposUnbound))
     if (reposKept.length) lines.push(tx.reposKept(reposKept))
     if (reposEdited.length) lines.push(tx.reposEdited(reposEdited))
-    if (reposUnchecked.length) lines.push(tx.reposUnchecked(reposUnchecked))
+    if (reposUnchecked.length)
+      lines.push(tx.reposUnchecked(reposUnchecked.map((r) => r.name)))
     if (projects.length) lines.push(tx.projects(projects))
     if (notes.length) lines.push(tx.notes(notes.length))
   }
@@ -92,17 +92,13 @@ export default function RemovePaperConfirm({
         <h2 className="text-sm font-semibold text-stone-900">
           {tx.title(paperId)}
         </h2>
-        <p className="mt-1.5 text-xs leading-relaxed text-stone-600">
-          {rich(tx.body, {
-            trash: <code className="text-stone-500">.trash/</code>,
-          })}
-        </p>
+        <p className="mt-1.5 text-xs leading-relaxed text-stone-600">{tx.body}</p>
 
         {/* Cascade preview: which external links the delete breaks. */}
         <div className="mt-3 rounded-lg border border-stone-200 bg-stone-50 px-3 py-2.5">
-          {error ? (
+          {failed ? (
             <p className="text-xs text-rose-600">
-              {tx.previewFailed(error)}
+              {tx.previewFailed}
             </p>
           ) : !preview ? (
             <p className="text-xs text-stone-400">{tx.checking}</p>

@@ -1,7 +1,8 @@
 import { useMemo, useState } from 'react'
 import type { PaperMeta } from '../types'
 import type { MetadataWrite } from '../api'
-import { useT, type Messages } from '../i18n'
+import { getT, useT, type Messages } from '../i18n'
+import { errorLine } from '../apiErrors'
 import AuthorRows from '../ui/AuthorRows'
 import { useEscapeLayer } from '../ui/escapeStack'
 import { isYearShape, yearHint } from '../ui/year'
@@ -113,9 +114,12 @@ export default function MetadataEditDialog({
       await onSave(body)
       onClose()
     } catch (err) {
-      // The backend's raw message (DOI collision, non-numeric year, emptied
-      // author list). The dialog stays open, the input stays as typed.
-      setError({ server: err instanceof Error ? err.message : String(err) })
+      // What the server refused (DOI taken, an author twice, no author left),
+      // in the dialog's words; anything else, that the change was not saved.
+      // The dialog stays open, the input stays as typed.
+      const c = getT().errors.cockpit
+      const line = errorLine(err, c.changeNotSaved, c.codes)
+      if (line) setError({ server: line })
     } finally {
       setSaving(false)
     }

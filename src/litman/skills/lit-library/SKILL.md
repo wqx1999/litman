@@ -145,7 +145,7 @@ Give a `[CLI only]` row a one-line cue from the PDF when you can — **never dro
 ## [H] Projects
 
 - **Register** — `lit project add '<name>' --path '<abs>'`, or `lit project set-path '<name>' '<abs>'` after a move. **The user gives the path — never guess it.**
-- **Link** — `lit link '<paper-id>' --project '<name>' [--relevance '...'] [--priority A|B|C]`, on the user's explicit request only (Rule 10); register an unknown project first. A relevance on an already-linked paper: `lit modify '<paper-id>' --set 'relevance-<project>=…'`. A `kept N folder(s) that do not match the vault: <path>` line, from any command → relay the paths verbatim: those folders went to `<vault>/.trash/replaced-folders/` and come back only by hand.
+- **Link** — `lit link '<paper-id>' --project '<name>' [--relevance '...'] [--priority A|B|C]`, on the user's explicit request only (Rule 10); register an unknown project first. One with no folder on this computer links too: only the paper's record changes. A relevance on an already-linked paper: `lit modify '<paper-id>' --set 'relevance-<project>=…'`. A `kept N folder(s) that do not match the vault: <path>` line, from any command → relay the paths verbatim: those folders went to `<vault>/.trash/replaced-folders/` and come back only by hand.
 - **Unlink** — `lit unlink '<paper-id>' --project '<name>'` drops `relevance-<project>` (unless `--keep-relevance`) and the grade; re-linking does not bring the grade back — say so.
 - **List** — `lit project list --format json` is the source for which projects exist and where — not `lit-config.yaml`, not `lit config show`.
 - **Rename** — `lit project rename '<old>' '<new>'`: say what it changes ("across the N papers using it"), then run it.
@@ -171,6 +171,10 @@ Only the paper lit-reading B13 confirmed with the user — never on your own, ne
 ## [S] Cloud sync across computers
 
 One library on several computers through the user's cloud drive (`lit sync`): setting it up, a new computer, syncing day to day, conflicts, a code repo that did not follow, a stopped sync → **read `sync.md` (next to this SKILL.md) first.**
+
+## A message from the litman window
+
+The user quotes what the litman window said (「改动未保存」, "Could not delete si-01.pdf") → run `lit gui-log` first, as in lit-reading's section of that name.
 
 ## `tip:` lines
 

@@ -33,17 +33,14 @@ export const browse = {
 
   /** App.tsx: toasts, the three top banners, the md-tab save prompt. */
   app: {
-    // Sticky toast after a failed one-click update. `reason` is the server's.
-    selfUpdateFailed: (reason: string) =>
-      `Automatic update failed (${reason}). You are still on the previous version — run \`lit self-update\` in a terminal.`,
+    // Sticky toast after a failed one-click update.
+    selfUpdateFailed: 'Automatic update failed. You are still on the previous version.',
     // Toast after the SI window's Done.
     siAdded: (n: number) => (n === 1 ? 'Added 1 SI file' : `Added ${n} SI files`),
-    // The same, when some files came with warnings (the warnings themselves go
-    // to the activity log).
-    siAddedWithWarnings: (n: number, warnings: number) =>
-      `${n === 1 ? 'Added 1 SI file' : `Added ${n} SI files`} · ${
-        warnings === 1 ? '1 warning' : `${warnings} warnings`
-      } in the activity log`,
+    // The same, when the library's index could not be rebuilt afterwards
+    // (the full warning is in the GUI log).
+    siAddedWithWarnings: (n: number) =>
+      `${n === 1 ? 'Added 1 SI file' : `Added ${n} SI files`} · library index not updated`,
     refreshed: 'Refreshed from disk.',
     // A [[vault:id]] wikilink was clicked; the GUI shows one vault at a time.
     crossVaultLink: 'Cross-vault link — open that vault to follow it.',
@@ -59,7 +56,8 @@ export const browse = {
       `Re-pointed vault “${name}” to ${path}.`,
     // Toast after restoring a paper from the trash. Counts are the links the
     // restore rebuilt (any may be 0 and is then left out); `missingRepos` are
-    // code repos that need `lit code restore-all` (the toast then stays up).
+    // code repos deleted from disk and not cloned again (the toast then stays
+    // up).
     restored: (r: {
       id: string
       reverseEdges: number
@@ -68,13 +66,15 @@ export const browse = {
       missingRepos: string[]
     }) => {
       const parts: string[] = []
-      if (r.reverseEdges) parts.push(`${r.reverseEdges} reverse edge(s)`)
-      if (r.repos) parts.push(`${r.repos} repo(s)`)
-      if (r.projects) parts.push(`${r.projects} project(s)`)
+      if (r.reverseEdges)
+        parts.push(r.reverseEdges === 1 ? '1 relation' : `${r.reverseEdges} relations`)
+      if (r.repos) parts.push(r.repos === 1 ? '1 repo link' : `${r.repos} repo links`)
+      if (r.projects)
+        parts.push(r.projects === 1 ? '1 project link' : `${r.projects} project links`)
       let msg = `Restored “${r.id}”`
       if (parts.length) msg += ` · rebuilt ${parts.join(', ')}`
       if (r.missingRepos.length)
-        msg += ` · ⚠ code not cloned again: ${r.missingRepos.join(', ')} — run lit code restore-all`
+        msg += ` · ⚠ code repos not re-cloned: ${r.missingRepos.join(', ')}`
       return msg
     },
     // Toast after the drag-in add dialog added a paper.
@@ -83,20 +83,17 @@ export const browse = {
     markedRead: 'Marked read · Alt+Shift+R to undo',
     // Red banner: the vault folder vanished while the app was open. {path} is
     // the old folder path (monospace).
-    vaultGone: 'This library is no longer at {path} — it was moved, renamed or deleted.',
+    vaultGone: 'This library is no longer at {path}.',
     // Button on that banner; opens the vault manager to re-point the library.
-    findIt: 'Find it',
+    findIt: 'Locate',
     // Amber banner while the server is unreachable.
     disconnected: "Can't reach the litman server — retrying…",
     // Advisory on a drive that cannot store folder links (FAT32 / exFAT /
     // network share). {views} is the folder name `views/` (monospace);
     // {reassurance} is `linkNoticeFine`, set in a softer grey.
     linkNotice:
-      "This drive can't hold folder links, so {views} and the project shortcuts aren't being made. {reassurance}",
-    linkNoticeFine:
-      'Your library is fine — every command, this app and the agent workflow all work normally.',
-    linkNoticeDetail:
-      'Usual on USB sticks (FAT32 / exFAT) and network drives; a library on an internal drive gets the shortcuts automatically.',
+      'This drive cannot store folder links; {views} and project shortcuts are not created. {reassurance}',
+    linkNoticeFine: 'The library works as usual.',
     // The advisory's ✕ button.
     dismiss: 'Dismiss',
   },
@@ -185,13 +182,10 @@ export const browse = {
     pinsHidden: (n: number) =>
       `${n === 1 ? '1 pin is' : `${n} pins are`} hidden by the current view`,
     noMatch: 'No papers match.',
-    // The getting-started card of an empty vault. The command between
-    // `emptyFromTerminal` and `emptyOrAgent` is shown as is.
+    // The getting-started card of an empty vault: its heading, then how to add
+    // a paper from the app (drop a PDF on the window).
     emptyTitle: 'No papers in your vault yet.',
-    emptyFromTerminal: 'Add your first paper from the terminal:',
-    emptyOrAgent: '…or ask your coding agent to add it for you.',
-    // "add" is the `lit add` command.
-    emptyMovesSource: 'add moves the source PDF into the vault.',
+    emptyDrop: 'Drop a PDF on the window, or ask your agent to add it.',
     trashTitle: 'Open the trash (recover deleted papers) · capped at 100',
     trash: 'Trash',
   },
@@ -222,18 +216,15 @@ export const browse = {
   projectHealth: {
     missing: {
       badge: 'missing',
-      title:
-        'No folder at this path — it was moved, renamed or deleted. Re-point the project at its new location.',
+      title: 'No folder found at this path. Re-point the project.',
     },
     configOnly: {
       badge: 'incomplete',
-      title:
-        'Has a folder in lit-config.yaml but is not listed in TAXONOMY.md. Tagging still works, but the tag lands outside the taxonomy — list it in TAXONOMY.md to repair.',
+      title: 'Not listed in TAXONOMY.md.',
     },
     taxonomyOnly: {
       badge: 'incomplete',
-      title:
-        'Listed in TAXONOMY.md but has no folder in lit-config.yaml. It points nowhere until one is set.',
+      title: 'No folder set for this project.',
     },
   },
 
@@ -254,18 +245,14 @@ export const browse = {
     deleteTitle: (name: string) => `Delete project “${name}”`,
     newProject: '+ New project',
     removed: (name: string) => `Removed project “${name}”.`,
-    // Sticky toast: the project is gone, but some of its link folders could
-    // not be removed. `reason` is the server's.
-    removedWithLeftovers: (
-      name: string,
-      folders: ReadonlyArray<{ path: string; reason: string }>,
-    ) =>
-      `Removed project “${name}” · could not clean up ${folders
-        .map((f) => `${f.path} (${f.reason})`)
-        .join(' · ')} — delete ${folders.length === 1 ? 'its' : 'their'} links by hand`,
+    // Sticky toast: the project is gone, but `n` of its link folders could
+    // not be removed.
+    removedWithLeftovers: (name: string, n: number) =>
+      n === 1
+        ? `Removed project “${name}”. 1 link folder could not be cleaned up.`
+        : `Removed project “${name}”. ${n} link folders could not be cleaned up.`,
     renamed: (name: string) => `Renamed project to “${name}”.`,
-    repointed: (name: string, path: string) =>
-      `“${name}” now points at ${path}. If the folder wasn't moved with its links, run lit refresh-views.`,
+    repointed: (name: string, path: string) => `“${name}” now points at ${path}.`,
     alreadyPointed: (name: string) => `“${name}” already points there.`,
     linked: (name: string) => `Linked project “${name}”.`,
     deleteConfirmTitle: (name: string) => `Delete project “${name}”?`,
@@ -275,7 +262,7 @@ export const browse = {
         count > 0
           ? ` and unlinks it from ${count} paper${count === 1 ? '' : 's'}`
           : ''
-      } and removes its reflib links + REFERENCES.md. The project folder on disk is kept. This cannot be undone.`,
+      } and removes its reflib links and REFERENCES.md. The project folder on disk is kept. This cannot be undone.`,
     renameDialogTitle: (name: string) => `Rename “${name}”?`,
     // `count` = papers re-tagged (0 leaves that clause out).
     renameBody: (count: number) =>
@@ -287,7 +274,7 @@ export const browse = {
     rename: 'Rename',
     setPathDialogTitle: (name: string) => `Path for “${name}”`,
     setPathBody:
-      'Points the registry at where the folder lives now. This does NOT move the folder — move it yourself first, then paste the new location here.',
+      'Updates the recorded path only; the folder is not moved. Move the folder first, then enter its new location.',
     // Field label (shown uppercase), in both the path and the new-project dialog.
     absolutePath: 'Absolute path',
     setPathHint: 'the folder itself, must already exist',
@@ -313,7 +300,7 @@ export const browse = {
     openExisting: 'Or open an existing library',
     open: 'Open',
     // Badge (shown uppercase) on a registered library whose folder is gone.
-    moved: 'moved',
+    moved: 'missing',
     locate: 'Locate',
     forget: 'Forget',
     forgetConfirm: 'Remove from the list? Nothing on disk is deleted.',
@@ -327,7 +314,7 @@ export const browse = {
     doiPlaceholder: 'DOI (e.g. 10.1093/nar/gkab813)',
     lookUp: 'Look up',
     lookingUp: 'Looking up…',
-    enterManually: "No DOI, or CrossRef doesn't have it? Enter the details yourself →",
+    enterManually: 'No DOI, or not found? Enter details manually →',
     backToDoi: '← Look up a DOI instead',
     // Field labels of the hand-entry form (shown uppercase).
     titleLabel: 'Title',

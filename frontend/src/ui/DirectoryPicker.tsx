@@ -3,7 +3,8 @@ import { createPortal } from 'react-dom'
 
 import { listDir, mkdir } from '../api'
 import type { FsListing } from '../api'
-import { enumLabel, useT } from '../i18n'
+import { enumLabel, getT, useT } from '../i18n'
+import { errorLine } from '../apiErrors'
 import {
   anchorIcon,
   ArrowUpIcon,
@@ -140,7 +141,7 @@ export default function DirectoryPicker({
       setError(null)
     } catch (e) {
       if (req !== reqRef.current) return
-      setError(e instanceof Error ? e.message : String(e))
+      setError(errorLine(e, null, getT().errors.picker))
     } finally {
       if (req === reqRef.current) setLoading(false)
     }
@@ -170,7 +171,7 @@ export default function DirectoryPicker({
             setError(null)
           }
         } catch (e) {
-          if (fresh()) setError(e instanceof Error ? e.message : String(e))
+          if (fresh()) setError(errorLine(e, null, getT().errors.picker))
         }
       } finally {
         if (fresh()) setLoading(false)
@@ -219,7 +220,7 @@ export default function DirectoryPicker({
       setError(null)
     } catch (e) {
       if (req !== reqRef.current) return
-      setError(e instanceof Error ? e.message : String(e)) // picker stays open
+      setError(errorLine(e, null, getT().errors.picker)) // picker stays open
     } finally {
       if (req === reqRef.current) setLoading(false)
     }

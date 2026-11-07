@@ -38,17 +38,19 @@ export const cockpit = {
     restore: '↩ Restore to library',
     // Under Restore: code clones of this paper that were deleted from disk.
     orphanRepos: (n: number) =>
-      `${n} hard-deleted ${n === 1 ? 'repo needs' : 'repos need'} re-clone in the CLI after restore (lit trash restore / lit health-check).`,
+      n === 1
+        ? '1 code repo was deleted from disk and must be re-cloned after restore.'
+        : `${n} code repos were deleted from disk and must be re-cloned after restore.`,
     // Toast: the ⌥⇧R (unread) shortcut on a paper that was never marked read.
     notReadYet: 'Not marked read yet',
-    // Toasts after an SI file was deleted. `warnings` is the server's own
-    // text, already joined with " · ".
+    // Toasts after an SI file was deleted. The second: the file is gone, but
+    // the library index could not be rebuilt.
     siDeleted: (file: string) => `Deleted ${file}`,
-    siDeletedWithWarnings: (file: string, warnings: string) => `Deleted ${file} · ${warnings}`,
+    siDeletedWithWarnings: (file: string) => `Deleted ${file} · library index not updated`,
     // Toast: the server refused a new tag as too close to an existing one but
     // sent no list of matches to show.
     looksLikeExisting: (value: string) =>
-      `“${value}” looks like an existing value. Look for it in the list.`,
+      `“${value}” is close to an existing value. Choose it from the list.`,
   },
 
   /** Row labels of the inspector (shown in small caps). DOI stays a literal. */
@@ -95,7 +97,7 @@ export const cockpit = {
         ? `This clears the first-read date (${readDate}), returning this paper to unread.`
         : 'This clears the first-read date, returning this paper to unread.',
     revisitCleared: (date: string) =>
-      `The last revisit (${date}) will also be cleared — a revisit cannot exist without a first read. This cannot be undone.`,
+      `The last revisit (${date}) will also be cleared. This cannot be undone.`,
     confirm: 'Mark unread',
   },
 
@@ -122,8 +124,7 @@ export const cockpit = {
 
   /** The Code-clones row: one chip per cloned repo under codes/<name>/. */
   codeClones: {
-    missingTitle: (name: string) =>
-      `codes/${name}/ is missing — the clone was deleted. Re-clone it (lit code add) or drop the link (lit code unlink); lit health-check reports it.`,
+    missingTitle: (name: string) => `codes/${name}/ does not exist.`,
     // Badge on a chip whose folder is gone (shown in small caps).
     missing: 'missing',
     copyTitle: (name: string) => `Copy the clone's folder path (codes/${name})`,
@@ -255,9 +256,9 @@ export const cockpit = {
     title: 'Edit metadata',
     // Hover title of the id line under the heading.
     idTitle:
-      'The id is derived from year + first author + title keyword and is referenced by wikilinks. Changing it is `lit rename`, which updates every reference — not a field edit.',
+      'The id is built from year, first author and a title keyword; wikilinks point to it. It cannot be edited here.',
     // After the paper id on that line; the · separates the two.
-    idFixed: '· id is fixed — rename via CLI',
+    idFixed: '· id cannot be edited here',
     // Field labels (shown in small caps). DOI stays a literal.
     labels: {
       title: 'Title',
@@ -313,7 +314,7 @@ export const cockpit = {
     },
     // Placeholder of the whole-id input: an example id (ASCII only).
     example: '2018_Zhang_Keyword',
-    permanent: 'Permanent — `lit rename` changes it later.',
+    permanent: 'Fixed once saved.',
   },
 
   /** The SI window (ui/AddSi.tsx). */

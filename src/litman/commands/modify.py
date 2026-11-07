@@ -87,7 +87,7 @@ from litman.core.views import (
     view_fields_snapshot,
 )
 from litman.core.yaml_pool import ThreadLocalYAML
-from litman.exceptions import ConfigError, ModifyError, PaperNotFoundError
+from litman.exceptions import ConfigError, ModifyError, PaperNotFoundError, coded
 
 console = Console()
 
@@ -303,13 +303,17 @@ def _apply_set(
         dup = find_paper_by_doi(vault, str(after))
         if dup is not None and dup[0] != paper_id:
             dup_id, dup_meta = dup
-            raise ModifyError(
-                f"DOI {after!r} already belongs to another paper:\n"
-                f"  id:    {dup_id}\n"
-                f"  title: {dup_meta.get('title') or '(no title)'}\n"
-                "Two papers must never share a DOI — --paper-doi lookups "
-                "(show / cite / rm) would pick one arbitrarily. If the other "
-                "paper's DOI is the wrong one, fix it there first."
+            raise coded(
+                ModifyError(
+                    f"DOI {after!r} already belongs to another paper:\n"
+                    f"  id:    {dup_id}\n"
+                    f"  title: {dup_meta.get('title') or '(no title)'}\n"
+                    "Two papers must never share a DOI — --paper-doi lookups "
+                    "(show / cite / rm) would pick one arbitrarily. If the other "
+                    "paper's DOI is the wrong one, fix it there first."
+                ),
+                "doi-taken",
+                id=dup_id,
             )
     # year feeds straight into exported BibTeX (`year = {...}`); a
     # non-numeric value passes every downstream check and only surfaces as an
@@ -471,21 +475,31 @@ def _apply_set_list(
         # as a duplicate.
         entry = clean_metadata_text(value) if isinstance(value, str) else ""
         if not entry:
-            raise ModifyError(
-                f"{key}[{position}] is empty. Every entry must carry a value; "
-                "drop the entry instead of blanking it."
+            raise coded(
+                ModifyError(
+                    f"{key}[{position}] is empty. Every entry must carry a value; "
+                    "drop the entry instead of blanking it."
+                ),
+                f"{key}-empty",
             )
         if entry in cleaned:
-            raise ModifyError(
-                f"{key} lists {entry!r} twice (positions "
-                f"{cleaned.index(entry)} and {position}). "
-                "A list field holds each value once."
+            raise coded(
+                ModifyError(
+                    f"{key} lists {entry!r} twice (positions "
+                    f"{cleaned.index(entry)} and {position}). "
+                    "A list field holds each value once."
+                ),
+                "duplicate-author" if key == "authors" else f"duplicate-{key}",
+                name=entry,
             )
         cleaned.append(entry)
     if not cleaned:
-        raise ModifyError(
-            f"{key} cannot be emptied — a paper with no {key} fails its "
-            "schema check. Pass the full list you want it to end up with."
+        raise coded(
+            ModifyError(
+                f"{key} cannot be emptied — a paper with no {key} fails its "
+                "schema check. Pass the full list you want it to end up with."
+            ),
+            f"{key}-empty",
         )
     current = metadata.get(key)
     before = list(current) if current else []

@@ -72,7 +72,13 @@ from litman.core.views import (
     view_fields_snapshot,
 )
 from litman.core.yaml_pool import ThreadLocalYAML
-from litman.exceptions import ConfigError, LitmanError, PaperNotFoundError, TaxonomyError
+from litman.exceptions import (
+    ConfigError,
+    LitmanError,
+    PaperNotFoundError,
+    TaxonomyError,
+    coded,
+)
 
 _PROJECTS_DICT = "projects"
 
@@ -117,21 +123,53 @@ def _resolve_project_dir(
 ) -> Path:
     """Look up the project's on-disk path; refuse cleanly on miss."""
     if project not in registry:
-        raise LinkError(
-            f"Project {project!r} is not registered in lit-config.yaml's "
-            f"`projects:` map. Add it first, e.g.:\n"
-            f"  projects:\n    {project}: /path/to/{project}\n"
-            f"Registered: {sorted(registry) or '(none)'}"
+        raise coded(
+            LinkError(
+                f"Project {project!r} is not registered. Run `lit project list` "
+                "to see the projects, or "
+                f'`lit project add {shell_arg(project)} --path "<abs-path>"` '
+                "to register it."
+            ),
+            "project-gone",
+            name=project,
         )
     project_dir = stored_project_dir(registry[project])
     if project_dir is None or not project_dir.is_dir():
-        raise LinkError(
-            f"Project {project!r} resolves to {project_dir or registry[project]}, "
-            "but that directory does not exist on this machine. "
-            "Either create / sync the project, or fix the path in "
-            "lit-config.yaml's `projects:` map."
+        raise coded(
+            LinkError(
+                f"Project {project!r} resolves to {project_dir or registry[project]}, "
+                "but that folder does not exist on this machine. Run "
+                f'`lit project set-path {shell_arg(project)} "<new-path>"` '
+                "to point it at where the folder is now."
+            ),
+            "project-path-missing",
+            project=project,
         )
     return project_dir
+
+
+def _project_dir_here(
+    vault: Path, project: str, registry: dict[str, str]
+) -> Path | None:
+    """The project's folder on this machine; None when it has none here.
+
+    A project listed in TAXONOMY.md with no folder in this machine's
+    lit-config.yaml is how one added on another machine arrives through
+    two-way sync, which carries TAXONOMY.md but never lit-config.yaml. A
+    paper still links to it: the link is the paper's metadata, which syncs,
+    while the folder is per machine, and the machine that has it rebuilds its
+    links after its next sync (``reconcile_derived``). A registered folder
+    that is gone is refused (this machine's own record is wrong), and so is a
+    project in neither file.
+
+    Raises:
+        LinkError: the project is in neither file, or its folder is missing.
+    """
+    if project not in registry and project in parse_taxonomy(
+        read_taxonomy_text(vault)
+    )[_PROJECTS_DICT]:
+        return None
+    return _resolve_project_dir(project, registry)
 
 
 def _project_link_paths(
@@ -686,7 +724,10 @@ def link_paper_to_project(
     """Link a paper to a project (atomic metadata + symlinks + REFERENCES.md).
 
     Steps:
-        1. Resolve project_dir from the registry; refuse on missing.
+        1. Resolve project_dir from the registry; refuse on missing. A
+           project listed in TAXONOMY.md with no folder on this machine has
+           none: steps 6-7 are skipped, and ``no_folder`` says so
+           (:func:`_project_dir_here`).
         2. Load paper's metadata; refuse if paper missing.
         3. Update metadata:
            - Append project to ``projects`` if absent (deduped).
@@ -716,7 +757,8 @@ def link_paper_to_project(
         A summary dict for the CLI to render.
 
     Raises:
-        LinkError: project unregistered, project_dir missing, or ``priority``
+        LinkError: project in neither TAXONOMY.md nor the registry, its
+            registered project_dir missing, or ``priority``
             outside A/B/C.
         PaperNotFoundError: paper id has no folder in the vault.
     """
@@ -729,7 +771,7 @@ def link_paper_to_project(
             f"Invalid priority {priority!r}. Allowed values: "
             f"{', '.join(sorted(PROJECT_PRIORITY_VALUES))}."
         )
-    project_dir = _resolve_project_dir(project, registry)
+    project_dir = _project_dir_here(vault, project, registry)
     paper_meta_path = vault / "papers" / paper_id / "metadata.yaml"
     if not paper_meta_path.is_file():
         raise PaperNotFoundError(
@@ -799,6 +841,27 @@ def link_paper_to_project(
                 (paper_id, old_view_fields, view_fields_snapshot(metadata))
             ],
         )
+
+    if project_dir is None:
+        # No folder on this machine: the metadata is the whole link here.
+        return {
+            "paper_id": paper_id,
+            "project": project,
+            "project_dir": None,
+            "added_to_projects": added_to_projects,
+            "set_relevance": set_relevance,
+            "set_priority": set_priority,
+            "metadata_changed": metadata_changed,
+            "paper_link": None,
+            "code_links": [],
+            "code_links_skipped_missing_repo": [],
+            "code_links_skipped_links_unsupported": [],
+            "code_links_skipped_denied": [],
+            "hub_moved_aside": [],
+            "references_md": None,
+            "link_errors": [],
+            "no_folder": True,
+        }
 
     # 6) Symlinks. Created (or refreshed) regardless of metadata change so
     #    that a partial earlier state (e.g. yaml updated by hand without
@@ -899,6 +962,7 @@ def link_paper_to_project(
         "hub_moved_aside": hub_moved_aside,
         "references_md": refs_path,
         "link_errors": link_errors,
+        "no_folder": False,
     }
 
 
@@ -913,7 +977,9 @@ def unlink_paper_from_project(
     """Reverse ``link_paper_to_project``.
 
     Steps:
-        1. Resolve project_dir; refuse on missing.
+        1. Resolve project_dir; refuse on missing. With no folder on this
+           machine (listed in TAXONOMY.md only), steps 6-8 are skipped and
+           ``no_folder`` says so.
         2. Load metadata; refuse if paper missing.
         3. Remove project from ``projects`` (no-op if absent).
         4. If ``purge_relevance`` (default), also drop the
@@ -934,7 +1000,7 @@ def unlink_paper_from_project(
     folder does not undo the unlink, lands in the summary's ``link_errors``,
     and leaves ``paper_link_removed`` ``None`` when it was that link's.
     """
-    project_dir = _resolve_project_dir(project, registry)
+    project_dir = _project_dir_here(vault, project, registry)
     paper_meta_path = vault / "papers" / paper_id / "metadata.yaml"
     if not paper_meta_path.is_file():
         raise PaperNotFoundError(
@@ -1000,6 +1066,26 @@ def unlink_paper_from_project(
                 (paper_id, old_view_fields, view_fields_snapshot(metadata))
             ],
         )
+
+    if project_dir is None:
+        # No folder on this machine: nothing here to take the link out of.
+        return {
+            "paper_id": paper_id,
+            "project": project,
+            "project_dir": None,
+            "was_in_projects": was_in_projects,
+            "removed_relevance": removed_relevance,
+            "removed_relevance_value": removed_relevance_value,
+            "removed_priority": removed_priority,
+            "removed_priority_value": removed_priority_value,
+            "metadata_changed": metadata_changed,
+            "paper_link_removed": None,
+            "code_links_removed": [],
+            "code_links_kept": [],
+            "references_md": None,
+            "link_errors": [],
+            "no_folder": True,
+        }
 
     # 6) Paper symlink
     paper_link_path = project_dir / LITERATURE_SUBDIR / paper_id
@@ -1068,6 +1154,7 @@ def unlink_paper_from_project(
         "code_links_kept": code_links_kept,
         "references_md": refs_path,
         "link_errors": link_errors,
+        "no_folder": False,
     }
 
 
@@ -1098,21 +1185,27 @@ def add_project(vault: Path, name: str, path: Path) -> dict[str, Any]:
     if not name:
         raise TaxonomyError("Project name cannot be empty.")
     if not path.is_absolute():
-        raise TaxonomyError(
-            f"Path {str(path)!r} is not absolute. "
-            "Give the full path to the folder."
+        raise coded(
+            TaxonomyError(
+                f"Path {str(path)!r} is not absolute. "
+                "Give the full path to the folder."
+            ),
+            "path-not-absolute",
         )
     path = path.resolve()
     message = refusal(path)
     if message is not None:
         raise TaxonomyError(message)
     if not path.exists():
-        raise TaxonomyError(
-            f"Path {str(path)!r} does not exist. "
-            "Point at an existing folder — litman does not create it."
+        raise coded(
+            TaxonomyError(
+                f"Path {str(path)!r} does not exist. "
+                "Point at an existing folder — litman does not create it."
+            ),
+            "path-missing",
         )
     if not path.is_dir():
-        raise TaxonomyError(f"Path {str(path)!r} is not a directory.")
+        raise coded(TaxonomyError(f"Path {str(path)!r} is not a directory."), "not-a-folder")
 
     text = read_taxonomy_text(vault)
     parsed = parse_taxonomy(text)
@@ -1121,12 +1214,16 @@ def add_project(vault: Path, name: str, path: Path) -> dict[str, Any]:
     registered_names = set(parsed[_PROJECTS_DICT]) | set(config.projects)
     if name in registered_names:
         existing_path = config.projects.get(name)
-        raise TaxonomyError(
-            f"Project {name!r} is already registered"
-            + (f" → {existing_path}" if existing_path else "")
-            + ". Use `lit project set-path "
-            f'{shell_arg(name)} "<new-path>"` to change its path, or '
-            f'`lit project rename {shell_arg(name)} "<new-name>"` to rename it.'
+        raise coded(
+            TaxonomyError(
+                f"Project {name!r} is already registered"
+                + (f" → {existing_path}" if existing_path else "")
+                + ". Use `lit project set-path "
+                f'{shell_arg(name)} "<new-path>"` to change its path, or '
+                f'`lit project rename {shell_arg(name)} "<new-name>"` to rename it.'
+            ),
+            "project-exists",
+            name=name,
         )
 
     new_taxonomy_text = update_user_dict_section(
@@ -1197,9 +1294,13 @@ def remove_project(
 
     known = set(parsed[_PROJECTS_DICT]) | set(config.projects)
     if name not in known:
-        raise TaxonomyError(
-            f"Project {name!r} is not registered. "
-            "Run `lit project list` to inspect."
+        raise coded(
+            TaxonomyError(
+                f"Project {name!r} is not registered. "
+                "Run `lit project list` to inspect."
+            ),
+            "project-gone",
+            name=name,
         )
 
     papers = list_papers(vault)
@@ -1338,14 +1439,22 @@ def rename_project(
 
     known = set(parsed[_PROJECTS_DICT]) | set(config.projects)
     if old not in known:
-        raise TaxonomyError(
-            f"Project {old!r} is not registered. "
-            "Run `lit project list` to inspect."
+        raise coded(
+            TaxonomyError(
+                f"Project {old!r} is not registered. "
+                "Run `lit project list` to inspect."
+            ),
+            "project-gone",
+            name=old,
         )
     if new in known:
-        raise TaxonomyError(
-            f"Project {new!r} is already registered. "
-            "Pick a different name or `lit project rm` the conflicting one."
+        raise coded(
+            TaxonomyError(
+                f"Project {new!r} is already registered. "
+                "Pick a different name or `lit project rm` the conflicting one."
+            ),
+            "project-exists",
+            name=new,
         )
 
     papers = list_papers(vault)
@@ -1399,9 +1508,12 @@ def checked_project_path(new_path: Path) -> Path:
         TaxonomyError: ``new_path`` is not absolute / missing / not a directory.
     """
     if not new_path.is_absolute():
-        raise TaxonomyError(
-            f"Path {str(new_path)!r} is not absolute. "
-            "Give the full path to the folder."
+        raise coded(
+            TaxonomyError(
+                f"Path {str(new_path)!r} is not absolute. "
+                "Give the full path to the folder."
+            ),
+            "path-not-absolute",
         )
     new_path = new_path.resolve()
     # First: the messages below show the path, and the config cannot hold it.
@@ -1409,11 +1521,14 @@ def checked_project_path(new_path: Path) -> Path:
     if message is not None:
         raise TaxonomyError(message)
     if not new_path.exists():
-        raise TaxonomyError(
-            f"Path {str(new_path)!r} does not exist. Create it first."
+        raise coded(
+            TaxonomyError(f"Path {str(new_path)!r} does not exist. Create it first."),
+            "path-missing",
         )
     if not new_path.is_dir():
-        raise TaxonomyError(f"Path {str(new_path)!r} is not a directory.")
+        raise coded(
+            TaxonomyError(f"Path {str(new_path)!r} is not a directory."), "not-a-folder"
+        )
     return new_path
 
 
@@ -1450,10 +1565,14 @@ def set_project_path(vault: Path, name: str, new_path: Path) -> dict[str, Any]:
     if name not in config.projects and name not in parse_taxonomy(
         read_taxonomy_text(vault)
     )[_PROJECTS_DICT]:
-        raise TaxonomyError(
-            f"Project {name!r} is not registered in lit-config.yaml. "
-            "Run `lit project list` to inspect, or "
-            f'`lit project add {shell_arg(name)} --path "<abs-path>"` to register it.'
+        raise coded(
+            TaxonomyError(
+                f"Project {name!r} is not registered in lit-config.yaml. "
+                "Run `lit project list` to inspect, or "
+                f'`lit project add {shell_arg(name)} --path "<abs-path>"` to register it.'
+            ),
+            "project-gone",
+            name=name,
         )
     new_path_str = str(checked_project_path(new_path))
     if config.projects.get(name) == new_path_str:

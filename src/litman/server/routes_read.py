@@ -27,12 +27,18 @@ from litman.core.document import find_paper, list_papers
 from litman.core.fs_identity import Anchor
 from litman.core.gui_registry import host_id
 from litman.core.id import is_valid_id
+from litman.core.library import DEFAULT_VAULT_NAME
 from litman.core.query import recency_key
 from litman.core.schema import all_fixed_enums, fixed_enum_allows_none
 from litman.core.search import search_notes
 from litman.core.taxonomy import parse_taxonomy, read_taxonomy_text
 from litman.core.undecodable import has_undecodable, printable, printable_tree, refusal
-from litman.core.vault_registry import find_active, load_registry, registry_path
+from litman.core.vault_registry import (
+    find_active,
+    load_registry,
+    registry_path,
+    suggest_vault_name,
+)
 from litman.core.vault_token import fingerprint, gui_token, md_version
 from litman.core.views import (
     INDEX_PAPER_FIELDS,
@@ -40,6 +46,7 @@ from litman.core.views import (
     project_paper,
 )
 from litman.exceptions import CorruptMetadataError, PaperNotFoundError
+from litman.server.errors import api_error
 
 router = APIRouter(prefix="/api")
 
@@ -533,11 +540,11 @@ def get_paper(request: Request, paper_id: str) -> dict[str, Any]:
     try:
         meta = find_paper(vault, paper_id)
     except PaperNotFoundError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
+        raise api_error(404, exc, id=paper_id) from exc
     except CorruptMetadataError as exc:
         # The paper exists; its metadata is broken. That is a server-side
         # data problem (500), not a missing resource (404).
-        raise HTTPException(status_code=500, detail=str(exc)) from exc
+        raise api_error(500, exc) from exc
     if not meta:
         # find_paper returns {} for an empty / comment-only metadata.yaml; treat
         # that as a missing resource (mirrors get_trash_metadata) rather than
@@ -576,11 +583,16 @@ def get_paper_cite(request: Request, paper_id: str) -> dict[str, Any]:
     try:
         meta = find_paper(vault, paper_id)
     except PaperNotFoundError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
+        raise api_error(404, exc, id=paper_id) from exc
     except CorruptMetadataError as exc:
-        raise HTTPException(status_code=500, detail=str(exc)) from exc
+        raise api_error(500, exc) from exc
     citation = format_acs(meta)
-    return {"text": citation.text, "warnings": citation.warnings}
+    return {
+        "text": citation.text,
+        "warnings": citation.warnings,
+        # The same caveats as codes, for the page's own words.
+        "caveats": [{"code": code} for code in citation.codes],
+    }
 
 
 @router.get("/paper/{paper_id}/pdf")
@@ -606,7 +618,7 @@ def get_paper_pdf(request: Request, paper_id: str) -> FileResponse:
         raise HTTPException(status_code=404, detail=f"Invalid paper id: {paper_id!r}.")
     pdf_path = vault / "papers" / paper_id / "paper.pdf"
     if not pdf_path.is_file():
-        raise HTTPException(status_code=404, detail=f"No paper.pdf for {paper_id!r}.")
+        raise api_error(404, f"No paper.pdf for {paper_id!r}.", "pdf-missing", id=paper_id)
     return FileResponse(
         pdf_path,
         media_type="application/pdf",
@@ -629,7 +641,7 @@ def get_paper_pdf_version(request: Request, paper_id: str) -> dict[str, str]:
         raise HTTPException(status_code=404, detail=f"Invalid paper id: {paper_id!r}.")
     version = fingerprint(vault / "papers" / paper_id / "paper.pdf")
     if version == "-":
-        raise HTTPException(status_code=404, detail=f"No paper.pdf for {paper_id!r}.")
+        raise api_error(404, f"No paper.pdf for {paper_id!r}.", "pdf-missing", id=paper_id)
     return {"version": version}
 
 
@@ -653,7 +665,8 @@ def _read_paper_md(request: Request, paper_id: str, filename: str) -> dict[str, 
         raise HTTPException(status_code=404, detail=f"Invalid paper id: {paper_id!r}.")
     md_path = vault / "papers" / paper_id / filename
     if not md_path.is_file():
-        raise HTTPException(status_code=404, detail=f"No {filename} for {paper_id!r}.")
+        # Not written yet: a state the tab shows as such, not a failure.
+        raise api_error(404, f"No {filename} for {paper_id!r}.", quiet=True)
     try:
         data = md_path.read_bytes()
         # Newlines as text mode reads them, so the text is what it always was.
@@ -666,12 +679,14 @@ def _read_paper_md(request: Request, paper_id: str, filename: str) -> dict[str, 
         # client left a husk): damaged data, not a missing resource — the
         # same clean-500 contract as get_paper's CorruptMetadataError arm,
         # never an unhandled traceback.
-        raise HTTPException(
-            status_code=500,
-            detail=(
+        raise api_error(
+            500,
+            (
                 f"papers/{paper_id}/{filename} cannot be read "
                 f"(not UTF-8, or unreadable): {exc}"
             ),
+            "file-unreadable",
+            path=f"papers/{paper_id}/{filename}",
         ) from exc
 
 
@@ -791,6 +806,9 @@ def get_vaults(request: Request) -> dict[str, Any]:
             }
             for v in reg.vaults
         ],
+        # What the New-library dialogs offer as the name: the default, or the
+        # first free `<default>_<n>` once that is taken.
+        "suggestedName": suggest_vault_name(reg, DEFAULT_VAULT_NAME),
     }
 
 
@@ -981,13 +999,11 @@ def get_fs_list(
     except OSError as exc:
         # resolve() can raise on a broken symlink chain / lookup loop — a path
         # that cannot even be resolved is bad input, not a server crash.
-        raise HTTPException(
-            status_code=400, detail=f"Cannot open folder: {path}"
-        ) from exc
+        raise api_error(400, f"Cannot open folder: {path}", "folder-missing") from exc
     if not target.exists():
-        raise HTTPException(status_code=400, detail=f"No such folder: {path}")
+        raise api_error(400, f"No such folder: {path}", "folder-missing")
     if not target.is_dir():
-        raise HTTPException(status_code=400, detail=f"Not a folder: {path}")
+        raise api_error(400, f"Not a folder: {path}", "not-a-folder")
     return _directory_listing(target, show_hidden=bool(show_hidden))
 
 
@@ -1047,34 +1063,26 @@ async def post_fs_mkdir(request: Request) -> dict[str, Any]:
         parent_exists = parent.exists()
         parent_is_dir = parent.is_dir()
     except PermissionError as exc:
-        raise HTTPException(
-            status_code=403, detail=f"Permission denied opening: {parent_raw}"
+        raise api_error(
+            403, f"Permission denied opening: {parent_raw}", "open-denied"
         ) from exc
     except (OSError, ValueError) as exc:
-        raise HTTPException(
-            status_code=400, detail=f"Cannot open folder: {parent_raw}"
-        ) from exc
+        raise api_error(400, f"Cannot open folder: {parent_raw}", "folder-missing") from exc
     if not parent_exists:
-        raise HTTPException(
-            status_code=400, detail=f"Parent folder does not exist: {parent}"
-        )
+        raise api_error(400, f"Parent folder does not exist: {parent}", "folder-missing")
     if not parent_is_dir:
-        raise HTTPException(status_code=400, detail=f"Parent is not a folder: {parent}")
+        raise api_error(400, f"Parent is not a folder: {parent}", "not-a-folder")
 
     # 2. Name: exactly one path component (RED LINE — no separators, no traversal,
     #    no control chars / NUL — a NUL would make mkdir() raise ValueError → 500).
     if not name:
-        raise HTTPException(status_code=400, detail="Folder name can't be empty.")
+        raise api_error(400, "Folder name can't be empty.", "name-empty")
     if name in (".", ".."):
-        raise HTTPException(status_code=400, detail="Folder name can't be '.' or '..'.")
+        raise api_error(400, "Folder name can't be '.' or '..'.", "name-dots")
     if "/" in name or "\\" in name or ".." in name:
-        raise HTTPException(
-            status_code=400, detail="Folder name can't contain path separators."
-        )
+        raise api_error(400, "Folder name can't contain path separators.", "name-separator")
     if any(ord(ch) < 32 or ch == "\x7f" for ch in name):
-        raise HTTPException(
-            status_code=400, detail="Folder name can't contain control characters."
-        )
+        raise api_error(400, "Folder name can't contain control characters.", "name-control")
 
     # 3-6. Create (or idempotently enter) exactly one level under parent. Every
     # filesystem probe here can raise PermissionError inside a locked parent
@@ -1084,20 +1092,18 @@ async def post_fs_mkdir(request: Request) -> dict[str, Any]:
     try:
         already_dir = target.is_dir()
         if not already_dir and target.exists():
-            raise HTTPException(
-                status_code=400, detail="A file with that name already exists."
-            )
+            raise api_error(400, "A file with that name already exists.", "file-exists")
         if not already_dir:
             target.mkdir()  # single level; parent verified above (no parents=True)
     except PermissionError as exc:
-        raise HTTPException(
-            status_code=403,
-            detail=f"Permission denied creating a folder in {parent}.",
+        raise api_error(
+            403, f"Permission denied creating a folder in {parent}.", "mkdir-denied"
         ) from exc
     except (OSError, ValueError) as exc:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Couldn't create the folder: {getattr(exc, 'strerror', None) or exc}.",
+        raise api_error(
+            400,
+            f"Couldn't create the folder: {getattr(exc, 'strerror', None) or exc}.",
+            "mkdir-failed",
         ) from exc
 
     return _directory_listing(target)

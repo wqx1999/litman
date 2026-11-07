@@ -32,12 +32,14 @@ from litman.core.config import load_config
 from litman.core.correctors import reconcile_derived
 from litman.core.document import read_metadata_or_raise
 from litman.core.trash import (
+    TRASH_DIRNAME,
     TrashEntry,
     list_trash,
     resolve_trash_entry,
     restore_from_trash,
 )
 from litman.exceptions import CorruptMetadataError, TrashError
+from litman.server.errors import api_error, log_entry
 
 router = APIRouter(prefix="/api")
 
@@ -58,28 +60,30 @@ def _resolve(vault: Path, entry_name: str) -> TrashEntry:
     try:
         return resolve_trash_entry(vault, entry_name)
     except TrashError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
+        raise api_error(404, exc) from exc
 
 
 def _read_trash_md(entry: TrashEntry, filename: str) -> dict[str, str]:
     """Read a markdown file from inside a resolved trash entry. 404 if absent."""
     md_path = entry.entry_path / filename
     if not md_path.is_file():
-        raise HTTPException(
-            status_code=404,
-            detail=f"No {filename} in trash entry {entry.entry_name!r}.",
+        # Never written: the tab says so, it is not a failure.
+        raise api_error(
+            404, f"No {filename} in trash entry {entry.entry_name!r}.", quiet=True
         )
     try:
         return {"text": md_path.read_text(encoding="utf-8")}
     except (OSError, UnicodeDecodeError) as exc:
         # Same clean-500 contract as the live-paper markdown routes: damaged
         # data is described, never an unhandled traceback.
-        raise HTTPException(
-            status_code=500,
-            detail=(
+        raise api_error(
+            500,
+            (
                 f"{filename} in trash entry {entry.entry_name!r} cannot be "
                 f"read (not UTF-8, or unreadable): {exc}"
             ),
+            "file-unreadable",
+            path=f"{TRASH_DIRNAME}/{entry.entry_name}/{filename}",
         ) from exc
 
 
@@ -125,7 +129,7 @@ def get_trash_metadata(request: Request, entry_name: str) -> dict[str, object]:
     try:
         meta = read_metadata_or_raise(meta_path)
     except CorruptMetadataError as exc:
-        raise HTTPException(status_code=500, detail=str(exc)) from exc
+        raise api_error(500, exc) from exc
     if not meta:
         # Empty / comment-only YAML → no metadata to render. read_metadata_or_raise
         # returns {} here (no raise); align with find_paper, which treats a paper
@@ -206,7 +210,7 @@ def post_trash_restore(request: Request, entry_name: str) -> dict[str, object]:
         # collision (decision (b)): 409. resolve already handled "not found",
         # so any remaining TrashError is unexpected from the GUI → 400.
         status = 409 if "already exists" in str(exc) else 400
-        raise HTTPException(status_code=status, detail=str(exc)) from exc
+        raise api_error(status, exc) from exc
 
     # Same shared funnel the CLI uses (M30 Phase 4): INDEX + views together.
     # project_refs=False — restore_from_trash already rebuilt the restored
@@ -220,6 +224,19 @@ def post_trash_restore(request: Request, entry_name: str) -> dict[str, object]:
         views_delta=[(result.paper_id, {}, result.restored_view_fields)],
     )
 
+    # The toast names the repos; the log keeps why each was not cloned again.
+    for repo, why in sorted(result.missing_repos.items()):
+        log_entry(
+            request,
+            kind="warning",
+            text=(
+                f"Restored {result.paper_id}, but its code repo {repo} was not "
+                f"cloned again ({why}). `lit code restore-all` clones it."
+            ),
+            status=200,
+            code="repo-not-recloned",
+            params={"id": result.paper_id, "repo": repo},
+        )
     return {
         "paper_id": result.paper_id,
         "title": result.title,

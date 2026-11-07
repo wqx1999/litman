@@ -440,13 +440,11 @@ def check_pdf_viewer(
                 # Desktop: actionable gap — installing xdg-utils fixes it.
                 severity="info" if is_headless() else "warning",
                 paper_id=None,
-                message=(
-                    "no platform PDF viewer detected — "
-                    "`lit open` will exit 2 and print the path only"
-                ),
+                message="no platform PDF viewer detected",
                 hint=(
                     "install xdg-utils (Linux) or wslview (WSL), "
-                    "or set default_pdf_viewer in lit-config.yaml"
+                    "or set default_pdf_viewer in lit-config.yaml; until "
+                    "then `lit open` exits 2 and prints the path only"
                 ),
             )
         )
@@ -458,13 +456,13 @@ def check_pdf_viewer(
                 paper_id=None,
                 message=(
                     "xdg-open is installed but no graphical display is "
-                    "reachable in this session — `lit open` will exit 2 "
-                    "and print the path only"
+                    "reachable in this session"
                 ),
                 hint=(
                     "set default_pdf_viewer in lit-config.yaml to a viewer "
-                    "usable without an X display, or run lit open from a "
-                    "session with DISPLAY/WAYLAND_DISPLAY set"
+                    "usable without an X display, or run `lit open` from a "
+                    "session with DISPLAY/WAYLAND_DISPLAY set; until then it "
+                    "exits 2 and prints the path only"
                 ),
             )
         )

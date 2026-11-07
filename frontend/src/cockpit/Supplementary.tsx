@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState, type MouseEvent } from 'react'
 import { fetchSiRmPreview, openSiFile, siFileUrl, type SiRmPreview } from '../api'
 import { getT, useT } from '../i18n'
+import { errorLine } from '../apiErrors'
 import { formatBytes } from '../ui/bytes'
 import { useEscapeLayer } from '../ui/escapeStack'
 import { modalBackdropProps } from '../ui/modalShell'
@@ -99,7 +100,10 @@ export function SupplementaryChips({
       .then((r) => notify?.(getT().cockpit.supplementary.opened(r.file, r.host), 'success'))
       .catch((err: unknown) => {
         fellBack.current.add(key)
-        notify?.(err instanceof Error ? err.message : String(err), 'error')
+        // The browser takes the file either way (below): the line says which.
+        const open = getT().errors.cockpit.siOpen
+        const line = errorLine(err, open['cannot-open']({ file }), open)
+        if (line) notify?.(line, 'error')
         // Still within the click's user activation (the server waits only a
         // moment for the app), so the browser lets this through. Opened with
         // 'noopener' it would come back null, so the tie is cut by hand.

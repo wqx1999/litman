@@ -7,11 +7,32 @@ level and prints a friendly stderr message. Anything not a subclass of
 
 from __future__ import annotations
 
+from collections.abc import Mapping
+from types import MappingProxyType
+
 from ruamel.yaml.error import YAMLError
 
 
 class LitmanError(Exception):
-    """Base class for all litman-specific errors."""
+    """Base class for all litman-specific errors.
+
+    ``code`` names the failure for the GUI, which shows a short line picked
+    by it instead of the message; ``params`` fill that line: names, ids,
+    paths inside the library, never an absolute path. With no code the GUI
+    shows the line of the action that failed. :func:`coded` sets them where
+    the error is raised; a class whose every instance means one thing sets
+    them on the class.
+    """
+
+    code: str | None = None
+    params: Mapping[str, str] = MappingProxyType({})
+
+
+def coded[E: LitmanError](error: E, code: str, **params: str) -> E:
+    """``error`` with its GUI ``code`` and ``params`` set, for ``raise coded(...)``."""
+    error.code = code
+    error.params = MappingProxyType(dict(params))
+    return error
 
 
 class LibraryNotFoundError(LitmanError):
@@ -21,9 +42,13 @@ class LibraryNotFoundError(LitmanError):
 class ParentNotFoundError(LitmanError):
     """`lit init` parent directory does not exist or is not a directory."""
 
+    code = "parent-missing"
+
 
 class VaultExistsError(LitmanError):
     """`lit init` target vault path already exists and is non-empty."""
+
+    code = "target-exists"
 
 
 class UndecodablePathError(LitmanError):
@@ -54,6 +79,8 @@ class DuplicateDOIError(AddError):
 class PaperNotFoundError(LitmanError):
     """No paper with the given id exists in the vault."""
 
+    code = "paper-not-found"
+
 
 class CorruptMetadataError(LitmanError):
     """A metadata.yaml / repo-meta.yaml / sidecar exists but cannot be read
@@ -69,7 +96,12 @@ class CorruptMetadataError(LitmanError):
     on a paper the user never touched.
 
     Distinct from ``ConfigError`` (which is about ``lit-config.yaml``).
+
+    Its GUI code is ``file-unreadable``; the server adds the file's path
+    inside the library, which only it knows.
     """
+
+    code = "file-unreadable"
 
     def __init__(self, path: object, cause: Exception | None = None) -> None:
         self.path = path
@@ -177,6 +209,9 @@ class UnreadableTaxonomyError(LitmanError):
     request, and a damaged file is not one.
     """
 
+    code = "file-unreadable"
+    params = MappingProxyType({"path": "TAXONOMY.md"})
+
     def __init__(self, path: object, reason: str, *, not_utf8: bool) -> None:
         self.path = path
         self.reason = reason
@@ -235,6 +270,9 @@ class ConfigError(LitmanError):
     the file exists but is malformed YAML, has an unknown key, holds a value
     of the wrong type, or violates a field constraint.
     """
+
+    code = "file-unreadable"
+    params = MappingProxyType({"path": "lit-config.yaml"})
 
 
 class SyncError(LitmanError):

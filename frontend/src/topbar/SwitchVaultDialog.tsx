@@ -49,9 +49,6 @@ export default function SwitchVaultDialog({
         <p className="mt-1.5 text-xs leading-relaxed text-stone-600">
           {rich(s.body(tabCount), {
             globally: <span className="font-medium">{s.globally}</span>,
-            lit: <code className="rounded bg-stone-100 px-1 py-0.5">lit</code>,
-            library: <code className="rounded bg-stone-100 px-1 py-0.5">--library</code>,
-            env: <code className="rounded bg-stone-100 px-1 py-0.5">$LIT_LIBRARY</code>,
           })}
         </p>
         {dirtyCount > 0 && (

@@ -170,6 +170,9 @@ export interface VaultsPayload {
    * name): the frontend keys the welcome page off this, not `active`. */
   served: string | null
   vaults: VaultEntry[]
+  /** The name the New-library dialogs offer: the default, or the first free
+   * `<default>_<n>` once that is taken. Absent from an older server. */
+  suggestedName?: string
 }
 
 /** A center-pane tab: a paper PDF or one of its markdown docs. */

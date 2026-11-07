@@ -16,10 +16,10 @@ export const topbar: Messages['topbar'] = {
     youHave: (version: string) => `当前版本：${version}`,
     updateStarting: '正在启动更新…',
     updateAndRestart: '更新并重启',
-    updateStartFailed: '无法启动更新，请在终端中运行 `lit self-update`。',
+    updateStartFailed: '无法启动更新',
     updatingTitle: '正在更新 litman…',
     updatingBody:
-      '此窗口即将关闭，更新完成后 litman 会自动重新打开。如果窗口没有关闭，可以手动关掉。',
+      '此窗口即将关闭，更新完成后 litman 将自动重新打开。若窗口未关闭，请手动关闭',
     vaultSelectLoose: '按路径打开，不在文献库列表中',
     // "active vault" (what `lit` uses without --library) = 默认文献库; 当前文献库
     // is the one on screen.
@@ -66,7 +66,7 @@ export const topbar: Messages['topbar'] = {
     clearLabel: '清除搜索',
     clearTitle: '清除搜索（Esc）',
     searching: '正在搜索…',
-    noMatches: '没有匹配的结果。',
+    noMatches: '没有匹配的结果',
     moreInList: (n: number) => `列表中还有 ${n} 条结果`,
     searchingNotes: '正在搜索笔记…',
     scope: {
@@ -83,10 +83,10 @@ export const topbar: Messages['topbar'] = {
   vaultManager: {
     title: '文献库',
     help: '新建文献库或添加已有的文献库，之后可在工具栏中切换。从列表移除不会删除文件夹。',
-    empty: '列表中还没有文献库。',
+    empty: '列表中还没有文献库',
     active: '默认',
     missing: '缺失',
-    missingTitle: '此路径下没有文献库，文件夹可能被移动、重命名或删除了。',
+    missingTitle: '此路径下未找到文献库',
     locate: '重新定位',
     locateLabel: (name: string) => `重新定位文献库 ${name}`,
     locateTitle: (name: string) => `为“${name}”指定新的文件夹`,
@@ -99,7 +99,7 @@ export const topbar: Messages['topbar'] = {
 
   unregisterVault: {
     title: (name: string) => `从列表移除文献库“${name}”？`,
-    body: '此操作只会把“{name}”从文献库列表中移除，{keep}。以后可以重新添加。',
+    body: '将从文献库列表中移除“{name}”，{keep}。之后可重新添加。',
     keepsFolder: '磁盘上的文献库文件夹不会被删除',
     unregistering: '正在移除…',
     unregister: '从列表移除',
@@ -140,11 +140,11 @@ export const topbar: Messages['topbar'] = {
   switchVault: {
     title: (name: string) => `切换到文献库“${name}”？`,
     body: (openTabs: number) =>
-      `此操作会{globally}更改默认文献库：所有终端里未指定 {library} / {env} 的 {lit} 命令都会改用它。${
+      `将{globally}更改默认文献库，终端中的 lit 命令也会改用它。${
         openTabs > 0 ? `已打开的 ${openTabs} 个标签页会被关闭。` : ''
       }`,
     globally: '全局',
-    unsaved: (n: number) => `${n} 个标签页有未保存的改动，切换前会先保存。`,
+    unsaved: (n: number) => `${n} 个标签页有未保存的改动，切换前会先保存`,
     switching: '正在切换…',
     saveAndSwitch: '保存并切换',
     switch: '切换',
@@ -154,9 +154,7 @@ export const topbar: Messages['topbar'] = {
     title: '健康检查',
     running: '正在检查…',
     rerun: '重新检查',
-    // {command} carries its own leading space, so it follows a Chinese
-    // character directly.
-    intro: '检查文献库的一致性（只读）。修复仍需在 CLI 中运行{command}。',
+    intro: '检查文献库的一致性（只读）。',
     runningChecks: '正在运行各项检查…',
     noIssues: '✓ 没有发现问题',
     severity: {
@@ -164,19 +162,67 @@ export const topbar: Messages['topbar'] = {
       warning: '警告',
       info: '提示',
     },
+    categories: {
+      schema: '元数据字段',
+      retired_priority: '已停用的字段',
+      placeholder_metadata: '占位的标题或作者',
+      dirty_metadata: '元数据中的多余格式',
+      placeholder_id: '含占位词的 ID',
+      weak_id_keyword: '含义不明的 ID 关键词',
+      duplicate_doi: '重复的 DOI',
+      paper_dir_validity: '论文文件夹',
+      unfinished_rename: '未完成的重命名',
+      discussion_scaffold: '讨论记录文件',
+      index_vs_disk: '文献库索引',
+      views_vs_metadata: 'views/ 中的链接',
+      project_references: '项目的文献链接',
+      project_bridge_dangling: '失效的项目链接',
+      links_unsupported: '不支持文件夹链接',
+      links_denied: '无权创建文件夹链接',
+      dangling_refs: '失效的关联论文',
+      dangling_wikilinks: '笔记和讨论记录中的 wikilink',
+      relevance_orphan: '未关联项目的相关性',
+      priority_orphan: '未关联项目的优先级',
+      taxonomy_drift: '词表（TAXONOMY.md）',
+      taxonomy_similar: '相近的词条',
+      taxonomy_unused: '未使用的词条',
+      taxonomy_singletons: '只有一篇论文使用的词条',
+      project_config_consistency: '不完整的项目',
+      config_unreadable: '无法读取 lit-config.yaml',
+      vault_registry_drift: '文献库列表',
+      project_path_exists: '缺失的项目文件夹',
+      bidirectional_refs: '缺少反向关联',
+      inbox_staleness: '长期待读',
+      stale_staging: '未完成的操作',
+      stale_staging_unrecoverable: '无法自动恢复的操作',
+      orphan_trash_sidecar: '回收站中的孤立记录',
+      trash_size: '回收站容量',
+      replaced_folders: '回收站中被替换的文件夹',
+      pdf_viewer: '外部 PDF 阅读器',
+      skill_drift: '待更新的 Agent skill',
+      code_clone_integrity: '代码仓库',
+      notes_from_trash: '已删除论文留下的笔记',
+      supplementary_unchecked: '无法核对的 SI 文件',
+      supplementary_field: 'SI 记录格式',
+      supplementary_layout: 'SI 文件夹结构',
+      supplementary_missing: '缺失的 SI 文件',
+      supplementary_changed: '已被改动的 SI 文件',
+      supplementary_unrecorded: '未记录的 SI 文件',
+      supplementary_cited: '笔记和讨论记录中的 SI 引用',
+    },
   },
 
   activityLog: {
     title: '操作记录',
     // "Cleared on refresh" = reloading the page, not Refresh from disk (R).
     intro: '本次打开以来的操作（最新的在前），刷新页面后清空。',
-    empty: '还没有操作记录。',
+    empty: '还没有操作记录',
   },
 
   agentCopy: {
     title: '在终端中运行',
     body: (agent: string) =>
-      `litman 无法从这里打开终端窗口。请在运行 litman 的机器上打开一个终端（如果连接的是远程服务器，就是那台服务器，而不是眼前这台电脑），然后用以下命令启动 ${agent}：`,
+      `无法打开终端窗口。请在运行 litman 的机器（远程连接时为服务器）上打开终端，用以下命令启动 ${agent}：`,
     copy: '复制',
     copied: '命令已复制',
     copyFailed: '复制失败，请选中文字后手动复制',
@@ -187,7 +233,7 @@ export const topbar: Messages['topbar'] = {
     titleSetup: '配置 Agent',
     help: '工具栏按钮和 ~ 键会打开默认 Agent。装上 skill 后，它运行 lit 时无需每次确认（需该 Agent 支持）。',
     defaultBadge: '默认',
-    recheck: '刚装好？重新检测',
+    recheck: '重新检测',
     getApp: '获取桌面版 →',
     getCli: '获取 CLI →',
     getAgent: (display: string) => `获取 ${display} →`,
@@ -197,7 +243,7 @@ export const topbar: Messages['topbar'] = {
     modeApp: '桌面版',
     modeCli: 'CLI',
     notInstalled: '未安装',
-    openOnce: '安装后先打开一次。',
+    openOnce: '安装后先打开一次',
     skill: 'Skill',
     upToDate: '已是最新',
     updateAvailable: '有新版本',
@@ -223,11 +269,11 @@ export const topbar: Messages['topbar'] = {
     create: '创建',
     loading: '正在加载…',
     // The server sets `denied` only on a PermissionError.
-    denied: '没有权限打开这个文件夹。',
-    empty: '这里没有子文件夹。',
-    undecodableTitle: '这个文件夹的名称不是 UTF-8 文本，重命名后才能在这里打开。',
+    denied: '没有权限打开这个文件夹',
+    empty: '这里没有子文件夹',
+    undecodableTitle: '这个文件夹的名称不是 UTF-8 文本，重命名后才能在这里打开',
     vaultBadge: 'litman 文献库',
-    notVault: '这个文件夹不是 litman 文献库。',
+    notVault: '这个文件夹不是 litman 文献库',
     select: '选择此文件夹',
   },
 

@@ -123,7 +123,7 @@ _COMMAND_SECTIONS: tuple[tuple[str, tuple[str, ...]], ...] = (
      ("link", "unlink", "project", "code", "taxonomy")),
     ("Maintenance",
      ("health-check", "refresh-views", "trash", "sync", "export", "config", "gui",
-      "agent", "self-update")),
+      "gui-log", "agent", "self-update")),
 )
 
 
@@ -138,7 +138,9 @@ class LitGroup(click.Group):
     # - help / hello: trivial, registry-irrelevant; would feel out of place
     # - None: the user typed `lit` with no subcommand and is about to see
     #   the help message; don't ambush them with a registry prompt
-    _DRIFT_SKIP: frozenset[str | None] = frozenset({"help", "hello", None})
+    # - gui-log: reads a machine-level file, no library; asked when something
+    #   in the window failed, which is no moment for an unrelated prompt
+    _DRIFT_SKIP: frozenset[str | None] = frozenset({"help", "hello", "gui-log", None})
 
     # The post-dispatch nudges (staleness / update tip) are passive stderr
     # one-liners, so they get their own skip set: `hello` answers "is litman
@@ -205,6 +207,7 @@ class LitGroup(click.Group):
         "vault": "litman.commands.vault:vault_group",
         "export": "litman.commands.export:export_cmd",
         "gui": "litman.commands.gui:gui_cmd",
+        "gui-log": "litman.commands.gui_log:gui_log_cmd",
         "agent": "litman.commands.agent:agent_cmd",
         "self-update": "litman.commands.self_update:self_update_cmd",
     }

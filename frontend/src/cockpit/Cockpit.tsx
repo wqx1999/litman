@@ -71,6 +71,7 @@ import MetadataEditDialog from './MetadataEditDialog'
 import { useEscapeLayer } from '../ui/escapeStack'
 import { modalBackdropProps } from '../ui/modalShell'
 import { enumLabel, getT, useT } from '../i18n'
+import { errorLine } from '../apiErrors'
 
 interface Props {
   paper: PaperMeta | null
@@ -482,7 +483,11 @@ function WriteCockpit({
   // so it behaves like a transient toast, not a banner that sticks until the
   // paper changes. `citeWarnTimer` lets a re-Cite reset the countdown instead
   // of letting an older timer clear the fresh warning early.
-  const [citeWarn, setCiteWarn] = useState<string[] | null>(null)
+  // Each caveat by code (the line shown) and in the server's words (shown
+  // only when an older server sends no code).
+  const [citeWarn, setCiteWarn] = useState<{ code: string | null; text: string }[] | null>(
+    null,
+  )
   const citeWarnTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
   // A structured write is in flight — disables the write controls so a second
   // click can't race the first (the backend serialises, but a double-fire would
@@ -563,14 +568,18 @@ function WriteCockpit({
     if (!paper) return
     const id = paper.id
     try {
-      const { text, warnings } = await fetchCite(id)
+      const { text, warnings, caveats } = await fetchCite(id)
       // The selection may have moved on while the request was in flight — drop
       // the stale result rather than copy it / flash its warnings under another
       // paper.
       if (shownId.current !== id) return
       await navigator.clipboard.writeText(text)
       setCopied('citation')
-      setCiteWarn(warnings.length ? warnings : null)
+      setCiteWarn(
+        warnings.length
+          ? warnings.map((w, i) => ({ code: caveats?.[i]?.code ?? null, text: w }))
+          : null,
+      )
       setTimeout(() => setCopied(null), 1200)
       // Restart the warning countdown each Cite so a fresh banner gets its full
       // dwell time and an in-flight older timer can't clear it early.
@@ -583,21 +592,31 @@ function WriteCockpit({
     }
   }
 
-  // Run a structured write, then refresh on success or toast the backend's raw
-  // message on failure. `writing` gates the controls for the duration. The
+  // Run a structured write, then refresh on success or show a failure toast
+  // (the error style) on failure. `writing` gates the controls for the duration. The
   // backend serialises writes; the parent's onChanged re-fetches the cockpit.
   // `vocabChanged` additionally refreshes the shared taxonomy/projects caches
   // (a new/removed taxonomy value or a project link/unlink the dropdowns
   // reflect). Returns the promise so a caller (e.g. delete-confirm) can await
   // completion before dismissing its dialog.
-  async function runWrite(fn: () => Promise<unknown>, vocabChanged = false) {
+  //
+  // A failure shows one line: what the server refused, when it named it (a
+  // DOI taken, a project with no folder here), else `fixed`, the change not
+  // saved. The server's own words are in the GUI log.
+  async function runWrite(
+    fn: () => Promise<unknown>,
+    vocabChanged = false,
+    fixed?: string,
+  ) {
     setWriting(true)
     try {
       await fn()
       onChanged()
       if (vocabChanged) onVocabChanged()
     } catch (err) {
-      notify(err instanceof Error ? err.message : String(err))
+      const c = getT().errors.cockpit
+      const line = errorLine(err, fixed ?? c.changeNotSaved, c.codes)
+      if (line) notify(line, 'error')
     } finally {
       setWriting(false)
     }
@@ -672,13 +691,17 @@ function WriteCockpit({
   async function doRemoveSi() {
     if (!pendingSi) return
     const { me, record } = pendingSi
-    await runWrite(async () => {
-      const { warnings } = await removeSiFile(me, record.file)
-      const p = getT().cockpit.panel
-      if (warnings.length)
-        notify(p.siDeletedWithWarnings(record.file, warnings.join(' · ')), 'warning')
-      else notify(p.siDeleted(record.file), 'success')
-    })
+    await runWrite(
+      async () => {
+        const { warnings } = await removeSiFile(me, record.file)
+        const p = getT().cockpit.panel
+        if (warnings.length)
+          notify(p.siDeletedWithWarnings(record.file), 'warning')
+        else notify(p.siDeleted(record.file), 'success')
+      },
+      false,
+      getT().errors.cockpit.siDeleteFailed(record.file),
+    )
     setPendingSi(null)
   }
 
@@ -711,13 +734,11 @@ function WriteCockpit({
       if (err instanceof TaxonomySimilarError) return err.similar
       // Without the matches there is nothing to ask about, and the server's
       // sentence is still the CLI's.
-      notify(
-        refused
-          ? getT().cockpit.panel.looksLikeExisting(value)
-          : err instanceof Error
-            ? err.message
-            : String(err),
-      )
+      const c = getT().errors.cockpit
+      const line = refused
+        ? getT().cockpit.panel.looksLikeExisting(value)
+        : errorLine(err, c.changeNotSaved, c.codes)
+      if (line) notify(line, 'error')
       return null
     }
     setWriting(false)
@@ -1018,7 +1039,9 @@ function WriteCockpit({
                   <span className="font-semibold">{m.citeWarnHeading}</span>
                   <ul className="mt-0.5 list-disc space-y-0.5 pl-4">
                     {citeWarn.map((w, i) => (
-                      <li key={i}>{w}</li>
+                      <li key={i}>
+                        {(w.code && (t.errors.cite as Record<string, string>)[w.code]) || w.text}
+                      </li>
                     ))}
                   </ul>
                 </div>
@@ -1191,9 +1214,10 @@ function WriteCockpit({
                   label: fields.projects,
                   values: paper.projects,
                   vocabulary: projects.map((p) => p.name),
-                  // A project whose folder has moved (or is half-registered)
-                  // misbehaves on link — refused, or quietly deepening the
-                  // split — so say so in the list, not on the click.
+                  // A project whose folder has moved is refused on link, and
+                  // one known only to lit-config.yaml would deepen the split,
+                  // so the list says so instead of the click. One with no
+                  // folder on this machine links (the paper's record alone).
                   note: (name: string) => {
                     const p = projects.find((x) => x.name === name)
                     return p ? projectHealth(p.status) : null

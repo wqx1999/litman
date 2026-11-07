@@ -27,12 +27,11 @@ export const topbar = {
     updateAndRestart: 'Update & restart',
     // Replaces the update button when the update could not start and the
     // server gave no reason of its own.
-    updateStartFailed:
-      'Could not start the update — run `lit self-update` in a terminal.',
+    updateStartFailed: 'Could not start the update.',
     // Full-screen overlay while the app closes itself to update.
     updatingTitle: 'Updating litman…',
     updatingBody:
-      'This window will close, and litman reopens by itself when the update finishes. If the window stays open, you can close it yourself.',
+      'This window will close, and litman will reopen after the update. If it stays open, close it manually.',
     // Tooltip of the vault selector: the vault shown was opened by a path that
     // is not in the registry.
     vaultSelectLoose: 'Opened by path, not in your vault list',
@@ -115,7 +114,7 @@ export const topbar = {
     // Badges on a vault row; shown uppercased.
     active: 'active',
     missing: 'missing',
-    missingTitle: 'No library at this path — the folder was moved, renamed or deleted.',
+    missingTitle: 'No library found at this path.',
     // Button on a missing vault's row: point the registry at the new folder.
     locate: 'Locate',
     locateLabel: (name: string) => `Locate vault ${name}`,
@@ -133,7 +132,7 @@ export const topbar = {
   unregisterVault: {
     title: (name: string) => `Unregister vault “${name}”?`,
     // {name} = the vault's name; {keep} = `keepsFolder` below, in bold.
-    body: 'This removes “{name}” from the vault registry only. {keep} — only the registry entry is removed. You can register it again later.',
+    body: 'Removes “{name}” from the vault list. {keep}. You can register it again later.',
     keepsFolder: 'The vault directory on disk is NOT deleted',
     unregistering: 'Unregistering…',
     unregister: 'Unregister',
@@ -143,7 +142,7 @@ export const topbar = {
   locateVault: {
     title: (name: string) => `Locate “${name}”`,
     // {path} = the folder the vault used to be in, shown struck through.
-    body: 'This library moved from {path}. Paste where it lives now — the vault folder itself, which must contain a lit-config.yaml.',
+    body: 'This library is no longer at {path}. Enter its current path: the vault folder itself, which must contain lit-config.yaml.',
     // Label above the path field (shown uppercased).
     pathLabel: 'New vault path',
     locating: 'Locating…',
@@ -158,7 +157,7 @@ export const topbar = {
     // Field labels (shown uppercased) and the hint under the path field.
     nameLabel: 'Name',
     pathLabel: 'Vault path',
-    pathHint: 'the vault folder itself, must exist + contain lit-config.yaml',
+    pathHint: 'the vault folder itself; must exist and contain lit-config.yaml',
     switchAfter: 'Switch to it after registering',
     registering: 'Registering…',
     register: 'Register',
@@ -181,11 +180,10 @@ export const topbar = {
   /** Confirm dialog: switch the active vault. */
   switchVault: {
     title: (name: string) => `Switch vault to “${name}”?`,
-    // {globally} = `globally` below, in medium weight. {lit}, {library} and
-    // {env} are the code `lit`, `--library` and `$LIT_LIBRARY`. `openTabs` =
-    // how many tabs are open; a switch closes them all.
+    // {globally} = `globally` below, in medium weight. `openTabs` = how many
+    // tabs are open; a switch closes them all.
     body: (openTabs: number) =>
-      `This changes the active vault {globally} — it affects {lit} in every terminal without an explicit {library} / {env}.${
+      `This changes the active vault {globally}, for lit in every terminal too.${
         openTabs > 0
           ? openTabs === 1
             ? ' All 1 open tab will close.'
@@ -208,9 +206,7 @@ export const topbar = {
     title: 'Health check',
     running: 'Running…',
     rerun: 'Re-run',
-    // {command} = " lit health-check --fix" in monospace; its leading space is
-    // inside the code span, so none goes before the slot.
-    intro: 'Audits library consistency (read-only). Fixes still run from the CLI:{command}.',
+    intro: 'Checks library consistency (read-only).',
     runningChecks: 'Running checks…',
     noIssues: '✓ No issues',
     // Severity tag of one finding; shown uppercased. Keys are the server's values.
@@ -218,6 +214,57 @@ export const topbar = {
       error: 'error',
       warning: 'warning',
       info: 'info',
+    },
+    // Heading of each group of findings (shown uppercased). Keys are the
+    // server's check categories (core/checks); a category missing here shows
+    // its key as is.
+    categories: {
+      schema: 'Metadata fields',
+      retired_priority: 'Retired fields',
+      placeholder_metadata: 'Placeholder titles and authors',
+      dirty_metadata: 'Stray formatting in metadata',
+      placeholder_id: 'Placeholder IDs',
+      weak_id_keyword: 'Uninformative ID keywords',
+      duplicate_doi: 'Duplicate DOIs',
+      paper_dir_validity: 'Paper folders',
+      unfinished_rename: 'Unfinished renames',
+      discussion_scaffold: 'Discussion logs',
+      index_vs_disk: 'Library index',
+      views_vs_metadata: 'views/ links',
+      project_references: 'Project reference links',
+      project_bridge_dangling: 'Broken project links',
+      links_unsupported: 'Folder links unsupported',
+      links_denied: 'Folder links refused',
+      dangling_refs: 'Broken relations',
+      dangling_wikilinks: 'Wikilinks in notes and discussions',
+      relevance_orphan: 'Relevance for unlinked projects',
+      priority_orphan: 'Priority for unlinked projects',
+      taxonomy_drift: 'Vocabulary (TAXONOMY.md)',
+      taxonomy_similar: 'Similar vocabulary values',
+      taxonomy_unused: 'Unused vocabulary values',
+      taxonomy_singletons: 'Values used by one paper',
+      project_config_consistency: 'Incomplete projects',
+      config_unreadable: 'Unreadable lit-config.yaml',
+      vault_registry_drift: 'Vault list',
+      project_path_exists: 'Missing project folders',
+      bidirectional_refs: 'Missing reverse relations',
+      inbox_staleness: 'Long in inbox',
+      stale_staging: 'Unfinished operations',
+      stale_staging_unrecoverable: 'Operations not recoverable automatically',
+      orphan_trash_sidecar: 'Orphaned trash records',
+      trash_size: 'Trash size',
+      replaced_folders: 'Replaced folders in the trash',
+      pdf_viewer: 'External PDF viewer',
+      skill_drift: 'Outdated agent skills',
+      code_clone_integrity: 'Code repos',
+      notes_from_trash: 'Notes kept from deleted papers',
+      supplementary_unchecked: 'SI files not checked',
+      supplementary_field: 'SI record format',
+      supplementary_layout: 'SI folder layout',
+      supplementary_missing: 'Missing SI files',
+      supplementary_changed: 'Changed SI files',
+      supplementary_unrecorded: 'Unrecorded SI files',
+      supplementary_cited: 'SI citations in notes and discussions',
     },
   },
 
@@ -235,7 +282,7 @@ export const topbar = {
     // `agent` = the agent's command name (claude, codex…); the command line to
     // copy follows under this text.
     body: (agent: string) =>
-      `litman couldn't open a terminal window from here. Open one on the machine running litman — if you're connected to a remote server, that's the server, not this computer — then start ${agent} with:`,
+      `Could not open a terminal window. On the machine running litman (the server, if remote), open a terminal and start ${agent} with:`,
     copy: 'Copy',
     copied: 'Command copied',
     copyFailed: 'Copy failed — select the text and copy it',
@@ -250,7 +297,7 @@ export const topbar = {
     help: 'The toolbar button and ~ open your default agent. A skill also lets it run lit without asking, where the agent allows it.',
     // Badge on the default agent's row in the list.
     defaultBadge: 'Default',
-    recheck: 'Installed it just now? Recheck',
+    recheck: 'Recheck',
     // Install link for an agent that starts two ways (desktop app or terminal
     // CLI), when the chosen way is not installed.
     getApp: 'Get the app →',

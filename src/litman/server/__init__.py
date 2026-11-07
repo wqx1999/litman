@@ -25,6 +25,7 @@ from fastapi.staticfiles import StaticFiles
 from starlette.concurrency import run_in_threadpool
 
 from litman.core.config import CONFIG_FILENAME
+from litman.core.gui_log import GuiLog
 from litman.core.presence import PresenceTracker
 from litman.core.sync_lock import SharedHold
 from litman.exceptions import (
@@ -34,9 +35,10 @@ from litman.exceptions import (
     SyncLockError,
     UnreadableTaxonomyError,
 )
-from litman.server import peer_owner
+from litman.server import errors, peer_owner
 from litman.server.local_guard import LocalPageGuard
 from litman.server.routes_agent import router as agent_router
+from litman.server.routes_gui_log import router as gui_log_router
 from litman.server.routes_ingest import router as ingest_router
 from litman.server.routes_ingest import sweep_uploads
 from litman.server.routes_presence import router as presence_router
@@ -120,6 +122,10 @@ _VAULTLESS_ALLOWED = frozenset(
         # touches no vault. A library gone mid-session leaves the main view up,
         # DOI and what's-new links and all.
         ("POST", "/api/open-url"),
+        # The page's own failures (pdf.js, a save before a switch) go to the
+        # machine's GUI log, which lives beside the registry, not in a vault:
+        # the welcome page fails too.
+        ("POST", "/api/gui-log"),
     }
 )
 
@@ -149,6 +155,7 @@ _WRITES_NOT_SYNCED = frozenset(
         ("POST", "/api/ingest/derive-id"),
         ("POST", "/api/si/requests"),
         ("POST", "/api/sync"),
+        ("POST", "/api/gui-log"),
     }
 )
 
@@ -277,7 +284,7 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
     # the failure is surfaced exactly once, through GET /api/version, on the
     # first server run after the mishap. Local disk, so read inline.
     try:
-        from litman.core.self_update_helper import fail_flag_path
+        from litman.core.self_update_helper import fail_flag_path, log_path
 
         flag = fail_flag_path()
         if flag.exists():
@@ -285,6 +292,18 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
                 flag.read_text(encoding="utf-8").strip() or "self-update failed"
             )
             flag.unlink()
+            # The flag goes, the reason stays: the page only says the update
+            # failed, and this is where the agent it sends reads why.
+            app.state.gui_log.record(
+                kind="warning",
+                text=(
+                    f"The last automatic update failed ({app.state.self_update_failed}); "
+                    f"litman is still on the previous version. Its output is in "
+                    f"{log_path()}; `lit self-update` tries again."
+                ),
+                vault=app.state.vault,
+                code="self-update-failed",
+            )
     except Exception:
         pass
 
@@ -353,6 +372,9 @@ def create_app(vault: Path | None) -> FastAPI:
     """
     app = FastAPI(title="litman webUI", version="0", lifespan=_lifespan)
     app.state.vault = vault
+    # What the page could not do, in full, for `lit gui-log` (server/errors.py
+    # answers and logs every failure; core/gui_log.py writes the file).
+    app.state.gui_log = GuiLog()
     # Live-page counter behind the /api/presence WebSocket. Created (and the
     # route mounted) unconditionally: in tab/headless mode pages connect too,
     # but nothing consumes the signal — only the --window watcher does, so no
@@ -411,22 +433,24 @@ def create_app(vault: Path | None) -> FastAPI:
         is_api = request.url.path.startswith("/api/")
         if is_api and not _vaultless_allowed(request.method, request.url.path):
             if vault is None:
-                response: Response = JSONResponse(
-                    status_code=409,
-                    content={"detail": "No active vault yet — create or open one first."},
+                response: Response = errors.error_response(
+                    request,
+                    409,
+                    "No active vault yet — create or open one first.",
+                    "no-vault",
                 )
                 response.headers["Cache-Control"] = "no-store"
                 return response
             if not (vault / CONFIG_FILENAME).is_file():
-                response = JSONResponse(
-                    status_code=410,
-                    content={
-                        "detail": (
-                            f"The library is no longer at {vault} — it was moved, "
-                            "renamed or deleted while litman was running."
-                        ),
-                        "path": str(vault),
-                    },
+                response = errors.error_response(
+                    request,
+                    410,
+                    (
+                        f"The library is no longer at {vault} — it was moved, "
+                        "renamed or deleted while litman was running."
+                    ),
+                    "vault-gone",
+                    extra={"path": str(vault)},
                 )
                 response.headers["Cache-Control"] = "no-store"
                 return response
@@ -469,14 +493,14 @@ def create_app(vault: Path | None) -> FastAPI:
         deadline = loop.time() + SAVE_WAIT_S
 
         def busy() -> Response:
-            return JSONResponse(
-                status_code=503,
-                content={
-                    "detail": (
-                        "A sync of this library is running. Your change was not "
-                        "saved; try again in a minute."
-                    )
-                },
+            return errors.error_response(
+                request,
+                503,
+                (
+                    "A sync of this library is running. Your change was not "
+                    "saved; try again in a minute."
+                ),
+                "sync-busy",
                 headers={"Retry-After": "5", "Cache-Control": "no-store"},
             )
 
@@ -507,9 +531,10 @@ def create_app(vault: Path | None) -> FastAPI:
     async def _corrupt_metadata(request: Request, exc: CorruptMetadataError) -> JSONResponse:
         """A paper's metadata.yaml cannot be used: the 500 ``get_paper`` gives,
         for every route. A write reaches files the user did not name — pairing
-        a relation loads the other paper — and without this the toast would say
-        "Internal Server Error" instead of which file to fix and how."""
-        return JSONResponse(status_code=500, content={"detail": str(exc)})
+        a relation loads the other paper — and without this the log would hold
+        "Internal Server Error" instead of which file to fix and how. The page
+        names the file, by its path inside the library."""
+        return errors.litman_error_response(request, 500, exc)
 
     @app.exception_handler(UnreadableTaxonomyError)
     async def _unreadable_taxonomy(
@@ -519,7 +544,7 @@ def create_app(vault: Path | None) -> FastAPI:
         for every route that reads it — the vocabulary and project lists,
         registering a value, tagging a paper, adding or renaming a project —
         worded as the CLI words it, instead of "Internal Server Error"."""
-        return JSONResponse(status_code=500, content={"detail": str(exc)})
+        return errors.litman_error_response(request, 500, exc)
 
     @app.exception_handler(ConfigError)
     async def _config_unreadable(request: Request, exc: ConfigError) -> JSONResponse:
@@ -528,10 +553,11 @@ def create_app(vault: Path | None) -> FastAPI:
         removing a project, linking a paper, restoring one from the trash —
         instead of "Internal Server Error". The CLI's own message carries the
         file's path and pydantic's full report, too long for a toast."""
-        return JSONResponse(
-            status_code=500,
-            content={"detail": config_problem(exc, "fix it and try again")},
+        return errors.litman_error_response(
+            request, 500, exc, config_problem(exc, "fix it and try again")
         )
+
+    errors.install(app)
 
     app.include_router(read_router)
     app.include_router(write_router)
@@ -544,6 +570,7 @@ def create_app(vault: Path | None) -> FastAPI:
     app.include_router(ingest_router)
     app.include_router(si_router)
     app.include_router(sync_router)
+    app.include_router(gui_log_router)
 
     if _WEBUI_ASSETS.is_dir():
         # html=True so client-side routes fall back to index.html.

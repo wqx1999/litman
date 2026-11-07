@@ -25,9 +25,8 @@ function useChooseLang(onSaveError: (msg: string) => void) {
   const choose = (next: LangPref) => {
     if (next === pref) return
     setLangPref(next)
-    saveUiLang(next).catch((e: unknown) => {
-      const detail = e instanceof Error ? e.message : String(e)
-      onSaveError(getT().reader.cheatSheet.lang.saveFailed(detail))
+    saveUiLang(next).catch(() => {
+      onSaveError(getT().reader.cheatSheet.lang.saveFailed)
     })
   }
   return { pref, choose }

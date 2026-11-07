@@ -11,7 +11,8 @@ import {
   type SiRow,
   type SiSnapshot,
 } from '../api'
-import { useT } from '../i18n'
+import { getT, useT } from '../i18n'
+import { errorLine, type CodeLines } from '../apiErrors'
 import { formatBytes } from './bytes'
 import { useEscapeLayer } from './escapeStack'
 import { modalBackdropProps, useModalCardFocus } from './modalShell'
@@ -186,6 +187,13 @@ export default function AddSi({
     setGone(message)
     onGone(rid)
   }
+  // The window's line for a failure: the request gone (this window has
+  // expired), the paper gone, or the action's own line (`fixed`). The
+  // server's own words are in the GUI log.
+  const siLine = (err: unknown, fixed?: string) => {
+    const w = getT().errors.siWindow
+    return errorLine(err, fixed ?? null, w.codes) ?? w.codes['si-request-gone']()
+  }
 
   const applySnapshot = (snap: SiSnapshot, stale = false) => {
     if (snap.status === 'added' && settling.current) {
@@ -224,7 +232,7 @@ export default function AddSi({
       })
       .catch((err) => {
         if (alive.current && err instanceof ApiError && err.status === 404) {
-          markGone(err.message)
+          markGone(siLine(err))
         }
       })
     const inFlight = uploads.current
@@ -246,7 +254,7 @@ export default function AddSi({
       })
       .catch((err) => {
         if (!alive.current || busyRef.current) return
-        if (err instanceof ApiError && err.status === 404) markGone(err.message)
+        if (err instanceof ApiError && err.status === 404) markGone(siLine(err))
       })
   }
   useEffect(() => {
@@ -297,8 +305,8 @@ export default function AddSi({
           setRows((prev) => prev.filter((r) => r.key !== row.key))
           return
         }
-        const message = err instanceof Error ? err.message : String(err)
         const lost = err instanceof ApiError && err.status === 404
+        const message = siLine(err, getT().errors.siWindow.uploadFailed(row.name))
         setRows((prev) =>
           prev.map((r) =>
             r.key === row.key
@@ -387,7 +395,7 @@ export default function AddSi({
         removed.current.delete(fid)
         touch()
         setRows((prev) => prev.map((r) => (r.key === key ? { ...r, state: 'done' } : r)))
-        const message = err instanceof Error ? err.message : String(err)
+        const message = siLine(err)
         if (err instanceof ApiError && err.status === 404) markGone(message)
         else setError(message)
       })
@@ -447,7 +455,7 @@ export default function AddSi({
       // An answer from the server means this Done did not land. No answer (the
       // connection dropped) leaves it open: the next snapshot says.
       if (err instanceof ApiError) settling.current = false
-      const message = err instanceof Error ? err.message : String(err)
+      const message = siLine(err, getT().errors.siWindow.notAdded)
       if (err instanceof ApiError && err.status === 404) {
         markGone(message)
       } else {
@@ -672,8 +680,15 @@ function RowLine({
   onUpload: (row: LocalRow) => void
   onRemove: (row: LocalRow) => void
 }) {
-  const m = useT().cockpit.addSi
+  const t = useT()
+  const m = t.cockpit.addSi
   const s = row.server
+  // Why the file was or was not taken, in the window's words; the server's
+  // own sentence only when it gave no code.
+  const why = s
+    ? ((t.errors.siWindow.verdicts as CodeLines)[s.reasonCode ?? '']?.(s.reasonParams ?? {}) ??
+      s.reason)
+    : undefined
   // A failed upload was never checked: no mark, like a large file not sent yet.
   const verdict = row.state === 'failed' ? undefined : s?.verdict
   const mark = verdict === 'ok' ? '✓' : verdict === 'unverified' ? '?' : verdict ? '✕' : ''
@@ -687,7 +702,7 @@ function RowLine({
         : s && s.verdict !== 'rejected'
           ? formatBytes(s.bytes)
           : null
-  const okReason = s?.verdict === 'ok' ? s.reason : undefined
+  const okReason = s?.verdict === 'ok' ? why : undefined
 
   let detail: React.ReactNode = null
   if (row.state === 'large') {
@@ -710,7 +725,7 @@ function RowLine({
   } else if (s?.verdict === 'unverified') {
     detail = (
       <>
-        <span className="min-w-0 flex-1">{s.reason}</span>
+        <span className="min-w-0 flex-1">{why}</span>
         <label className="inline-flex shrink-0 cursor-pointer items-center gap-1 text-stone-700">
           <input
             type="checkbox"
@@ -724,7 +739,7 @@ function RowLine({
       </>
     )
   } else if (s?.verdict === 'rejected') {
-    detail = <span className="min-w-0 flex-1">{s.reason}</span>
+    detail = <span className="min-w-0 flex-1">{why}</span>
   }
 
   return (

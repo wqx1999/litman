@@ -8,8 +8,7 @@ export const reader: Messages['reader'] = {
       auto: '跟随系统',
       autoTitle: (system: 'en' | 'zh') =>
         `跟随系统语言（系统当前是${system === 'zh' ? '中文' : '英文'}）`,
-      saveFailed: (detail: string) =>
-        `语言设置没能保存：${detail}。本窗口先按新语言显示，刷新后恢复原设置。`,
+      saveFailed: '语言设置未保存，刷新页面后将恢复原设置',
     },
     or: '或',
     // Where the shortcut works: in a PDF tab, in the note box, with a tool
@@ -92,7 +91,7 @@ export const reader: Messages['reader'] = {
     updated: '已更新',
     // Version first, as in the approved mockup.
     title: (version: string) => `litman ${version} 更新内容`,
-    noHighlights: '这个版本没有记录更新要点。',
+    noHighlights: '这个版本没有记录更新要点',
     changelog: '查看完整更新日志 →',
   },
 
@@ -116,7 +115,8 @@ export const reader: Messages['reader'] = {
     saveTitle: '把标注保存进 PDF（⌘/Ctrl+S）',
     noChanges: '没有未保存的改动',
     pageCount: (n: number) => `${n} 页`,
-    loadFailed: (detail: string) => `PDF 加载失败：${detail}`,
+    loadFailed: 'PDF 加载失败',
+    notOnThisComputer: '本机没有这篇论文的 PDF',
     loading: '正在加载 PDF…',
     notePlaceholder: '添加批注…',
     deleteAnnotation: '删除标注',
@@ -156,19 +156,19 @@ export const reader: Messages['reader'] = {
     unavailable: '无法读取',
     hintStart: '双击开始写',
     hintEdit: '双击编辑',
-    saveFailed: (file: string) => `${file} 保存失败，改动已保留，请重试。`,
+    saveFailed: (file: string) => `${file} 保存失败，改动已保留，请重试`,
     loadFailed: (file: string) => `无法读取 ${file}`,
-    loadFailedFix: '在磁盘上修好这个文件，再重新打开此标签页。litman 不会覆盖原文件。',
-    missingTrashed: (file: string) => `回收站里的这篇论文没有 ${file}。`,
-    missing: (file: string) => `这篇论文还没有 ${file}，双击开始写。`,
+    loadFailedFix: '文件未作改动，修复后请重新打开此标签页',
+    missingTrashed: (file: string) => `回收站里的这篇论文没有 ${file}`,
+    missing: (file: string) => `这篇论文还没有 ${file}，双击开始写`,
   },
 
   tabArea: {
-    noTabs: '从列表中打开一篇论文。',
+    noTabs: '从列表中打开一篇论文',
     closeTab: '关闭标签页',
     closeOthers: '关闭其他标签页',
     closeAll: '关闭所有标签页',
-    noDocument: '没有打开的文档。',
+    noDocument: '没有打开的文档',
   },
 
   saveDialog: {
@@ -189,10 +189,10 @@ export const reader: Messages['reader'] = {
   removePaper: {
     dialogLabel: '从文献库移除论文',
     title: (id: string) => `把“${id}”移出文献库？`,
-    body: '论文会移到 {trash}，并从 INDEX 和各个列表中移除。之后可在应用内的 🗑 回收站中恢复。',
-    previewFailed: (detail: string) => `无法预览移除的影响：${detail}`,
+    body: '论文将移到回收站，可随时在 🗑 回收站中恢复。',
+    previewFailed: '无法预览移除的影响',
     checking: '正在检查会影响哪些内容…',
-    nothingLinks: '没有其他内容关联到这篇论文。',
+    nothingLinks: '没有其他内容关联到这篇论文',
     alsoBreaks: '同时还会：',
     references: (papers: string[]) =>
       `从 ${papers.length} 篇论文的关联论文中移除：${papers.join('、')}`,
@@ -204,8 +204,8 @@ export const reader: Messages['reader'] = {
       `取消关联 ${repos.length} 个代码仓库（保留：没有来源可以重新克隆）：${repos.join('、')}`,
     reposEdited: (repos: string[]) =>
       `取消关联 ${repos.length} 个代码仓库（保留：有本地改动）：${repos.join('、')}`,
-    reposUnchecked: (repos: { name: string; reason: string }[]) =>
-      `取消关联 ${repos.length} 个代码仓库（保留：无法检查是否有改动）：${repos.map((r) => `${r.name}（${r.reason}）`).join('、')}`,
+    reposUnchecked: (repos: string[]) =>
+      `取消关联 ${repos.length} 个代码仓库（保留：无法检查是否有改动）：${repos.join('、')}`,
     projects: (projects: string[]) =>
       `与 ${projects.length} 个项目取消关联：${projects.join('、')}`,
     // “(deleted)” is the literal tag written into the notes: kept in English.

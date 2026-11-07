@@ -488,6 +488,7 @@ export default function TabArea({
             onRegister={onRegisterPdf}
             reloadToken={mdReloadToken}
             onSaveReplaced={onSaveReplaced}
+            onNotify={onNotify}
           />
         )}
         {active && active.kind !== 'pdf' && (

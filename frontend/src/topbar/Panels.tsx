@@ -7,7 +7,6 @@ import type {
 import type { AgentLaunchMode, AgentStatus, AgentStatusEntry } from '../api'
 import type { ToastVariant } from '../ui/Toast'
 import { enumLabel, formatLocale, getT, useT } from '../i18n'
-import { rich } from '../i18n/rich'
 import HelpHint from '../ui/HelpHint'
 import { withCode } from '../ui/codeSpans'
 import { useEscapeLayer } from '../ui/escapeStack'
@@ -39,8 +38,10 @@ const SEVERITY_ORDER: Record<HealthIssue['severity'], number> = {
  * themes to dark via the inverted `stone` ramp + the global `.dark .bg-white`
  * rule (no manual `dark:` variants). The fetch is owned by TopBar (the count
  * badge must outlive a panel close); this is the presentational view of that
- * result. Groups by `category` (server/registry order preserved) then orders
- * each group's rows error→warning→info. Esc + click-outside close. */
+ * result. Groups by `category` (server/registry order preserved), headed by
+ * the category's name, then orders each group's rows error→warning→info. Only
+ * the message shows: the hints name CLI commands, which are the agent's side
+ * (`lit health-check` prints them). Esc + click-outside close. */
 export function HealthPanel({
   issues,
   loading,
@@ -100,11 +101,7 @@ export function HealthPanel({
             {loading ? h.running : h.rerun}
           </button>
         </div>
-        <p className="mt-1.5 text-xs leading-relaxed text-stone-500">
-          {rich(h.intro, {
-            command: <span className="font-mono text-stone-600"> lit health-check --fix</span>,
-          })}
-        </p>
+        <p className="mt-1.5 text-xs leading-relaxed text-stone-500">{h.intro}</p>
         <div className="mt-3 min-h-0 flex-1 overflow-y-auto rounded-lg border border-stone-200">
           {loading && (
             <div className="px-3 py-6 text-center text-xs text-stone-400">
@@ -128,8 +125,8 @@ export function HealthPanel({
                 key={category}
                 className="border-b border-stone-100 last:border-b-0"
               >
-                <div className="bg-stone-50 px-3 py-1.5 font-mono text-[11px] font-semibold uppercase tracking-wider text-stone-600">
-                  {category} · {bucket.length}
+                <div className="bg-stone-50 px-3 py-1.5 text-[11px] font-semibold tracking-wider text-stone-600">
+                  {enumLabel(h.categories, category)} · {bucket.length}
                 </div>
                 {bucket.map((issue, i) => (
                   <div
@@ -153,11 +150,6 @@ export function HealthPanel({
                           </span>
                         )}
                       </div>
-                      {issue.hint && (
-                        <div className="mt-0.5 text-[11px] italic text-stone-400">
-                          {issue.hint}
-                        </div>
-                      )}
                     </div>
                   </div>
                 ))}

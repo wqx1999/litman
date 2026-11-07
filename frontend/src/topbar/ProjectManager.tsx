@@ -6,6 +6,7 @@ import type {
 } from '../types'
 import { projectHealth } from '../projects'
 import { getT, useT } from '../i18n'
+import { errorLine } from '../apiErrors'
 import {
   createProject,
   deleteProject,
@@ -85,9 +86,10 @@ export default function ProjectManager({
       const res = await deleteProject(name)
       const left = res.foldersLeft
       if (left.length) {
-        // The project is out of the config, so nothing looks at these folders
-        // again: this is the one chance to say so — keep it up until read.
-        notify(getT().browse.projectManager.removedWithLeftovers(name, left), 'warning', {
+        // The project is out of the config, so health-check never looks at
+        // these folders again; the server logs each one with its reason. Keep
+        // the count up until read.
+        notify(getT().browse.projectManager.removedWithLeftovers(name, left.length), 'warning', {
           sticky: true,
         })
       } else {
@@ -95,7 +97,7 @@ export default function ProjectManager({
       }
       onChanged()
     } catch (err) {
-      notify(err instanceof Error ? err.message : String(err), 'error')
+      notifyProjectFailure(notify, err)
     } finally {
       setBusy(false)
       setPendingDelete(null)
@@ -110,7 +112,7 @@ export default function ProjectManager({
       onChanged()
       setPendingRename(null)
     } catch (err) {
-      notify(err instanceof Error ? err.message : String(err), 'error')
+      notifyProjectFailure(notify, err)
       // Keep the dialog open so the user can fix the name.
     } finally {
       setBusy(false)
@@ -129,7 +131,7 @@ export default function ProjectManager({
       onChanged()
       setPendingSetPath(null)
     } catch (err) {
-      notify(err instanceof Error ? err.message : String(err), 'error')
+      notifyProjectFailure(notify, err)
       // Keep the dialog open so the user can fix the path.
     } finally {
       setBusy(false)
@@ -558,7 +560,7 @@ function NewProjectDialog({
       notify(getT().browse.projectManager.linked(name.trim()), 'success')
       onCreated()
     } catch (err) {
-      notify(err instanceof Error ? err.message : String(err), 'error')
+      notifyProjectFailure(notify, err)
       setBusy(false) // keep the dialog open so the user can fix the path
     }
   }
@@ -633,4 +635,14 @@ function NewProjectDialog({
       </div>
     </div>
   )
+}
+
+/** A project write that failed: the line for the server's code (name taken,
+ * path not usable, project gone), or the generic one. */
+function notifyProjectFailure(
+  notify: (message: string, variant?: ToastVariant) => void,
+  err: unknown,
+) {
+  const line = errorLine(err, null, getT().errors.project)
+  if (line) notify(line, 'error')
 }

@@ -15,6 +15,8 @@ import type { ProjectStatus } from './types'
 export type ProjectHealth = {
   /** `missing` is fixable from the GUI (re-point it); `incomplete` is not. */
   tone: 'missing' | 'incomplete'
+  /** A paper not linked yet can be linked to it from its project picker. */
+  linkable: boolean
   badge: string
   title: string
 }
@@ -27,21 +29,21 @@ export function projectHealth(status: ProjectStatus): ProjectHealth | null {
       // was moved, renamed or deleted behind litman's back. The manager row's
       // re-point button fixes it in place, which is why this marker sits beside
       // it rather than in a warning the user has to remember to act on.
-      return { tone: 'missing', ...t.missing }
+      return { tone: 'missing', linkable: false, ...t.missing }
     // The two halves of a split registration. A project lives in two truth
-    // sources at once (invariant #2 writes them together, so neither state can
-    // arise from litman's own writes) — but lit-config.yaml has no `lit config
-    // set`, hand-editing is its only mutation path, so both are reachable. The
-    // titles name the file the project is absent from, because that is where the
-    // fix has to happen: re-pointing cannot repair either one. They also differ
-    // in what a link attempt does — taxonomy-only is refused (no folder to link
-    // into), config-only SUCCEEDS (the link backend resolves the config map
-    // only, never TAXONOMY) and quietly deepens the split — so the config-only
-    // title must not claim tagging is blocked.
+    // sources at once (invariant #2 writes them together on one machine). Two-
+    // way sync makes taxonomy-only the normal state of a project added on
+    // another computer: it carries TAXONOMY.md, never lit-config.yaml, and
+    // "Change path" gives it a folder here. Config-only comes from a hand edit
+    // of lit-config.yaml. Taxonomy-only takes links from the picker: linking
+    // writes the paper's record alone, and the computer that has the folder
+    // builds the link at its next sync. Config-only keeps its badge there, as
+    // a link would write a project value TAXONOMY.md does not list (`lit link`
+    // still links it in full). Neither title claims tagging is blocked.
     case 'config-only':
-      return { tone: 'incomplete', ...t.configOnly }
+      return { tone: 'incomplete', linkable: false, ...t.configOnly }
     case 'taxonomy-only':
-      return { tone: 'incomplete', ...t.taxonomyOnly }
+      return { tone: 'incomplete', linkable: true, ...t.taxonomyOnly }
     default:
       return null
   }

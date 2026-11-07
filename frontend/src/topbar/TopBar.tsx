@@ -22,6 +22,7 @@ import {
 } from '../api'
 import type { AgentLaunchMode, AgentLaunchResult, AgentStatus } from '../api'
 import { getT, useT } from '../i18n'
+import { errorLine } from '../apiErrors'
 import SyncButton from './SyncButton'
 import SearchBox from './SearchBox'
 import ProjectManager from './ProjectManager'
@@ -215,9 +216,10 @@ export default function TopBar({
   // replaces the button and carries its own manual instructions — the popover
   // offers one action, never a button and a command to choose between.
   const [updatePhase, setUpdatePhase] = useState<null | 'busy' | 'closing'>(null)
-  // The server's refusal text as sent, or 'startFailed' for our own sentence
-  // (built at render, so it follows a language switch).
-  const [updateRefused, setUpdateRefused] = useState<string | 'startFailed' | null>(null)
+  // 'refused' when this install cannot update itself (the server says why in
+  // the GUI log), 'startFailed' for any other failure; the sentence is built at
+  // render, so it follows a language switch.
+  const [updateRefused, setUpdateRefused] = useState<'refused' | 'startFailed' | null>(null)
 
   const startSelfUpdate = () => {
     if (updatePhase) return
@@ -232,7 +234,9 @@ export default function TopBar({
       })
       .catch((err) => {
         setUpdatePhase(null)
-        setUpdateRefused(err instanceof ApiError ? err.message : 'startFailed')
+        setUpdateRefused(
+          err instanceof ApiError && err.code === 'update-refused' ? 'refused' : 'startFailed',
+        )
       })
   }
   // Hand the opener up to App (the vault-gone banner drives it). `setShowVaults`
@@ -253,7 +257,8 @@ export default function TopBar({
   // re-runs it: not focus, not resync, no timer (run_all_checks is Tier-2).
   const [healthIssues, setHealthIssues] = useState<HealthIssue[] | null>(null)
   const [healthLoading, setHealthLoading] = useState(false)
-  const [healthError, setHealthError] = useState<string | null>(null)
+  // The last run failed; the panel says so in one line (the server logged why).
+  const [healthError, setHealthError] = useState(false)
 
   // Two independent knobs — kept separate on purpose, so a future foreground
   // caller can disown a stale run and still be told when it fails:
@@ -277,15 +282,15 @@ export default function TopBar({
     const isStale = opts?.isStale
     if (isStale?.()) return
     setHealthLoading(true)
-    setHealthError(null)
+    setHealthError(false)
     fetchHealth()
       .then((issues) => {
         if (isStale?.()) return
         setHealthIssues(issues)
       })
-      .catch((err) => {
+      .catch(() => {
         if (opts?.silent || isStale?.()) return
-        setHealthError(err instanceof Error ? err.message : String(err))
+        setHealthError(true)
       })
       .finally(() => {
         if (isStale?.()) return
@@ -321,7 +326,7 @@ export default function TopBar({
   useEffect(() => {
     if (!vaults?.served) return
     setHealthIssues(null)
-    setHealthError(null)
+    setHealthError(false)
     let cancelled = false
     const go = () => runHealth({ isStale: () => cancelled, silent: true })
     const idle = (window as any).requestIdleCallback as
@@ -422,9 +427,22 @@ export default function TopBar({
     }
   }, [])
 
+  // The name an agent is shown by (the status lists it); the name itself until
+  // the status has loaded.
+  const displayOf = (name: string) =>
+    agentStatus?.agents.find((a) => a.name === name)?.display ?? name
+
+  // Launch, install, default, mode: a failure the server named gets its line
+  // (not installed, could not open); otherwise the action's.
+  const notifyAgentFailure = (err: unknown, fixed?: string) => {
+    const line = errorLine(err, fixed ?? null, getT().errors.agent.codes)
+    if (line) notify(line, 'error')
+  }
+
   const handleLaunch = (res: AgentLaunchResult) => {
     if (res.permission_warning) {
-      notify(res.permission_warning, 'warning')
+      // What was not written, and where, is in the GUI log.
+      notify(getT().errors.agent.permissionsNotWritten(displayOf(res.agent)), 'warning')
     }
     if (res.mode === 'spawned') {
       setAgentUi(null)
@@ -458,9 +476,7 @@ export default function TopBar({
         }
         return launchAgent().then(handleLaunch)
       })
-      .catch((err) =>
-        notify(err instanceof Error ? err.message : String(err), 'error'),
-      )
+      .catch((err) => notifyAgentFailure(err, getT().errors.agent.statusFailed))
       .finally(() => setAgentBusy(false))
   }
 
@@ -480,9 +496,7 @@ export default function TopBar({
     setAgentBusy(true)
     refreshAgentStatus()
       .then((status) => setAgentUi({ kind: 'setup', status }))
-      .catch((err) =>
-        notify(err instanceof Error ? err.message : String(err), 'error'),
-      )
+      .catch((err) => notifyAgentFailure(err, getT().errors.agent.statusFailed))
       .finally(() => setAgentBusy(false))
   }
 
@@ -500,7 +514,7 @@ export default function TopBar({
       .then(handleLaunch)
       .catch((err) => {
         setAgentUi(null)
-        notify(err instanceof Error ? err.message : String(err), 'error')
+        notifyAgentFailure(err)
       })
       .finally(() => setAgentBusy(false))
   }
@@ -521,7 +535,7 @@ export default function TopBar({
       .then((s) => {
         setAgentUi({ kind: 'setup', status: s })
         if (permissionWarning) {
-          notify(permissionWarning, 'warning')
+          notify(getT().errors.agent.permissionsNotWritten(displayOf(name)), 'warning')
         } else {
           notify(
             makeDefault
@@ -531,9 +545,7 @@ export default function TopBar({
           )
         }
       })
-      .catch((err) =>
-        notify(err instanceof Error ? err.message : String(err), 'error'),
-      )
+      .catch((err) => notifyAgentFailure(err))
       .finally(() => setAgentBusy(false))
   }
 
@@ -548,9 +560,7 @@ export default function TopBar({
         setAgentUi({ kind: 'setup', status: s })
         notify(getT().topbar.topBar.nowDefault(name), 'success')
       })
-      .catch((err) =>
-        notify(err instanceof Error ? err.message : String(err), 'error'),
-      )
+      .catch((err) => notifyAgentFailure(err))
       .finally(() => setAgentBusy(false))
   }
 
@@ -582,7 +592,7 @@ export default function TopBar({
       .then(() => true)
       .catch((err) => {
         if (before) show(before)
-        notify(err instanceof Error ? err.message : String(err), 'error')
+        notifyAgentFailure(err)
         return false
       })
       .finally(() => {
@@ -761,7 +771,9 @@ export default function TopBar({
                 )}
                 {updateRefused ? (
                   <div className="mt-2 text-xs text-amber-700">
-                    {updateRefused === 'startFailed' ? tb.updateStartFailed : updateRefused}
+                    {updateRefused === 'startFailed'
+                      ? tb.updateStartFailed
+                      : t.errors.updateRefused}
                   </div>
                 ) : (
                   <button
@@ -952,7 +964,7 @@ export default function TopBar({
         <HealthPanel
           issues={healthIssues}
           loading={healthLoading}
-          error={healthError}
+          error={healthError ? t.errors.healthFailed : null}
           onRerun={() => runHealth()}
           onClose={closePanel}
         />

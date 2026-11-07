@@ -164,11 +164,11 @@ export default function MdView({
   // The version `text` was read at; an edit starts from it.
   const [version, setVersion] = useState<string | null>(null)
   const [loaded, setLoaded] = useState(false)
-  // Load failed with a described server error (e.g. the file on disk is not
-  // UTF-8). Kept separate from `missing`: the file EXISTS, so the tab must
-  // explain instead of offering "start writing" (whose save would overwrite
-  // the original).
-  const [loadError, setLoadError] = useState<string | null>(null)
+  // The server could not read the file (e.g. it is not UTF-8 on disk). Kept
+  // separate from `missing`: the file EXISTS, so the tab must say so instead
+  // of offering "start writing" (whose save would overwrite the original).
+  // The server's reason is not shown here; health-check reports it.
+  const [loadError, setLoadError] = useState(false)
   const [saving, setSaving] = useState(false)
   // Previewing the draft: the edit session is still open, but the rendered view
   // is showing instead of the textarea. Only meaningful while editing — see
@@ -216,7 +216,7 @@ export default function MdView({
   useEffect(() => {
     let cancelled = false
     setLoaded(false)
-    setLoadError(null)
+    setLoadError(false)
     // Read-only (trash) tabs address the file by the trash entry_name, which the
     // host passes as `paperId`; live tabs use the per-paper read endpoints.
     const load = readOnly
@@ -232,12 +232,12 @@ export default function MdView({
         setVersion(loadedFile?.version ?? null)
         setLoaded(true)
       })
-      .catch((err: unknown) => {
+      .catch(() => {
         if (cancelled) return
         // Deliberately NOT setLoaded(true): `loaded` gates enterEdit, and
         // editing a file the server could not read would overwrite it with a
         // blank draft on save. Unreadable ⇒ not editable until fixed on disk.
-        setLoadError(err instanceof Error ? err.message : String(err))
+        setLoadError(true)
       })
     return () => {
       cancelled = true
@@ -268,11 +268,11 @@ export default function MdView({
         // A resync can also RECOVER a previously unreadable file (the user
         // fixed it on disk): clear the error and unlock the tab.
         setLoaded(true)
-        setLoadError(null)
+        setLoadError(false)
       })
-      .catch((err: unknown) => {
+      .catch(() => {
         if (cancelled) return
-        setLoadError(err instanceof Error ? err.message : String(err))
+        setLoadError(true)
       })
     return () => {
       cancelled = true
@@ -595,7 +595,6 @@ export default function MdView({
           <p className="font-medium text-stone-600">
             {tx.loadFailed(file)}
           </p>
-          <p className="mt-2 max-w-prose">{loadError}</p>
           <p className="mt-2 max-w-prose text-stone-400">
             {tx.loadFailedFix}
           </p>

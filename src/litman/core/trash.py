@@ -88,7 +88,7 @@ from litman.core.views import (
     view_fields_snapshot,
 )
 from litman.core.yaml_pool import ThreadLocalYAML
-from litman.exceptions import TrashError
+from litman.exceptions import TrashError, coded
 
 TRASH_DIRNAME = ".trash"
 
@@ -450,7 +450,7 @@ def resolve_trash_entry(vault: Path, paper_id_or_entry: str) -> TrashEntry:
     """
     entries = list_trash(vault)
     if not entries:
-        raise TrashError("Trash is empty.")
+        raise coded(TrashError("Trash is empty."), "trash-entry-missing")
 
     # Try exact entry-name match first.
     for e in entries:
@@ -460,9 +460,12 @@ def resolve_trash_entry(vault: Path, paper_id_or_entry: str) -> TrashEntry:
     # Fall back to paper-id match.
     by_id = [e for e in entries if e.paper_id == paper_id_or_entry]
     if not by_id:
-        raise TrashError(
-            f"No trash entry matches {paper_id_or_entry!r}. "
-            "Run `lit trash list` to see available entries."
+        raise coded(
+            TrashError(
+                f"No trash entry matches {paper_id_or_entry!r}. "
+                "Run `lit trash list` to see available entries."
+            ),
+            "trash-entry-missing",
         )
     if len(by_id) > 1:
         names = "\n  - ".join(e.entry_name for e in by_id)
@@ -854,9 +857,13 @@ def restore_from_trash(
     dst = vault / "papers" / paper_id
     if dst.exists():
         # Step 0: a live paper occupies the id slot — refuse, never overwrite.
-        raise TrashError(
-            f"Cannot restore {paper_id!r}: papers/{paper_id}/ "
-            "already exists. Rename or remove the active paper first."
+        raise coded(
+            TrashError(
+                f"Cannot restore {paper_id!r}: papers/{paper_id}/ "
+                "already exists. Rename or remove the active paper first."
+            ),
+            "restore-target-exists",
+            id=paper_id,
         )
 
     if registry is None:

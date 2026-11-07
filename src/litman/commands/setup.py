@@ -49,6 +49,7 @@ from litman.core.vault_registry import (
     VaultRegistryError,
     ensure_name_registrable,
     load_registry,
+    suggest_vault_name,
 )
 from litman.exceptions import LibraryNotFoundError, LitmanError
 
@@ -323,7 +324,7 @@ def _step_vault(
         # The bare default 'literature_vault' would collide with the existing
         # registration, so suggest a collision-free '<base>_<n>' instead. User
         # can still type their own name (validated below).
-        default_name = _suggest_distinct_name(reg)
+        default_name = suggest_vault_name(reg, DEFAULT_VAULT_NAME)
 
     name = _prompt_vault_name(reg, default_name)
 
@@ -340,20 +341,6 @@ def _step_vault(
         init_cmd, parent_dir=Path(parent), name=name, register_as=name
     )
     did.append("vault")
-
-
-def _suggest_distinct_name(reg: VaultRegistry) -> str:
-    """Return ``DEFAULT_VAULT_NAME`` if it is free, else the first
-    ``<base>_<n>`` (n=2,3,...) that is not already in the registry. Seeds
-    the wizard's name prompt with a collision-free default so the common
-    case is one Enter, not a re-prompt loop."""
-    used = {v.name for v in reg.vaults}
-    if DEFAULT_VAULT_NAME not in used:
-        return DEFAULT_VAULT_NAME
-    n = 2
-    while f"{DEFAULT_VAULT_NAME}_{n}" in used:
-        n += 1
-    return f"{DEFAULT_VAULT_NAME}_{n}"
 
 
 def _prompt_vault_name(reg: VaultRegistry, default: str) -> str:

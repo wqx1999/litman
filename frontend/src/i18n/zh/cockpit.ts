@@ -7,8 +7,8 @@ export const cockpit: Messages['cockpit'] = {
     heading: '元数据',
     trashedHeading: '回收站中的论文',
     loading: '正在加载…',
-    selectPaper: '请选择一篇论文。',
-    selectTrashed: '请在回收站中选择一篇论文。',
+    selectPaper: '请选择一篇论文',
+    selectTrashed: '请在回收站中选择一篇论文',
     // 「题录」是 CNKI / NoteExpress 用户熟悉的说法，指 bibliographic fields。
     editTitle: '编辑标题、年份、期刊、作者等题录信息',
     editAria: '编辑元数据',
@@ -27,13 +27,12 @@ export const cockpit: Messages['cockpit'] = {
     citeWarnHeading: '引用已复制，请核对：',
     restoring: '正在恢复…',
     restore: '↩ 恢复到文献库',
-    orphanRepos: (n: number) =>
-      `这篇论文的 ${n} 个代码仓库已从磁盘彻底删除，恢复后需在 CLI 中重新克隆（lit trash restore / lit health-check）。`,
+    orphanRepos: (n: number) => `${n} 个代码仓库已从磁盘删除，恢复后需重新克隆`,
     notReadYet: '尚未标记为已读',
     siDeleted: (file: string) => `已删除 ${file}`,
-    siDeletedWithWarnings: (file: string, warnings: string) => `已删除 ${file} · ${warnings}`,
+    siDeletedWithWarnings: (file: string) => `已删除 ${file} · 文献库索引未更新`,
     looksLikeExisting: (value: string) =>
-      `“${value}”看起来和已有词条重复，请在列表里找一找。`,
+      `“${value}”与已有词条相近，请从列表中选择`,
   },
 
   fields: {
@@ -73,7 +72,7 @@ export const cockpit: Messages['cockpit'] = {
         ? `将清除首读日期（${readDate}），这篇论文会回到未读状态。`
         : '将清除首读日期，这篇论文会回到未读状态。',
     revisitCleared: (date: string) =>
-      `上次重读（${date}）也会一并清除，因为没有首读就不会有重读。此操作无法撤销。`,
+      `上次重读（${date}）也会被清除。此操作无法撤销。`,
     confirm: '标记为未读',
   },
 
@@ -93,8 +92,7 @@ export const cockpit: Messages['cockpit'] = {
   },
 
   codeClones: {
-    missingTitle: (name: string) =>
-      `codes/${name}/ 不存在，克隆的代码已被删除。可以重新克隆（lit code add），或取消关联（lit code unlink）；lit health-check 也会报告这个问题。`,
+    missingTitle: (name: string) => `codes/${name}/ 不存在`,
     missing: '缺失',
     copyTitle: (name: string) => `复制代码仓库的文件夹路径（codes/${name}）`,
     upstreamAria: (name: string, url: string) => `打开 ${name} 的上游仓库：${url}`,
@@ -123,8 +121,8 @@ export const cockpit: Messages['cockpit'] = {
     searchAria: (noun: string) => `搜索${noun}`,
     searchPlaceholder: (noun: string) => `搜索${noun}…`,
     // 「词条」= 词表里的一个值（value）。
-    noValues: '暂无词条。',
-    noMatch: '没有匹配项。',
+    noValues: '暂无词条',
+    noMatch: '没有匹配项',
     create: (value: string) => `新建“${value}”`,
     manage: (noun: string) => `管理${noun}词表…`,
     filtered: (shown: number, total: number) => `${shown} / ${total}`,
@@ -134,7 +132,7 @@ export const cockpit: Messages['cockpit'] = {
   manage: {
     title: (noun: string) => `管理${noun}词表`,
     help: '重命名可修正拼写错误，用到它的论文会一并更新。删除会把这个词条从所有论文上移除。',
-    empty: '暂无词条。',
+    empty: '暂无词条',
     usedBy: (n: number) => `${n} 篇在用`,
     renameAria: (noun: string, value: string) => `重命名${noun} ${value}`,
     renameTitle: (value: string) => `重命名“${value}”`,
@@ -149,7 +147,7 @@ export const cockpit: Messages['cockpit'] = {
         ? `将更新${noun}词表。此操作无法撤销。`
         : `将更新${noun}词表，并同步修改 ${n} 篇论文的标签。此操作无法撤销。`,
     collides: (value: string) =>
-      `“${value}”已存在，不能重命名为它；请改为删除其中一个。`,
+      `“${value}”已存在，不能重命名为它；请改为删除其中一个`,
     renaming: '正在重命名…',
     confirm: '重命名',
   },
@@ -172,11 +170,11 @@ export const cockpit: Messages['cockpit'] = {
   siRemove: {
     title: '删除这个 SI 文件？',
     checking: '正在检查笔记中是否引用了这个文件…',
-    checkFailed: '无法检查笔记中是否引用了这个文件。',
+    checkFailed: '无法检查笔记中是否引用了这个文件',
     cited: (where: ReadonlyArray<{ count: number; name: string }>) =>
-      `${where.map((c) => `${c.name} 中有 ${c.count} 处引用`).join('，')}。`,
+      `${where.map((c) => `${c.name} 中有 ${c.count} 处引用`).join('，')}`,
     unchecked: (names: readonly string[]) =>
-      `无法检查 ${names.join(' 和 ')} 中是否引用了这个文件。`,
+      `无法检查 ${names.join(' 和 ')} 中是否引用了这个文件`,
     noUndo: '删除后无法撤销；如需找回，可用“添加 SI”重新添加。',
   },
 
@@ -193,8 +191,8 @@ export const cockpit: Messages['cockpit'] = {
   metadataEdit: {
     title: '编辑元数据',
     idTitle:
-      'ID 由“年份 + 第一作者 + 标题关键词”组成，wikilink 用它指向这篇论文。要改 ID 请用 `lit rename`，它会同步更新所有引用；这里不能直接编辑。',
-    idFixed: '· ID 固定，重命名请用 CLI',
+      'ID 由年份、第一作者和标题关键词组成，wikilink 用它指向这篇论文，不能在此修改',
+    idFixed: '· ID 不能在此修改',
     labels: {
       title: '标题',
       year: '年份',
@@ -209,7 +207,7 @@ export const cockpit: Messages['cockpit'] = {
       booktitle: '书名/论文集名',
     },
     // `hint` 是 reader.year.hint（「4 位数字」），以数字开头，前面留半角空格。
-    yearShape: (hint: string, got: string) => `年份应为 ${hint}，当前为“${got}”。`,
+    yearShape: (hint: string, got: string) => `年份应为 ${hint}，当前为“${got}”`,
     saving: '正在保存…',
     save: '保存',
   },
@@ -242,12 +240,12 @@ export const cockpit: Messages['cockpit'] = {
       keyword: '论文 ID：关键词',
     },
     example: '2018_Zhang_Keyword',
-    permanent: 'ID 一经保存即固定，之后只能用 `lit rename` 修改。',
+    permanent: 'ID 一经保存即固定',
   },
 
   addSi: {
     heading: '补充材料（SI）',
-    folder: '不能添加文件夹，请拖入其中的文件。',
+    folder: '不能添加文件夹，请拖入其中的文件',
     openWebsite: '打开论文网页 ↗',
     downloadThere: '在网页上下载 SI，再把文件拖到这里。',
     noLink: '没有记录论文链接，请把已下载的文件拖到这里。',

@@ -80,6 +80,7 @@ from litman.core.shell import shell_arg
 from litman.core.undecodable import config_refusal, printable, refusal
 from litman.core.yaml_pool import ThreadLocalYAML
 from litman.exceptions import VaultRegistryError as VaultRegistryError
+from litman.exceptions import coded
 
 # Env var that, when set, overrides the platformdirs default. Point at a
 # cloud-synced directory to get backup + cross-machine sync for free.
@@ -367,6 +368,39 @@ def _clear_all_active(entries: list[VaultEntry]) -> list[VaultEntry]:
     return [v.model_copy(update={"is_active": False}) for v in entries]
 
 
+def suggest_vault_name(
+    reg: VaultRegistry, base: str, parent: Path | None = None
+) -> str:
+    """``base`` if a new vault can take that name, else the first free
+    ``<base>_<n>`` (n = 2, 3, …).
+
+    Free means no registered name equals it, case aside (the rule
+    :func:`ensure_name_registrable` applies), and, with ``parent``, no
+    non-empty folder of that name sits there for the new vault to land on.
+    What the setup wizard and the GUI's New-library dialogs offer, so keeping
+    the offered name is one step, not a refusal.
+    """
+    used = {v.name.casefold() for v in reg.vaults}
+
+    def free(candidate: str) -> bool:
+        if candidate.casefold() in used:
+            return False
+        if parent is None:
+            return True
+        target = parent / candidate
+        try:
+            return not (target.exists() and any(target.iterdir()))
+        except OSError:
+            return False
+
+    if free(base):
+        return base
+    n = 2
+    while not free(f"{base}_{n}"):
+        n += 1
+    return f"{base}_{n}"
+
+
 def ensure_name_registrable(reg: VaultRegistry, name: str) -> None:
     """Raise ``VaultRegistryError`` if ``name`` cannot be added to ``reg``.
 
@@ -377,10 +411,13 @@ def ensure_name_registrable(reg: VaultRegistry, name: str) -> None:
     it too so the single source of truth for name rules lives here.
     """
     if not is_valid_vault_name(name):
-        raise VaultRegistryError(
-            f"Invalid vault name {name!r}: must match "
-            "[A-Za-z0-9_][A-Za-z0-9._-]* (filesystem-safe, no leading "
-            "hyphen, no ':' which is reserved for cross-vault wikilinks)."
+        raise coded(
+            VaultRegistryError(
+                f"Invalid vault name {name!r}: must match "
+                "[A-Za-z0-9_][A-Za-z0-9._-]* (filesystem-safe, no leading "
+                "hyphen, no ':' which is reserved for cross-vault wikilinks)."
+            ),
+            "bad-name",
         )
     existing = next((v for v in reg.vaults if v.name == name), None)
     if existing is not None:
@@ -400,7 +437,7 @@ def ensure_name_registrable(reg: VaultRegistry, name: str) -> None:
                 f'"<new-path>"` (or `lit vault remove {shell_arg(name)}` first to free the '
                 "name)."
             )
-        raise VaultRegistryError(message)
+        raise coded(VaultRegistryError(message), "name-taken", name=name)
     # Cross-platform safety (ADR-005): forbid names that case-fold to an
     # existing entry. Vault names appear in cross-vault wikilinks
     # ``[[<vault>:<id>]]`` and may end up as folder names in user-side
@@ -408,10 +445,14 @@ def ensure_name_registrable(reg: VaultRegistry, name: str) -> None:
     # artifact moves to Windows / default macOS.
     case_clash = find_case_fold_collision([v.name for v in reg.vaults], name)
     if case_clash is not None:
-        raise VaultRegistryError(
-            f"Vault name {name!r} differs only in case from existing "
-            f"vault {case_clash!r}. Same-fold names collide on Windows "
-            "/ default macOS filesystems. Pick a distinct name."
+        raise coded(
+            VaultRegistryError(
+                f"Vault name {name!r} differs only in case from existing "
+                f"vault {case_clash!r}. Same-fold names collide on Windows "
+                "/ default macOS filesystems. Pick a distinct name."
+            ),
+            "name-taken",
+            name=case_clash,
         )
 
 
@@ -497,9 +538,13 @@ def ensure_path_registrable(
         if not same and candidate_identity is not None:
             same = _dir_identity(entry_path) == candidate_identity
         if same:
-            raise VaultRegistryError(
-                f"That folder is already registered as {entry.name!r}. "
-                f"Switch to it with: lit vault use {shell_arg(entry.name)}"
+            raise coded(
+                VaultRegistryError(
+                    f"That folder is already registered as {entry.name!r}. "
+                    f"Switch to it with: lit vault use {shell_arg(entry.name)}"
+                ),
+                "already-registered",
+                other=entry.name,
             )
 
 
@@ -542,15 +587,21 @@ def add_vault(
     if message is not None:
         raise VaultRegistryError(message)
     if not abs_path.is_dir():
-        raise VaultRegistryError(
-            f"Cannot register {name!r}: {abs_path} is not an existing "
-            "directory. Did you mean a different path? Run `lit init` "
-            "if you need to create a new vault."
+        raise coded(
+            VaultRegistryError(
+                f"Cannot register {name!r}: {abs_path} is not an existing "
+                "directory. Did you mean a different path? Run `lit init` "
+                "if you need to create a new vault."
+            ),
+            "path-missing",
         )
     if not (abs_path / "lit-config.yaml").is_file():
-        raise VaultRegistryError(
-            f"Cannot register {name!r}: {abs_path} has no lit-config.yaml. "
-            "That directory is not a litman vault."
+        raise coded(
+            VaultRegistryError(
+                f"Cannot register {name!r}: {abs_path} has no lit-config.yaml. "
+                "That directory is not a litman vault."
+            ),
+            "not-a-vault",
         )
     # Checked last on purpose: the three errors above name a more specific
     # problem with what the user typed.
@@ -641,9 +692,13 @@ def apply_vault_use(name: str, *, require_path: bool = False) -> VaultEntry:
             "to see what's registered."
         )
     if require_path and not (Path(entry.path).expanduser() / "lit-config.yaml").is_file():
-        raise VaultRegistryError(
-            f"Vault {name!r} is no longer at {entry.path} — no lit-config.yaml "
-            "there. Not switching."
+        raise coded(
+            VaultRegistryError(
+                f"Vault {name!r} is no longer at {entry.path} — no lit-config.yaml "
+                "there. Not switching."
+            ),
+            "vault-missing",
+            name=name,
         )
     save_registry(set_active(reg, name))
     return entry
@@ -684,15 +739,21 @@ def set_vault_path(
     if message is not None:
         raise VaultRegistryError(message)
     if not abs_path.is_dir():
-        raise VaultRegistryError(
-            f"Cannot re-point {name!r}: {abs_path} is not an existing "
-            "directory. Did you mean a different path? Run `lit init` "
-            "if you need to create a new vault."
+        raise coded(
+            VaultRegistryError(
+                f"Cannot re-point {name!r}: {abs_path} is not an existing "
+                "directory. Did you mean a different path? Run `lit init` "
+                "if you need to create a new vault."
+            ),
+            "path-missing",
         )
     if not (abs_path / "lit-config.yaml").is_file():
-        raise VaultRegistryError(
-            f"Cannot re-point {name!r}: {abs_path} has no lit-config.yaml. "
-            "That directory is not a litman vault."
+        raise coded(
+            VaultRegistryError(
+                f"Cannot re-point {name!r}: {abs_path} has no lit-config.yaml. "
+                "That directory is not a litman vault."
+            ),
+            "not-a-vault",
         )
     ensure_path_registrable(reg, abs_path, exclude_name=name)
     updated = [

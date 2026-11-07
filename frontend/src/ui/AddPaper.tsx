@@ -9,7 +9,8 @@ import {
   type IngestPreview,
   type IngestUploadResult,
 } from '../api'
-import { useT } from '../i18n'
+import { getT, useT } from '../i18n'
+import { errorLine, type CodeLines } from '../apiErrors'
 import { rich } from '../i18n/rich'
 import AuthorRows from './AuthorRows'
 import { useEscapeLayer } from './escapeStack'
@@ -115,7 +116,7 @@ export default function AddPaper({
     setIdOverride(null)
     fetchIngestPreview(trimmed)
       .then(setPreview)
-      .catch((e) => setError(e instanceof Error ? e.message : String(e)))
+      .catch((e) => setError(errorLine(e, null, getT().errors.addPaper)))
       .finally(() => setBusy(null))
   }, [])
 
@@ -184,17 +185,22 @@ export default function AddPaper({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [manual, manualReady, mTitle, mYear, mAuthorList.join('\u0000')])
 
+  // Why there is no id, in the form's words (the server names it by code);
+  // the server's own sentence only when it sent no code.
+  const idLine = (code: string | null | undefined, raw: string | null | undefined) =>
+    (code ? (T.errors.addPaper as CodeLines)[code]?.({}) : undefined) ?? raw ?? null
+
   // What the two paths agree on: a derived id, or the reason there is none.
   const idState = manual
     ? {
         proposedId: derived?.id ?? null,
-        error: derived?.error ?? null,
+        error: idLine(derived?.errorCode, derived?.error),
         suggestion: derived?.suggestion ?? null,
         segments: derived?.segments ?? null,
       }
     : {
         proposedId: preview?.proposedId ?? null,
-        error: preview?.idError ?? null,
+        error: idLine(preview?.idErrorCode, preview?.idError),
         suggestion: preview?.idSuggestion ?? null,
         segments: preview?.idSegments ?? null,
       }
@@ -235,7 +241,7 @@ export default function AddPaper({
     request
       .then((r) => onAdded(r.id))
       .catch((e) => {
-        setError(e instanceof Error ? e.message : String(e))
+        setError(errorLine(e, null, getT().errors.addPaper))
         setBusy(null)
       })
   }

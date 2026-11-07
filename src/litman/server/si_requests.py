@@ -70,23 +70,35 @@ _OPEN = (PENDING, CONFIRMING)
 
 
 class RequestError(Exception):
-    """A request cannot do what was asked; ``str()`` says why."""
+    """A request cannot do what was asked; ``str()`` says why.
+
+    ``code`` names it for the page (see :mod:`litman.server.errors`).
+    """
+
+    code: str | None = None
 
 
 class UnknownRequest(RequestError):
     """No such request (never made, or forgotten)."""
 
+    code = "si-request-gone"
+
 
 class RequestConflict(RequestError):
     """The request's state or library forbids it; ``request`` is its snapshot."""
 
-    def __init__(self, message: str, request: dict[str, Any]) -> None:
+    def __init__(
+        self, message: str, request: dict[str, Any], code: str | None = None
+    ) -> None:
         super().__init__(message)
         self.request = request
+        self.code = code
 
 
 class BadSelection(RequestError):
     """What Done was asked to add is not addable."""
+
+    code = "si-add-failed"
 
 
 def new_id() -> str:
@@ -106,6 +118,9 @@ class SiRow:
     reason: str
     other_id: str | None = None
     sha256: str = ""
+    # The verdict's code and params, for the page's line (core's Verdict.code).
+    reason_code: str = ""
+    reason_params: dict[str, str] = field(default_factory=dict)
 
     def to_json(self) -> dict[str, Any]:
         return {
@@ -115,6 +130,8 @@ class SiRow:
             "verdict": self.verdict,
             "check": self.check,
             "reason": self.reason,
+            "reasonCode": self.reason_code or None,
+            "reasonParams": dict(self.reason_params),
             "otherId": self.other_id,
         }
 
@@ -133,6 +150,7 @@ class SiRequest:
     rows: list[SiRow] = field(default_factory=list)
     added: list[dict[str, Any]] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
+    warning_codes: list[str] = field(default_factory=list)
     finished: float | None = None
     awaited: bool = False
     delivered: bool = False
@@ -180,6 +198,7 @@ class SiRequest:
             "rows": [row.to_json() for row in self.rows],
             "added": [dict(entry) for entry in self.added],
             "warnings": list(self.warnings),
+            "warningCodes": list(self.warning_codes),
         }
 
 
@@ -234,7 +253,12 @@ class SiRequestTable:
 
     @staticmethod
     def _conflict(req: SiRequest, served: Anchor | None, message: str) -> RequestConflict:
-        return RequestConflict(message, req.snapshot(served))
+        # A request that is over (added, cancelled) is gone as far as its
+        # window goes: the page closes it, as for an unknown one.
+        gone = req.status in (ADDED, CANCELLED)
+        return RequestConflict(
+            message, req.snapshot(served), "si-request-gone" if gone else None
+        )
 
     def _require(
         self, req: SiRequest, served: Anchor | None, *, states: tuple[str, ...]
@@ -397,6 +421,8 @@ class SiRequestTable:
                 if twin is not None:
                     row.verdict, row.check = "rejected", None
                     row.reason = f"same file as {twin.name}"
+                    row.reason_code = "si-same-file"
+                    row.reason_params = {"name": twin.name}
                     row.other_id = None
             req.rows.append(row)
             req.touched = now
@@ -478,6 +504,7 @@ class SiRequestTable:
         warnings: list[str],
         *,
         sha256s: Mapping[str, str] | None = None,
+        warning_codes: list[str] | None = None,
     ) -> dict[str, Any]:
         """``confirming`` → ``added``. ``sha256s`` (file → checksum of what
         was added) lets :meth:`SiRequest.is_moot` tell a file from another
@@ -489,6 +516,7 @@ class SiRequestTable:
             req.added = [dict(entry) for entry in added]
             req.added_sha256 = dict(sha256s or {})
             req.warnings = list(warnings)
+            req.warning_codes = list(warning_codes or [])
             req.finished = now
             req.touched = now
             self._dones += 1

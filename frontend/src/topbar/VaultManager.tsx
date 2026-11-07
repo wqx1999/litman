@@ -7,7 +7,8 @@ import type {
 import { listDir } from '../api'
 import type { FsAnchor } from '../api'
 import { IconTrash, anchorIcon } from '../ui/icons'
-import { useT } from '../i18n'
+import { getT, useT } from '../i18n'
+import { errorLine } from '../apiErrors'
 import { rich } from '../i18n/rich'
 import HelpHint from '../ui/HelpHint'
 import PathField, { describeLocation } from '../ui/PathField'
@@ -231,6 +232,7 @@ export default function VaultManager({
       )}
       {showCreate && (
         <CreateVaultDialog
+          suggestedName={vaults?.suggestedName}
           onCreateVault={onCreateVault}
           onClose={() => setShowCreate(false)}
           onCreated={(setActive) => {
@@ -340,8 +342,9 @@ function LocateVaultDialog({
       await onRelocateVault(vault.name, trimmed)
       onLocated()
     } catch (err) {
-      // Verbatim backend message inline; keep the dialog open for correction.
-      setError(err instanceof Error ? err.message : String(err))
+      // The line for what the server refused, inline; keep the dialog open for
+      // correction. The server's full text is in the GUI log.
+      setError(errorLine(err, null, getT().errors.vault))
       setBusy(false)
     }
   }
@@ -447,8 +450,9 @@ function RegisterVaultDialog({
       await onRegisterVault(name.trim(), path.trim(), setActive)
       onRegistered(setActive)
     } catch (err) {
-      // Verbatim backend message inline; keep the dialog open for correction.
-      setError(err instanceof Error ? err.message : String(err))
+      // The line for what the server refused, inline; keep the dialog open for
+      // correction. The server's full text is in the GUI log.
+      setError(errorLine(err, null, getT().errors.vault))
       setBusy(false)
     }
   }
@@ -562,18 +566,23 @@ function RegisterVaultDialog({
  * One name, not two: the folder created on disk and the registry entry share it.
  * (`lit init --register-as` splits them; the GUI does not need to.) */
 function CreateVaultDialog({
+  suggestedName,
   onCreateVault,
   onClose,
   onCreated,
 }: {
+  /** The server's offer: the default name, or the first free `<default>_<n>`
+   * once a library already has it (a second library would collide). */
+  suggestedName?: string
   onCreateVault: (parentDir: string, name: string, setActive: boolean) => Promise<void>
   onClose: () => void
   onCreated: (setActive: boolean) => void
 }) {
   const t = useT()
   const c = t.topbar.createVault
+  const offered = suggestedName ?? 'literature_vault'
   const [parentDir, setParentDir] = useState('~')
-  const [name, setName] = useState('literature_vault')
+  const [name, setName] = useState(offered)
   const [setActive, setSetActive] = useState(true)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -602,9 +611,10 @@ function CreateVaultDialog({
     }
   }, [])
 
-  // Name defaults to 'literature_vault' and an empty name is no longer a
-  // blocker: an emptied field falls back server-side (createVault omits it), so
-  // only the Location is required — matching the welcome page.
+  // The name starts as the server's free offer, and an empty name is no
+  // blocker: an emptied field falls back server-side to that same offer
+  // (createVault omits it), so only the Location is required — matching the
+  // welcome page.
   const canSubmit = parentDir.trim().length > 0 && !busy
 
   async function submit() {
@@ -615,9 +625,10 @@ function CreateVaultDialog({
       await onCreateVault(parentDir.trim(), name.trim(), setActive)
       onCreated(setActive)
     } catch (err) {
-      // Verbatim backend message inline (missing parent / target not empty / name
-      // already registered); keep the dialog open so the user can correct it.
-      setError(err instanceof Error ? err.message : String(err))
+      // The line for what the server refused (missing parent / target not
+      // empty / name taken), inline; keep the dialog open so the user can
+      // correct it.
+      setError(errorLine(err, null, getT().errors.vault))
       setBusy(false)
     }
   }
@@ -652,7 +663,7 @@ function CreateVaultDialog({
               {anchorIcon(loc.kind, 'h-5 w-5 shrink-0 text-stone-500')}
               <span className="min-w-0 truncate">
                 {loc.label} <span className="text-stone-400">/</span>{' '}
-                {name.trim() || 'literature_vault'}
+                {name.trim() || offered}
               </span>
             </div>
           </div>
@@ -682,7 +693,7 @@ function CreateVaultDialog({
               value={name}
               disabled={busy}
               spellCheck={false}
-              placeholder="literature_vault"
+              placeholder={offered}
               onChange={(e) => setName(e.target.value)}
               onKeyDown={(e) => {
                 if (e.key === 'Enter') submit()

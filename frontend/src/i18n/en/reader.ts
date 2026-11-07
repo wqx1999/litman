@@ -16,8 +16,7 @@ export const reader = {
       autoTitle: (system: 'en' | 'zh') =>
         `Follow the system language (now ${system === 'zh' ? 'Chinese' : 'English'})`,
       // Toast when the choice could not be stored on the server.
-      saveFailed: (detail: string) =>
-        `Couldn't save the language setting: ${detail}. It applies to this window until a reload.`,
+      saveFailed: 'Language setting not saved. It reverts when the page reloads.',
     },
     // Between two alternative chords for one action: "V or Esc".
     or: 'or',
@@ -79,8 +78,8 @@ export const reader = {
     },
     curation: {
       title: 'Curation — selected paper',
-      note: 'Hold Alt. Acts on the selected paper; none selected is a no-op.',
-      markRead: 'Mark read (idempotent)',
+      note: 'Hold Alt. Acts on the selected paper; does nothing when none is selected.',
+      markRead: 'Mark read (repeat presses are ignored)',
       markUnread: 'Mark unread (confirm)',
       // "deep-read" is the reading-status value (common.status).
       promote: 'Promote (deep-read)',
@@ -132,8 +131,10 @@ export const reader = {
     noChanges: 'No unsaved changes',
     // Toolbar, right end: the document's page count.
     pageCount: (n: number) => (n === 1 ? '1 page' : `${n} pages`),
-    // `detail` is pdf.js's own error message, shown as-is.
-    loadFailed: (detail: string) => `Failed to load PDF: ${detail}`,
+    loadFailed: 'Failed to load PDF.',
+    // The server has no paper.pdf for this paper (e.g. not yet synced to this
+    // computer).
+    notOnThisComputer: 'No PDF for this paper on this computer.',
     loading: 'Loading PDF…',
     // The note box in the popover beside a selected highlight / drawing.
     notePlaceholder: 'Add a note…',
@@ -185,9 +186,8 @@ export const reader = {
     hintStart: 'double-click to start writing',
     hintEdit: 'double-click to edit',
     saveFailed: (file: string) => `Couldn't save ${file} — your edit is kept; try again.`,
-    // The server's reason follows on its own line.
-    loadFailed: (file: string) => `Couldn't load ${file}`,
-    loadFailedFix: 'Fix the file on disk, then reopen this tab — litman never overwrites it.',
+    loadFailed: (file: string) => `Couldn't load ${file}.`,
+    loadFailedFix: 'The file is unchanged. Reopen this tab once it is fixed.',
     missingTrashed: (file: string) => `No ${file} for this trashed paper.`,
     missing: (file: string) => `No ${file} for this paper yet — double-click to start writing.`,
   },
@@ -223,11 +223,9 @@ export const reader = {
   removePaper: {
     dialogLabel: 'Remove paper from library',
     title: (id: string) => `Remove “${id}” from the library?`,
-    // {trash} is the folder name `.trash/`. INDEX is the vault's index file.
-    // "Trash 🗑" is the app's Trash view.
-    body: 'Moves the paper to {trash} and drops it from INDEX and every list. Recoverable from the in-app Trash 🗑.',
-    // `detail` is the server's reason.
-    previewFailed: (detail: string) => `Could not load the impact preview: ${detail}`,
+    // "🗑 Trash" is the app's Trash view.
+    body: 'The paper moves to the trash; you can restore it from 🗑 Trash.',
+    previewFailed: 'Could not load the impact preview.',
     checking: 'Checking what this affects…',
     nothingLinks: 'Nothing else links to this paper.',
     // Heading over the list of links the removal breaks (one line each below).
@@ -242,9 +240,8 @@ export const reader = {
       `Unbinds ${repos.length === 1 ? '1 repo' : `${repos.length} repos`} (kept — no copy to clone it again): ${repos.join(', ')}`,
     reposEdited: (repos: string[]) =>
       `Unbinds ${repos.length === 1 ? '1 repo' : `${repos.length} repos`} (kept — has your own changes): ${repos.join(', ')}`,
-    // `reason` is the server's text.
-    reposUnchecked: (repos: { name: string; reason: string }[]) =>
-      `Unbinds ${repos.length === 1 ? '1 repo' : `${repos.length} repos`} (kept — could not check for changes): ${repos.map((r) => `${r.name} (${r.reason})`).join(', ')}`,
+    reposUnchecked: (repos: string[]) =>
+      `Unbinds ${repos.length === 1 ? '1 repo' : `${repos.length} repos`} (kept — could not check for changes): ${repos.join(', ')}`,
     projects: (projects: string[]) =>
       `Unlinks from ${projects.length === 1 ? '1 project' : `${projects.length} projects`}: ${projects.join(', ')}`,
     // "(deleted)" is the literal tag written into those notes; keep it as-is.

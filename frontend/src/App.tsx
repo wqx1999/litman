@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   ApiError,
+  OfflineError,
   cancelSi,
   clearPins,
   createSiRequest,
@@ -20,6 +21,7 @@ import {
   fetchUiLang,
   fetchVersion,
   fetchWhatsNew,
+  logPageFailure,
   markWhatsNewSeen,
   type WhatsNewInfo,
   type IngestUploadResult,
@@ -81,6 +83,7 @@ import TabArea, { tabLabel } from './tabs/TabArea'
 import Cockpit from './cockpit/Cockpit'
 import Toast, { type ToastVariant } from './ui/Toast'
 import { servedVault } from './vaults'
+import { describe, errorLine } from './apiErrors'
 import { enumLabel, getLangPref, getT, isLangPref, setLangPref, useT } from './i18n'
 import { rich } from './i18n/rich'
 
@@ -294,10 +297,12 @@ function diffResync(
 }
 
 /** A fetch that failed at the network level (connection refused, tunnel down)
- * rejects with a TypeError; an HTTP error Response reaches the api helpers,
- * which throw an ApiError. Only the former means "server unreachable". */
+ * rejects, and the api helpers turn that into an OfflineError; an HTTP error
+ * Response throws an ApiError. Only the former means "server unreachable". A
+ * bare TypeError is still taken as one: pdf.js and anything not going through
+ * the helpers reject with it. */
 function isNetworkError(err: unknown): boolean {
-  return err instanceof TypeError
+  return err instanceof OfflineError || err instanceof TypeError
 }
 
 /** The server can no longer see the library it is bound to — the vault directory
@@ -306,6 +311,10 @@ function isNetworkError(err: unknown): boolean {
  * connection: it is not a failed request, it is a lost library. Kept strictly
  * apart from the 409 "no vault yet" that raises the welcome page — a user whose
  * library merely moved must never be invited to create a new one on top of it. */
+/** How a resync sweep ended: it landed, or the error that stopped it (already
+ * classified into the banners by the sweep). */
+type ResyncResult = { ok: true } | { ok: false; error: unknown }
+
 function isVaultGone(err: unknown): boolean {
   return err instanceof ApiError && err.status === 410
 }
@@ -510,6 +519,8 @@ export default function App() {
     [],
   )
   const markLogRead = useCallback(() => setLogUnread(false), [])
+  // What the document tabs report: a save that did not land (notes, PDF).
+  const notifyTabFailure = useCallback((msg: string) => notify(msg, 'error'), [notify])
 
   // In the --window app window only: links to other sites go to the default
   // browser, where the user is signed in (externalLinks.ts). A tab never routes.
@@ -823,9 +834,9 @@ export default function App() {
         setUpdateLatest(v.latest)
         // A failed one-click update left a note behind (the server surfaces
         // it once per run) — tell the user the app is still on the old
-        // version and hand them the manual path.
+        // version. Why it failed stays in self-update.log, for the agent.
         if (v.selfUpdateFailed) {
-          notify(getT().browse.app.selfUpdateFailed(v.selfUpdateFailed), 'error', {
+          notify(getT().browse.app.selfUpdateFailed, 'error', {
             sticky: true,
           })
         }
@@ -1068,9 +1079,10 @@ export default function App() {
       const req = pins.includes(id) ? unpinPaper(id) : pinPaper(id)
       req
         .then((r) => setPins(r.pins))
-        .catch((err) =>
-          notify(err instanceof Error ? err.message : String(err), 'error'),
-        )
+        .catch((err) => {
+          const line = errorLine(err, getT().errors.paper.pinNotSaved)
+          if (line) notify(line, 'error')
+        })
     },
     [pins, notify],
   )
@@ -1078,9 +1090,10 @@ export default function App() {
   const clearAllPins = useCallback(() => {
     clearPins()
       .then((r) => setPins(r.pins))
-      .catch((err) =>
-        notify(err instanceof Error ? err.message : String(err), 'error'),
-      )
+      .catch((err) => {
+        const line = errorLine(err, getT().errors.paper.pinNotSaved)
+        if (line) notify(line, 'error')
+      })
   }, [notify])
 
   const toggleFilter = useCallback((field: FacetKey, value: string) => {
@@ -1105,7 +1118,9 @@ export default function App() {
   }, [])
   const showCockpitFailure = useCallback((err: unknown) => {
     setCockpitPaper(null)
-    setCockpitError(err instanceof ApiError ? err.message : null)
+    // A paper gone or a file that cannot be read says which; the server's
+    // own words are in the GUI log.
+    setCockpitError(err instanceof ApiError ? errorLine(err) : null)
   }, [])
 
   // Only the latest selection may settle the cockpit. Two can be in flight —
@@ -1206,7 +1221,7 @@ export default function App() {
   // read sweep — no writes, so invariant #16 is untouched. The diff runs ONLY
   // here (the resync path), never in the direct refreshAfterWrite a GUI write
   // fires, so a GUI action is not double-logged (red line #3).
-  const doResync = useCallback(async () => {
+  const doResync = useCallback(async (): Promise<ResyncResult> => {
     // `selectedId` is the selection this sweep started under; J held through
     // the sweep moves it on, and then the cockpit is no longer this sweep's.
     const seq = selectSeq.current
@@ -1289,6 +1304,7 @@ export default function App() {
       setListFailed(false)
       if (selectedId) refetchCockpit(selectedId, seq)
       setMdReloadToken((t) => t + 1)
+      return { ok: true }
     } catch (err) {
       // A failed sweep is a data no-op: leave the UI and the diff baseline
       // untouched (a transient fetch error must not wipe the view or desync
@@ -1297,6 +1313,7 @@ export default function App() {
       // next successful sweep. Keeping the stale list on screen is deliberate:
       // it is the last thing that was true, and the banner says so.
       classifyFetchError(err)
+      return { ok: false, error: err }
     }
   }, [listMode, selectedId, appendLog, classifyFetchError, refetchCockpit])
 
@@ -1338,25 +1355,22 @@ export default function App() {
     },
     [setSiWindow],
   )
-  // One toast, since a second would replace the first: the warnings (rare,
-  // and sentences long) go to the activity log, and the toast points there.
+  // One toast. The warnings themselves are in the GUI log (the server wrote
+  // them); the toast says only what the person can see: an index that lags.
+  // A copy left behind in the upload stash changes nothing they see.
   const onSiAdded = useCallback(
     (snap: SiSnapshot) => {
       closeSiWindow(snap.id)
       const t = getT().browse.app
       const n = snap.added.length
-      const w = snap.warnings.length
-      if (w === 0) {
-        notify(t.siAdded(n), 'success')
+      if ((snap.warningCodes ?? []).includes('index-not-updated')) {
+        notify(t.siAddedWithWarnings(n), 'warning')
       } else {
-        notify(t.siAddedWithWarnings(n, w), 'warning')
-        appendLog(
-          snap.warnings.map((message) => ({ ts: Date.now(), variant: 'warning', message })),
-        )
+        notify(t.siAdded(n), 'success')
       }
       refreshAfterWrite()
     },
-    [closeSiWindow, notify, appendLog, refreshAfterWrite],
+    [closeSiWindow, notify, refreshAfterWrite],
   )
   // Closed at once; the server is told after. Cancel has nothing to show for
   // itself, so it says nothing — unless the server refused, in which case the
@@ -1369,7 +1383,8 @@ export default function App() {
         // either way.
         if (err instanceof ApiError && (err.status === 404 || err.status === 409)) return
         closedSiIds.current.delete(id)
-        notify(err instanceof Error ? err.message : String(err), 'error')
+        const line = errorLine(err)
+        if (line) notify(line, 'error')
       })
     },
     [closeSiWindow, notify],
@@ -1393,7 +1408,10 @@ export default function App() {
             auto: false,
           })
         })
-        .catch((err) => notify(err instanceof Error ? err.message : String(err), 'error'))
+        .catch((err) => {
+          const line = errorLine(err)
+          if (line) notify(line, 'error')
+        })
     },
     [notify, setSiWindow],
   )
@@ -1625,11 +1643,19 @@ export default function App() {
 
   // Manual refresh (TopBar button): force an immediate sweep (bypass the throttle)
   // and confirm with a toast — this is the explicit-feedback path, whereas the
-  // focus-driven sweep stays silent so alt-tabbing doesn't spam toasts.
-  const manualResync = useCallback(() => {
+  // focus-driven sweep stays silent so alt-tabbing doesn't spam toasts. Only a
+  // sweep that landed says "refreshed": a gone library or a lost server already
+  // has its banner, and any other failure gets its line.
+  const manualResync = useCallback(async () => {
     lastResyncRef.current = Date.now()
-    doResync()
-    notify(getT().browse.app.refreshed, 'success')
+    const result = await doResync()
+    if (result.ok) {
+      notify(getT().browse.app.refreshed, 'success')
+      return
+    }
+    if (isVaultGone(result.error) || isNetworkError(result.error)) return
+    const line = errorLine(result.error)
+    if (line) notify(line, 'error')
   }, [doResync, notify])
 
   const openTab = useCallback(
@@ -1938,7 +1964,8 @@ export default function App() {
     try {
       await removePaper(id)
     } catch (err) {
-      notify(err instanceof Error ? err.message : String(err), 'error')
+      const line = errorLine(err, getT().errors.paper.notTrashed)
+      if (line) notify(line, 'error')
       setRemoving(false)
       return
     }
@@ -2143,8 +2170,10 @@ export default function App() {
     const name = pendingVault
     if (!name) return
     setSwitchingVault(true)
+    let flushed = false
     try {
       await flushAllDirty()
+      flushed = true
       await putActiveVault(name)
       reloadForVault()
       setPendingVault(null)
@@ -2154,7 +2183,20 @@ export default function App() {
       // way — leaving the dialog up reads as if nothing happened. Refresh the
       // vault list on the way out so the selector marks it missing (best-effort:
       // if the switch failed because the server died, this fetch dies with it).
-      notify(err instanceof Error ? err.message : String(err), 'error')
+      const t = getT().errors
+      let line: string | null
+      if (flushed) {
+        line = errorLine(err, null, t.vault)
+      } else {
+        // An open document could not be saved, so the switch did not happen.
+        // A save the server refused is in the GUI log already; one that failed
+        // in the page (pdf.js) is put there now.
+        if (!(err instanceof ApiError || err instanceof OfflineError)) {
+          logPageFailure('save open documents before switching library', describe(err))
+        }
+        line = errorLine(err, t.unsavedNotSaved, {})
+      }
+      if (line) notify(line, 'error')
       setPendingVault(null)
       fetchVaults()
         .then(setVaults)
@@ -2219,7 +2261,8 @@ export default function App() {
         notify(getT().browse.app.vaultUnregistered(name), 'success')
         await fetchVaults().then(setVaults)
       } catch (err) {
-        notify(err instanceof Error ? err.message : String(err), 'error')
+        const line = errorLine(err, null, getT().errors.vault)
+        if (line) notify(line, 'error')
       }
     },
     [notify],
@@ -2281,7 +2324,8 @@ export default function App() {
         loadList(listMode)
         fetchPapers().then(setAllPapers)
       } catch (err) {
-        notify(err instanceof Error ? err.message : String(err), 'error')
+        const line = errorLine(err, null, getT().errors.paper.restoreCodes)
+        if (line) notify(line, 'error')
       } finally {
         setRestoringEntry(null)
       }
@@ -2323,9 +2367,10 @@ export default function App() {
       setUploading(true)
       uploadIngestPdf(file)
         .then((r) => setAddUpload({ ...r, fileName: file.name }))
-        .catch((e) =>
-          notify(e instanceof Error ? e.message : String(e), 'error'),
-        )
+        .catch((e) => {
+          const line = errorLine(e, null, getT().errors.addPaper)
+          if (line) notify(line, 'error')
+        })
         .finally(() => setUploading(false))
     },
     [notify],
@@ -2623,9 +2668,6 @@ export default function App() {
                 ),
               })}
             </span>
-            <div className="mt-1 text-xs text-stone-500 dark:text-stone-400">
-              {T.browse.app.linkNoticeDetail}
-            </div>
           </div>
           <div className="flex shrink-0 items-center gap-1">
             <button
@@ -2736,7 +2778,7 @@ export default function App() {
               onCloseAll={closeAllTabs}
               onOpenPaper={openWikilink}
               onRegisterPdf={registerPdf}
-              onNotify={notify}
+              onNotify={notifyTabFailure}
               mdJump={mdJump}
               mdDraft={activeTab ? mdDrafts.get(activeTab) : undefined}
               mdReloadToken={mdReloadToken}

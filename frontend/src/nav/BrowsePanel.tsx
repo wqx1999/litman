@@ -861,14 +861,7 @@ export default function BrowsePanel({
               <div className="mb-2 font-medium text-stone-700">
                 {t.emptyTitle}
               </div>
-              <div>{t.emptyFromTerminal}</div>
-              <div className="my-2 w-fit rounded-lg bg-stone-200/70 px-2.5 py-1.5 font-mono text-xs text-stone-700">
-                lit add &lt;pdf&gt; --doi &lt;doi&gt;
-              </div>
-              <div>{t.emptyOrAgent}</div>
-              <div className="mt-2.5 text-xs text-stone-400">
-                {t.emptyMovesSource}
-              </div>
+              <div>{t.emptyDrop}</div>
             </div>
           )}
           {restRows.map((p) => renderRow(p, false))}

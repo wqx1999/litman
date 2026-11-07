@@ -82,9 +82,13 @@ function TagPill({
  *                write. Clicking the name opens the picker instead of linking,
  *                because requiring a grade at link time IS the gesture.
  *
- * An unlinked row whose project is unhealthy shows the badge and no dropdown:
- * the link would be refused anyway. A LINKED unhealthy row keeps its dropdown —
- * a grade is metadata and does not need the project directory to exist.
+ * An unlinked row whose project cannot take a link here shows the badge and no
+ * dropdown (`ProjectHealth.linkable`): the server refuses a project whose
+ * folder is missing, and one known only to lit-config.yaml would get a value
+ * TAXONOMY.md does not list. A project with no folder on this machine (added
+ * on another computer, arrived through sync) keeps its dropdown: linking it
+ * writes the paper's record alone. A LINKED row always keeps its dropdown: a
+ * grade is metadata and does not need the project folder.
  */
 function TagPanelRow({
   value,
@@ -115,9 +119,8 @@ function TagPanelRow({
     </span>
   )
 
-  // Linking is refused for an unhealthy project, so an unlinked one gets no
-  // picker to offer a write that cannot land.
-  const gradable = on || health == null
+  // No picker on an unlinked row whose link cannot land (or should not).
+  const gradable = on || health == null || health.linkable
 
   return (
     <div className="flex items-start gap-2 rounded-md px-2 py-1 text-sm transition-colors hover:bg-stone-100">
@@ -218,8 +221,9 @@ function TagPanel({
    * the folder can move); a taxonomy value is just a word and cannot rot. A
    * marked value stays listed and stays clickable — hiding it would be one more
    * thing happening without the user being told. The title says what picking it
-   * means: a missing or taxonomy-only project refuses the link, a config-only
-   * one links but lands the tag outside the taxonomy. */
+   * means: a project whose folder is missing refuses the link, a taxonomy-only
+   * one links the paper's record alone, a config-only one links but lands the
+   * tag outside the taxonomy. */
   note?: (value: string) => ProjectHealth | null
   busy: boolean
   onAdd: (value: string) => void | Promise<void>
@@ -401,8 +405,8 @@ export function TagGroup({
 }
 
 /** Default-No confirm for a new controlled-vocab value the server found too
- * close to registered ones (its 409). Every match is listed with its reason; a
- * click on one tags the paper with that existing value instead, and nothing is
+ * close to registered ones (its 409). Every match is listed; a click on one
+ * tags the paper with that existing value instead, and nothing is
  * created. "Create anyway" registers the value regardless and tags the paper
  * with it. Cancel and Esc close only this dialog: the value popover under it
  * keeps the typed text. The server's own message is written for the CLI (it
@@ -451,7 +455,7 @@ function CreateSimilarConfirm({
         <h2 className="text-sm font-semibold text-stone-900">{m.title(value)}</h2>
         <p className="mt-1.5 text-xs leading-relaxed text-stone-600">{m.similarExist(noun)}</p>
         <ul className="-mx-2 mt-2 min-h-0 overflow-y-auto overscroll-contain">
-          {pairs.map(([v, why]) => (
+          {pairs.map(([v]) => (
             <li key={v}>
               <button
                 type="button"
@@ -466,7 +470,6 @@ function CreateSimilarConfirm({
                   ✓
                 </span>
                 <span className="min-w-0 break-words">{v}</span>
-                <span className="ml-auto shrink-0 text-[11px] text-stone-400">{why}</span>
               </button>
             </li>
           ))}

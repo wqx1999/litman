@@ -22,6 +22,7 @@ import pytest
 pytest.importorskip("fastapi")
 
 from litman.core.config import CONFIG_FILENAME
+from litman.core.vault_registry import registry_path
 from litman.server import create_app
 from tests.server._client import TestClient
 
@@ -478,7 +479,9 @@ def test_m9_control_char_name_400(tmp_path: Path, bad_name: str) -> None:
     )
     assert resp.status_code != 500
     assert resp.status_code == 400
-    assert list(tmp_path.iterdir()) == []  # nothing conjured up
+    # Nothing conjured up. The refusal itself goes to the GUI log, in the
+    # registry dir this test's isolation puts under tmp_path.
+    assert [p for p in tmp_path.iterdir() if p != registry_path().parent] == []
 
 
 # ---------------------------------------------------------------------------
