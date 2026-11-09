@@ -91,7 +91,10 @@ export function HealthPanel({
         className="flex max-h-[70vh] w-[34rem] animate-grow-in focus:outline-none flex-col rounded-2xl bg-white p-5 shadow-xl ring-1 ring-stone-200"
       >
         <div className="flex items-center justify-between">
-          <h2 className="text-sm font-semibold text-stone-900">{h.title}</h2>
+          <h2 className="text-sm font-semibold text-stone-900">
+            {h.title}
+            <HelpHint text={h.help} />
+          </h2>
           <button
             type="button"
             disabled={loading}
@@ -101,7 +104,6 @@ export function HealthPanel({
             {loading ? h.running : h.rerun}
           </button>
         </div>
-        <p className="mt-1.5 text-xs leading-relaxed text-stone-500">{h.intro}</p>
         <div className="mt-3 min-h-0 flex-1 overflow-y-auto rounded-lg border border-stone-200">
           {loading && (
             <div className="px-3 py-6 text-center text-xs text-stone-400">

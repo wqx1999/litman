@@ -206,7 +206,7 @@ export const topbar = {
     title: 'Health check',
     running: 'Running…',
     rerun: 'Re-run',
-    intro: 'Checks library consistency (read-only).',
+    help: 'Checks library consistency (read-only). Your agent can fix the issues found here.',
     runningChecks: 'Running checks…',
     noIssues: '✓ No issues',
     // Severity tag of one finding; shown uppercased. Keys are the server's values.

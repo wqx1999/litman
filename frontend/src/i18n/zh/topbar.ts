@@ -154,7 +154,7 @@ export const topbar: Messages['topbar'] = {
     title: '健康检查',
     running: '正在检查…',
     rerun: '重新检查',
-    intro: '检查文献库的一致性（只读）。',
+    help: '检查文献库的一致性，只读。发现的问题可交给 Agent 修复。',
     runningChecks: '正在运行各项检查…',
     noIssues: '✓ 没有发现问题',
     severity: {
