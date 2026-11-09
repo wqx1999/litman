@@ -34,7 +34,9 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from litman.core.atomic import left_for_recovery, refused_file
 from litman.core.gui_log import GuiLog, Kind
+from litman.core.locking import is_truth_lockable
 from litman.core.portable_link import _os_error_reason
+from litman.core.replace import held_by_another_program
 from litman.exceptions import CorruptMetadataError
 
 #: The code of a failure the server did not foresee (a 500 with a traceback).
@@ -125,6 +127,12 @@ def write_refused(
     disk (:func:`litman.core.atomic.left_for_recovery`) answers
     ``write-partial`` whatever ``code`` is: the next start that opens the
     library finishes it, so the page must not say that nothing was saved.
+
+    On Windows a file another program holds is refused as "access denied"
+    too, and an agent reading the log took that for a permissions problem.
+    So when the refusal can be put down to such a program
+    (:func:`litman.core.replace.held_by_another_program`) the text says that
+    first, and keeps what Windows said as the evidence.
     """
     reason = _os_error_reason(exc)
     named = refused_file(exc)
@@ -142,6 +150,20 @@ def write_refused(
         return api_error(
             507,
             f"Not enough free disk space to save {target}. Free some space, then {again}.",
+            code,
+        )
+    # litman clears the read-only bit of a file it locks just before replacing
+    # it: refused anyway, the file is held. The staged write names that file.
+    unlocked = (
+        vault is not None
+        and refused_file(exc) is not None
+        and is_truth_lockable(vault, vault / target)
+    )
+    if held_by_another_program(exc, unlocked=unlocked):
+        return api_error(
+            500,
+            f"Another program has {target} open, so it could not be saved (Windows said: "
+            f"{reason}); nothing was changed. Close that program, then {again}.",
             code,
         )
     return api_error(

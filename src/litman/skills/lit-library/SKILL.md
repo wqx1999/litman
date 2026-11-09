@@ -174,7 +174,7 @@ One library on several computers through the user's cloud drive (`lit sync`): se
 
 ## A message from the litman window
 
-The user quotes what the litman window said (「改动未保存」, "Could not delete si-01.pdf") → run `lit gui-log` first, as in lit-reading's section of that name.
+The user quotes what the litman window said (「改动未保存」, "Could not delete si-01.pdf") → run `lit gui-log` before looking at any file, as in lit-reading's section of that name; its entry is the diagnosis, so do what it says.
 
 ## `tip:` lines
 

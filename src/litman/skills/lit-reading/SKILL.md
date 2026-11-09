@@ -159,7 +159,7 @@ Suggest `lit open '<id>'` by default; run it when the user asks ("打开这篇" 
 
 ## A message from the litman window
 
-The user quotes or describes what the litman window said — a toast, a red line in a dialog, a ? or ✕ in the SI window, 「改动未保存」, "Could not delete si-01.pdf" → **run `lit gui-log` first** (a read: just do it). It lists what the window could not do, newest first: when, in which library, the request, and the full text, which says what to do. Match the entry by time and wording, tell the user in plain words what happened, and fix it the way the text says (writes through lit-library). Nothing there → the window never reached litman (its server was stopped or closed): say so and ask what they did.
+The user quotes or describes what the litman window said — a toast, a red line in a dialog, a ? or ✕ in the SI window, 「改动未保存」, "Could not delete si-01.pdf" → **run `lit gui-log` before looking at any file** (a read: just do it). It lists what the window could not do, newest first: when, in which library, the request, and the full text, which says what to do. Match the entry by time and wording, tell the user in plain words what happened, and fix it the way the text says (writes through lit-library). The entry is the diagnosis: don't re-run the failed write, change file attributes or permissions, or read litman's source to check it. Nothing there → the window never reached litman (its server was stopped or closed): say so and ask what they did.
 
 ## `tip:` lines
 
