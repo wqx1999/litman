@@ -150,6 +150,10 @@ own entry. Read those before you upgrade, whatever the number says.
   discussion tab double-clicked into edit mode kept the old text when a sync, the
   CLI or an agent changed the file, until the tab was reopened. It now follows
   the file; once you have typed, your text stays, as before.
+- **The GUI's activity log lists rows in the order they happened.** A note
+  changed outside the window, by a sync, the CLI or an agent, was listed at the
+  time the file was written, among older rows. It is now listed when the window
+  notices it, and a long path wraps inside its row.
 - **Crossref lookups no longer send a personal e-mail.** The contact address in
   litman's Crossref requests is now the project's own. Help texts, examples and
   the template of a new library's `lit-config.yaml` no longer name a person or

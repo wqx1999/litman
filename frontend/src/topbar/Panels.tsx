@@ -240,7 +240,12 @@ export function ActivityLogPanel({
                 <span className="shrink-0 font-mono text-[11px] tabular-nums text-stone-400">
                   {_logTime(e.ts)}
                 </span>
-                <span className="min-w-0 text-sm text-stone-700">{withCode(e.message)}</span>
+                {/* A backup path has no spaces to break at: wrap it anywhere
+                    rather than scroll the row sideways. Copying still gives
+                    one line. */}
+                <span className="min-w-0 text-sm text-stone-700 [overflow-wrap:anywhere]">
+                  {withCode(e.message)}
+                </span>
               </div>
             )
           })}

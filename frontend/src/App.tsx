@@ -204,9 +204,10 @@ function diffResync(
   prev: ResyncSnapshot,
   fresh: ResyncSnapshot,
 ): ActivityLogEntry[] {
-  // Structured changes have no real timestamp → stamp detection time. Free-form
-  // (notes/discussion) changes carry the file mtime. appendLog sorts the batch
-  // by ts ascending (D4) so the panel orders them sensibly.
+  // Every row is stamped with the time this window noticed the change, the same
+  // clock every other log row runs on, so the newest-first list is in order.
+  // Not a file's mtime: after a sync that is when the OTHER machine wrote it,
+  // which can be well before this window saw it and before rows already logged.
   const now = Date.now()
   const out: ActivityLogEntry[] = []
   const add = (message: string, variant: ToastVariant = 'info') =>
@@ -274,22 +275,18 @@ function diffResync(
   // Doc mtimes: a notes/discussion edit made outside the GUI bumps the file
   // mtime. Only papers tracked in the previous snapshot are compared — a brand-
   // new paper is already covered by its "+ added" entry, so its file is not
-  // double-logged. The entry ts is the real edit time (mtime × 1000).
+  // double-logged. Stamped `now` like the rest (see the top of this function).
   if (prev.mtimes && fresh.mtimes) {
     for (const [id, before] of Object.entries(prev.mtimes)) {
       const after = fresh.mtimes[id]
       if (!after) continue
       if (after.notes != null && (before.notes == null || after.notes > before.notes))
-        out.push({ ts: after.notes * 1000, variant: 'info', message: t.notesUpdated(id) })
+        add(t.notesUpdated(id))
       if (
         after.discussion != null &&
         (before.discussion == null || after.discussion > before.discussion)
       )
-        out.push({
-          ts: after.discussion * 1000,
-          variant: 'info',
-          message: t.discussionAppended(id),
-        })
+        add(t.discussionAppended(id))
     }
   }
 
@@ -507,10 +504,17 @@ export default function App() {
   // until the panel is opened.
   const [activityLog, setActivityLog] = useState<ActivityLogEntry[]>([])
   const [logUnread, setLogUnread] = useState(false)
+  // `log: false` is for a toast that sums up rows the caller has just put in
+  // the log itself: its "see the activity log" would point at itself there.
   const notify = useCallback(
-    (msg: string, variant: ToastVariant = 'info', opts?: { sticky?: boolean }) => {
+    (
+      msg: string,
+      variant: ToastVariant = 'info',
+      opts?: { sticky?: boolean; log?: boolean },
+    ) => {
       toastSeq.current += 1
       setToast({ id: toastSeq.current, message: msg, variant, sticky: opts?.sticky })
+      if (opts?.log === false) return
       setActivityLog((prev) =>
         [...prev, { ts: Date.now(), variant, message: msg }].slice(-200),
       )
@@ -528,13 +532,11 @@ export default function App() {
 
   // Silent log sink for resync-diff entries: appends to the same ring + lights
   // the unread dot like notify, but does NOT toast (a resync can yield dozens of
-  // entries — see §5.2). Each batch is sorted ts-ascending first (D4) so the
-  // panel (newest-first) interleaves mtime-stamped notes entries and detection-
-  // time structured entries sensibly.
+  // entries — see §5.2). The panel lists rows in the order they were appended,
+  // newest first, so every row is stamped with the time it is appended.
   const appendLog = useCallback((entries: ActivityLogEntry[]) => {
     if (entries.length === 0) return
-    const sorted = [...entries].sort((a, b) => a.ts - b.ts)
-    setActivityLog((prev) => [...prev, ...sorted].slice(-200))
+    setActivityLog((prev) => [...prev, ...entries].slice(-200))
     setLogUnread(true)
   }, [])
 
@@ -1515,7 +1517,7 @@ export default function App() {
     ].filter((x): x is string => x !== null)
     if (parts.length === 0) return
     appendLog(rows)
-    notify(ts.toast.synced(parts.join(ts.toast.sep)), 'warning')
+    notify(ts.toast.synced(parts.join(ts.toast.sep)), 'warning', { log: false })
   }
   const onSyncPollRef = useRef(onSyncPoll)
   onSyncPollRef.current = onSyncPoll
@@ -1530,13 +1532,14 @@ export default function App() {
 
   // A save that went over a file changed since it was read (a sync brought
   // the other machine's copy, an agent rewrote it): the save won, and the copy
-  // it replaced is in the backup. Said once, and kept in the activity log.
+  // it replaced is in the backup. The toast says so briefly; the log keeps one
+  // row, with the backup's path.
   const reportReplaced = useCallback(
     (paperId: string, file: string, backup: string) => {
       const ts = getT().sync
       const name = `${paperId}/${file}`
       appendLog([{ ts: Date.now(), variant: 'warning', message: ts.replacedLog(name, backup) }])
-      notify(ts.replaced(name), 'warning')
+      notify(ts.replaced(name), 'warning', { log: false })
     },
     [notify, appendLog],
   )

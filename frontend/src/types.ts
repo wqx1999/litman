@@ -213,7 +213,8 @@ export interface HealthIssue {
 }
 
 /** One entry in the in-memory session activity log (the PyMOL-style history that
- * `notify` feeds). `ts` is `Date.now()` ms (rendered as local HH:MM:SS); `variant`
+ * `notify` feeds). `ts` is `Date.now()` ms when this window did or noticed the
+ * thing, never a file's own time (rendered as local HH:MM:SS); `variant`
  * picks the glyph. Never persisted — a page refresh clears the buffer (AC4). */
 export interface ActivityLogEntry {
   ts: number
