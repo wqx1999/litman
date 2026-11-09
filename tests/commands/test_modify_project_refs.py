@@ -65,18 +65,18 @@ def _make_paper(
 
 
 def _setup_linked(tmp_path: Path) -> tuple[Path, Path, str]:
-    """Vault + registered project ``pepcodec`` with one linked member ``p1``.
+    """Vault + registered project ``bluebell`` with one linked member ``p1``.
 
     Returns ``(vault, refs_file, paper_id)``; REFERENCES.md exists and is in
     sync at this point.
     """
     vault = create_vault(tmp_path)
-    project_dir = tmp_path / "pepcodec_proj"
+    project_dir = tmp_path / "bluebell_proj"
     project_dir.mkdir()
-    add_project(vault, "pepcodec", project_dir)
+    add_project(vault, "bluebell", project_dir)
     _make_paper(vault, "p1", priority="B")
     registry = load_config(vault).projects
-    link_paper_to_project(vault, "p1", "pepcodec", registry)
+    link_paper_to_project(vault, "p1", "bluebell", registry)
     refs_file = project_dir / "litman_reflib" / "REFERENCES.md"
     assert refs_file.is_file()
     # Sanity: freshly linked → no drift.
@@ -102,7 +102,7 @@ def test_priority_change_on_member_keeps_refs_in_sync(tmp_path: Path) -> None:
         cli,
         [
             "modify", paper_id,
-            "--set", "priority-pepcodec=A",
+            "--set", "priority-bluebell=A",
             "--library", str(vault),
         ],
     )
@@ -138,7 +138,7 @@ def test_relevance_change_on_member_keeps_refs_in_sync(tmp_path: Path) -> None:
             "modify",
             paper_id,
             "--set",
-            "relevance-pepcodec=core baseline",
+            "relevance-bluebell=core baseline",
             "--library",
             str(vault),
         ],
@@ -158,7 +158,7 @@ def test_nonmember_refs_field_change_does_not_touch_refs(tmp_path: Path) -> None
     """The guard is about MEMBERSHIP, not about which field was edited, so the
     edit has to be one that DOES trigger the refs refresh. `title` is in that
     set for every paper; a per-project grade would not be — `--set
-    priority-pepcodec=` on a non-member is refused outright (decision 10)."""
+    priority-bluebell=` on a non-member is refused outright (decision 10)."""
     vault, refs_file, _ = _setup_linked(tmp_path)
     _make_paper(vault, "p2")  # not linked to any project
     mtime_before = refs_file.stat().st_mtime_ns

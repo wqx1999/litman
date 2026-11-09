@@ -454,12 +454,12 @@ SEED_SPECS: dict[str, SeedSpec] = {
             _modify(4, add_tags=("topics=peptide",)),
             _modify(5, add_tags=("topics=peptide",)),
             _modify(9, add_tags=("topics=amp",)),
-            _project("PepCodec"),
-            _link(4, "PepCodec"),
+            _project("BlueBell"),
+            _link(4, "BlueBell"),
         ),
         description=(
             "5 papers; #1/#2 tagged diffusion, #4/#5 tagged peptide, #9 tagged "
-            "amp; project PepCodec registered with #4 linked."
+            "amp; project BlueBell registered with #4 linked."
         ),
     ),
 }

@@ -47,7 +47,7 @@ def vault(tmp_path: Path) -> Path:
 
 @pytest.fixture
 def project_dir(tmp_path: Path) -> Path:
-    p = tmp_path / "pepforge_proj"
+    p = tmp_path / "seahorse_proj"
     p.mkdir()
     return p
 
@@ -112,10 +112,10 @@ def test_bind_after_link_materializes_code_symlink(
     vault: Path, project_dir: Path
 ) -> None:
     """The exact reported scenario: link first, bind code later."""
-    registry = _register(vault, "pepforge", project_dir)
+    registry = _register(vault, "seahorse", project_dir)
     _make_paper(vault, "p1")
     # 1) Link the paper — at this moment it has no code-clones.
-    link_paper_to_project(vault, "p1", "pepforge", registry)
+    link_paper_to_project(vault, "p1", "seahorse", registry)
     assert is_portable_link(project_dir / "litman_reflib" / "p1")
     assert not _code_link(project_dir, "MyRepo").exists()
     # 2) Bind the repo AFTER the link. The symlink must appear now (the bug:
@@ -129,11 +129,11 @@ def test_bind_after_link_materializes_code_symlink(
 
 def test_bind_before_link_still_works(vault: Path, project_dir: Path) -> None:
     """Reverse order (the case that accidentally worked) is unaffected."""
-    registry = _register(vault, "pepforge", project_dir)
+    registry = _register(vault, "seahorse", project_dir)
     _make_paper(vault, "p1")
     _make_repo(vault, "MyRepo")
     bind_paper_to_repo(vault, "p1", "MyRepo")
-    link_paper_to_project(vault, "p1", "pepforge", registry)
+    link_paper_to_project(vault, "p1", "seahorse", registry)
     assert is_portable_link(_code_link(project_dir, "MyRepo"))
 
 
@@ -158,7 +158,7 @@ def test_bind_paper_with_no_project_is_noop(
     vault: Path, project_dir: Path
 ) -> None:
     """Binding code to an unlinked paper does not create a litman_code dir."""
-    _register(vault, "pepforge", project_dir)
+    _register(vault, "seahorse", project_dir)
     _make_paper(vault, "p1")  # NOT in any project
     _make_repo(vault, "MyRepo")
     bind_paper_to_repo(vault, "p1", "MyRepo")
@@ -169,8 +169,8 @@ def test_bind_noop_self_heals_missing_symlink(
     vault: Path, project_dir: Path
 ) -> None:
     """An idempotent re-bind refreshes a previously-stale (missing) symlink."""
-    _register(vault, "pepforge", project_dir)
-    _make_paper(vault, "p1", projects=["pepforge"])
+    _register(vault, "seahorse", project_dir)
+    _make_paper(vault, "p1", projects=["seahorse"])
     _make_repo(vault, "MyRepo")
     bind_paper_to_repo(vault, "p1", "MyRepo")
     # Simulate the stale state: delete the symlink out of band.
@@ -188,8 +188,8 @@ def test_bind_noop_self_heals_missing_symlink(
 def test_unbind_removes_orphaned_code_symlink(
     vault: Path, project_dir: Path
 ) -> None:
-    _register(vault, "pepforge", project_dir)
-    _make_paper(vault, "p1", projects=["pepforge"])
+    _register(vault, "seahorse", project_dir)
+    _make_paper(vault, "p1", projects=["seahorse"])
     _make_repo(vault, "MyRepo")
     bind_paper_to_repo(vault, "p1", "MyRepo")
     assert is_portable_link(_code_link(project_dir, "MyRepo"))
@@ -201,9 +201,9 @@ def test_unbind_keeps_symlink_shared_by_another_paper(
     vault: Path, project_dir: Path
 ) -> None:
     """A 1:N repo: unbinding one paper keeps the symlink while another uses it."""
-    _register(vault, "pepforge", project_dir)
-    _make_paper(vault, "p1", projects=["pepforge"])
-    _make_paper(vault, "p2", projects=["pepforge"])
+    _register(vault, "seahorse", project_dir)
+    _make_paper(vault, "p1", projects=["seahorse"])
+    _make_paper(vault, "p2", projects=["seahorse"])
     _make_repo(vault, "SharedRepo")
     bind_paper_to_repo(vault, "p1", "SharedRepo")
     bind_paper_to_repo(vault, "p2", "SharedRepo")
@@ -217,9 +217,9 @@ def test_cascade_unbind_all_removes_code_symlink(
     vault: Path, project_dir: Path
 ) -> None:
     """`lit code rm --cascade` (unbind_repo_from_all_papers) clears symlinks."""
-    _register(vault, "pepforge", project_dir)
-    _make_paper(vault, "p1", projects=["pepforge"])
-    _make_paper(vault, "p2", projects=["pepforge"])
+    _register(vault, "seahorse", project_dir)
+    _make_paper(vault, "p1", projects=["seahorse"])
+    _make_paper(vault, "p2", projects=["seahorse"])
     _make_repo(vault, "SharedRepo")
     bind_paper_to_repo(vault, "p1", "SharedRepo")
     bind_paper_to_repo(vault, "p2", "SharedRepo")
@@ -237,10 +237,10 @@ def test_cascade_unbind_all_removes_code_symlink(
 def test_health_check_flags_missing_code_link(
     vault: Path, project_dir: Path
 ) -> None:
-    _register(vault, "pepforge", project_dir)
-    _make_paper(vault, "p1", projects=["pepforge"], code_clones=["MyRepo"])
+    _register(vault, "seahorse", project_dir)
+    _make_paper(vault, "p1", projects=["seahorse"], code_clones=["MyRepo"])
     _make_repo(vault, "MyRepo", papers=["p1"])
-    link_paper_to_project(vault, "p1", "pepforge", {"pepforge": str(project_dir)})
+    link_paper_to_project(vault, "p1", "seahorse", {"seahorse": str(project_dir)})
     # Drop the code link out of band → drift.
     _code_link(project_dir, "MyRepo").unlink()
     issues = check_project_references(vault, _papers(vault))
@@ -252,8 +252,8 @@ def test_health_check_flags_missing_code_link(
 def test_health_check_flags_extra_code_symlink(
     vault: Path, project_dir: Path
 ) -> None:
-    _register(vault, "pepforge", project_dir)
-    _make_paper(vault, "p1", projects=["pepforge"])
+    _register(vault, "seahorse", project_dir)
+    _make_paper(vault, "p1", projects=["seahorse"])
     _make_repo(vault, "Ghost")
     # Fabricate a symlink with no backing code-clone membership.
     (project_dir / CODE_SUBDIR).mkdir()
@@ -269,9 +269,9 @@ def test_health_check_clean_after_bind(
     vault: Path, project_dir: Path
 ) -> None:
     """No project_references drift once bind has refreshed the symlinks."""
-    _register(vault, "pepforge", project_dir)
-    _make_paper(vault, "p1", projects=["pepforge"])
-    link_paper_to_project(vault, "p1", "pepforge", {"pepforge": str(project_dir)})
+    _register(vault, "seahorse", project_dir)
+    _make_paper(vault, "p1", projects=["seahorse"])
+    link_paper_to_project(vault, "p1", "seahorse", {"seahorse": str(project_dir)})
     _make_repo(vault, "MyRepo")
     bind_paper_to_repo(vault, "p1", "MyRepo")
     issues = check_project_references(vault, _papers(vault))
@@ -298,9 +298,9 @@ def test_reconcile_repoints_dangling_expected_link(
     from litman.core.document import list_papers
     from litman.core.project_link import reconcile_project_code_links
 
-    _register(vault, "pepforge", project_dir)
+    _register(vault, "seahorse", project_dir)
     _make_repo(vault, "alphafold", papers=["p1"])
-    _make_paper(vault, "p1", projects=["pepforge"], code_clones=["alphafold"])
+    _make_paper(vault, "p1", projects=["seahorse"], code_clones=["alphafold"])
 
     # Plant a dangling link under the expected name — what a moved vault
     # leaves behind: right name, dead target.
@@ -311,7 +311,7 @@ def test_reconcile_repoints_dangling_expected_link(
     assert is_portable_link(link) and not link.exists()
 
     result = reconcile_project_code_links(
-        vault, "pepforge", project_dir, list_papers(vault)
+        vault, "seahorse", project_dir, list_papers(vault)
     )
 
     assert result["created"] == ["alphafold"]
@@ -328,8 +328,8 @@ def test_reconcile_removes_dangling_orphan_link(
     from litman.core.document import list_papers
     from litman.core.project_link import reconcile_project_code_links
 
-    _register(vault, "pepforge", project_dir)
-    _make_paper(vault, "p1", projects=["pepforge"])  # binds no repos
+    _register(vault, "seahorse", project_dir)
+    _make_paper(vault, "p1", projects=["seahorse"])  # binds no repos
 
     code_dir = project_dir / CODE_SUBDIR
     code_dir.mkdir(parents=True, exist_ok=True)
@@ -338,7 +338,7 @@ def test_reconcile_removes_dangling_orphan_link(
     assert is_portable_link(ghost) and not ghost.exists()
 
     result = reconcile_project_code_links(
-        vault, "pepforge", project_dir, list_papers(vault)
+        vault, "seahorse", project_dir, list_papers(vault)
     )
 
     assert result["removed"] == ["ghostrepo"]

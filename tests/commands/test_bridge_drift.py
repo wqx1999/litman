@@ -93,11 +93,11 @@ def _linked_vault(tmp_path: Path) -> tuple[Path, Path]:
     parent = tmp_path / "vault_parent"
     parent.mkdir()
     vault = create_vault(parent)
-    project_dir = tmp_path / "pepforge"
+    project_dir = tmp_path / "seahorse"
     project_dir.mkdir()
-    _write_config_with_project(vault, "pepforge", project_dir)
-    _make_paper(vault, "p1", projects=["pepforge"])
-    rebuild_all_project_links(vault, {"pepforge": str(project_dir)})
+    _write_config_with_project(vault, "seahorse", project_dir)
+    _make_paper(vault, "p1", projects=["seahorse"])
+    rebuild_all_project_links(vault, {"seahorse": str(project_dir)})
     link = project_dir / "litman_reflib" / "p1"
     assert is_portable_link(link) and link.exists()
     return vault, project_dir
@@ -146,7 +146,7 @@ def test_check_flags_dangling_after_vault_move(tmp_path: Path) -> None:
     issue = issues[0]
     assert issue.category == "project_bridge_dangling"
     assert issue.severity == "error"
-    assert "pepforge" in issue.message
+    assert "seahorse" in issue.message
     assert "points at nothing" in issue.message  # n=1 → singular verb
     assert "health-check --fix" in issue.hint
 
@@ -202,7 +202,7 @@ def test_find_dangling_unknown_target_never_flagged(tmp_path: Path) -> None:
     _, project_dir = _linked_vault(tmp_path)
 
     out = find_dangling_bridges(
-        {"pepforge": str(project_dir)},
+        {"seahorse": str(project_dir)},
         {str(project_dir): True},
         lambda paths: dict.fromkeys(paths),
     )
@@ -237,11 +237,11 @@ def test_find_dangling_sees_junction_bridges(
     bridge = fake_junction(proj / "litman_reflib" / "2024_A")
 
     out = find_dangling_bridges(
-        {"pepforge": str(proj)},
+        {"seahorse": str(proj)},
         {str(proj): True},
         lambda paths: dict.fromkeys(paths, False),  # every target definitely gone
     )
-    assert [p.name for p in out["pepforge"]] == [bridge.name]
+    assert [p.name for p in out["seahorse"]] == [bridge.name]
 
 
 def test_find_dangling_unreadable_hub_skips_that_project(
@@ -345,7 +345,7 @@ def test_bridge_drift_non_tty_warns_no_mutation(
     link = project_dir / "litman_reflib" / "p1"
     assert is_portable_link(link) and not link.exists()
     err = capsys.readouterr().err
-    assert "pepforge" in err
+    assert "seahorse" in err
     assert "health-check --fix" in err
 
 

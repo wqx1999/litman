@@ -143,6 +143,10 @@ own entry. Read those before you upgrade, whatever the number says.
   at that folder.
 - **`lit sync push` and `pull` print the library's path whole.** A long path was
   folded mid-line, and a part of it in square brackets dropped out.
+- **Crossref lookups no longer send a personal e-mail.** The contact address in
+  litman's Crossref requests is now the project's own. Help texts, examples and
+  the template of a new library's `lit-config.yaml` no longer name a person or
+  a path on one machine.
 
 ## 1.3.11 — 2026-11-02
 
@@ -1740,7 +1744,7 @@ reading the library and regenerates it. `lit health-check --fix` and
 - **`lit link <paper> <project>` now shows you the command you meant.** That
   shape, and `lit code add <paper> <repo>`, are the ones a person reaches for
   first — but the second value belongs in a flag, and all these commands used
-  to say was "Got unexpected extra argument (pepforge)". They now print the
+  to say was "Got unexpected extra argument (my-project)". They now print the
   whole corrected line, ready to copy. (`lit unlink`, `lit code link` and
   `lit code unlink` too; `lit code add` works out which word is the repo, so
   the command it hands back is right even if you wrote them the other way

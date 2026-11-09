@@ -269,7 +269,7 @@ export default function TabArea({
     // exposing the emulated absolute device as a tablet tool) reports the
     // press as mouse/id=1 but every move as pen/id=2/buttons=0 — an id match
     // discards each move and the strip reads as simply undraggable
-    // (2026-08-05, wangq's ubuntu-demo box, DevTools trace). Desktops have
+    // (seen in a DevTools trace on an Ubuntu VM). Desktops have
     // one hover cursor, so accept any hover-capable pointer's moves and keep
     // only touch out (touch must stay native scroll).
     if (e.pointerType === 'touch') return

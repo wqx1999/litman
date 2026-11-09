@@ -1028,7 +1028,7 @@ async def post_fs_mkdir(request: Request) -> dict[str, Any]:
     * ``parent`` missing / not a directory → 400.
     * bad ``name`` → 400, and nothing is created.
     * ``target`` already a directory → 200, its listing (idempotent: equivalent to
-      navigating into an existing folder — wangq 2026-07-23).
+      navigating into an existing folder).
     * ``target`` already a *file* → 400.
     * otherwise ``target.mkdir()``; a ``PermissionError`` degrades to 403 and any
       other ``OSError`` to 400 (mirrors ``fs/list``'s ``denied`` style — never 500).

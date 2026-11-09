@@ -56,9 +56,9 @@ When the reading reaches a natural close — "读完了", "这篇一般", "没�
    | `priority-<project>` (linked, ungraded) | A / B / C, **once per linked project**; none when the paper is in no project | here |
    | `type` | 2–3 enum values ("`review` — surveys 80+ models") | here |
 
-   An empty field is a legitimate "not applicable" — never press for it. A grade or a tag the user mentioned while reading ("这篇对 pepforge 是 C") goes in pre-filled; don't write it on the spot. Rationale only from the discussion, the abstract and the notes in context, never from memory of the paper. Never a blank question ("What's the priority for pepforge?"), never a yes/no on a single guess ("Is this a review?").
+   An empty field is a legitimate "not applicable" — never press for it. A grade or a tag the user mentioned while reading ("这篇对 my-project 是 C") goes in pre-filled; don't write it on the spot. Rationale only from the discussion, the abstract and the notes in context, never from memory of the paper. Never a blank question ("What's the priority for my-project?"), never a yes/no on a single guess ("Is this a review?").
 
-Put it all in **one** message, grouped ("收尾前：状态？type？对 pepforge 有多重要？可以一起回"), so the user answers once. Then run exactly what they approved — the stamps, grade and `type` here, the rest handed to lit-library — and nothing else.
+Put it all in **one** message, grouped ("收尾前：状态？type？对 my-project 有多重要？可以一起回"), so the user answers once. Then run exactly what they approved — the stamps, grade and `type` here, the rest handed to lit-library — and nothing else.
 
 - **An explicit instruction is not a remark.** "标成已读，精读" / "mark it read, deep-read" → run `lit read` and `lit promote` at once, without asking again; offer the notes and the empty fields afterwards, in one message.
 - **A drop is short**: a one-line drop reason in `notes.md`, `lit drop` and `lit read` — no field offers (a grade the user volunteered still goes in).

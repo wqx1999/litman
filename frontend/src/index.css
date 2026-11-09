@@ -5,7 +5,7 @@
 
 @theme {
   /* macOS-native neutral system palette. Replaces the previous warm-stone
-     (PepForge) ramp with cool, near-neutral greys (Apple systemGray / label
+     ramp with cool, near-neutral greys (Apple systemGray / label
      family) so nothing reads as warm or yellow. Kept under the `stone-*` names
      so every existing utility re-tints globally with zero class churn. */
   --color-stone-50: #fbfbfd;

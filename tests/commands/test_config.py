@@ -298,7 +298,7 @@ def test_code_add_uses_config_default_clone_depth(
     subprocess.run(["git", "-C", str(upstream), "add", "."], check=True)
     subprocess.run(
         ["git", "-C", str(upstream),
-         "-c", "user.email=t@x.com", "-c", "user.name=t",
+         "-c", "user.email=t@example.com", "-c", "user.name=t",
          "commit", "-q", "-m", "init"],
         check=True,
     )
@@ -333,7 +333,7 @@ def test_code_add_cli_depth_overrides_config(
     subprocess.run(["git", "-C", str(upstream), "add", "."], check=True)
     subprocess.run(
         ["git", "-C", str(upstream),
-         "-c", "user.email=t@x.com", "-c", "user.name=t",
+         "-c", "user.email=t@example.com", "-c", "user.name=t",
          "commit", "-q", "-m", "init"],
         check=True,
     )

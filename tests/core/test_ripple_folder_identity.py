@@ -185,33 +185,33 @@ def test_project_rename_carries_both_folders_per_project_keys(
     """``lit project rename`` also moves ``relevance-<old>`` and
     ``priority-<old>``. Missing the second folder stranded both keys, which
     ``check_relevance_orphan`` / ``check_priority_orphan`` then flagged."""
-    proj = tmp_path / "pepforge_dir"
+    proj = tmp_path / "seahorse_dir"
     proj.mkdir()
     runner = CliRunner()
     _ok(runner.invoke(
         cli,
-        ["project", "add", "pepforge", "--path", str(proj),
+        ["project", "add", "seahorse", "--path", str(proj),
          "--library", str(vault)],
     ))
     _seed_conflict_pair(
         vault,
-        projects=["pepforge"],
-        extra={"relevance-pepforge": "core", "priority-pepforge": "A"},
+        projects=["seahorse"],
+        extra={"relevance-seahorse": "core", "priority-seahorse": "A"},
     )
 
     result = _ok(runner.invoke(
         cli,
-        ["project", "rename", "pepforge", "pepcodec",
+        ["project", "rename", "seahorse", "bluebell",
          "--library", str(vault)],
     ))
 
     assert "Updated 1 paper (2 folders — 1 is a conflicted copy)" in result.output
     for folder in _CONFLICT:
         text = _meta(vault, folder)
-        assert "- pepcodec\n" in text, folder
-        assert "relevance-pepcodec: core" in text, folder
-        assert "priority-pepcodec: A" in text, folder
-        assert "pepforge" not in text, folder
+        assert "- bluebell\n" in text, folder
+        assert "relevance-bluebell: core" in text, folder
+        assert "priority-bluebell: A" in text, folder
+        assert "seahorse" not in text, folder
 
 
 # ---------------------------------------------------------------------------
@@ -241,28 +241,28 @@ def test_taxonomy_rm_clears_both_folders_of_a_conflict_pair(
 def test_project_rm_untags_both_folders_and_drops_their_keys(
     vault: Path, tmp_path: Path
 ) -> None:
-    proj = tmp_path / "pepforge_dir"
+    proj = tmp_path / "seahorse_dir"
     proj.mkdir()
     runner = CliRunner()
     _ok(runner.invoke(
         cli,
-        ["project", "add", "pepforge", "--path", str(proj),
+        ["project", "add", "seahorse", "--path", str(proj),
          "--library", str(vault)],
     ))
     _seed_conflict_pair(
         vault,
-        projects=["pepforge"],
-        extra={"relevance-pepforge": "core", "priority-pepforge": "A"},
+        projects=["seahorse"],
+        extra={"relevance-seahorse": "core", "priority-seahorse": "A"},
     )
 
     result = _ok(runner.invoke(
         cli,
-        ["project", "rm", "pepforge", "--yes", "--library", str(vault)],
+        ["project", "rm", "seahorse", "--yes", "--library", str(vault)],
     ))
 
     assert "Untagged 1 paper (2 folders — 1 is a conflicted copy)" in result.output
     for folder in _CONFLICT:
-        assert "pepforge" not in _meta(vault, folder), folder
+        assert "seahorse" not in _meta(vault, folder), folder
 
 
 # ---------------------------------------------------------------------------
@@ -472,18 +472,18 @@ def test_taxonomy_gate_and_result_agree_on_a_conflict_pair(
 def test_project_rm_gate_and_result_agree_on_a_conflict_pair(
     vault: Path, tmp_path: Path, interactive: None
 ) -> None:
-    proj = tmp_path / "pepforge_dir"
+    proj = tmp_path / "seahorse_dir"
     proj.mkdir()
     runner = CliRunner()
     _ok(runner.invoke(
         cli,
-        ["project", "add", "pepforge", "--path", str(proj),
+        ["project", "add", "seahorse", "--path", str(proj),
          "--library", str(vault)],
     ))
-    _seed_conflict_pair(vault, projects=["pepforge"])
+    _seed_conflict_pair(vault, projects=["seahorse"])
 
     result = _ok(runner.invoke(
-        cli, ["project", "rm", "pepforge", "--library", str(vault)],
+        cli, ["project", "rm", "seahorse", "--library", str(vault)],
         input="y\n",
     ))
 

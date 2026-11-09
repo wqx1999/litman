@@ -169,10 +169,10 @@ paper is linked to.
 | `priority-<project>` | string enum | `A`, `B`, `C` — how much the paper matters to that project. Written by `lit link --project <P> --priority A`, or later `lit modify --set priority-<P>=A`. Absent means linked but not graded yet. |
 
 ```yaml
-relevance-pepcodec: "Direct baseline — section 3.2 reuses the encoder block."
-priority-pepcodec: A
-relevance-pepforge: "Cited only as motivation in the introduction."
-priority-pepforge: C
+relevance-my-project: "Direct baseline; our model reuses its encoder block."
+priority-my-project: A
+relevance-side-project: "Cited only as motivation in the introduction."
+priority-side-project: C
 ```
 
 The project name appears verbatim in the field name, so each project carries
@@ -256,7 +256,7 @@ last-revisited: "2026-04-18"
 
 # Classification
 projects:
-  - PepCodec
+  - MyProject
 topics:
   - transformer
   - attention
@@ -279,7 +279,7 @@ code-clones:
   - transformer-pytorch
 
 # Project relevance (dynamic)
-relevance-PepCodec: "Foundational architecture; encoder block reused in section 3.2."
+relevance-MyProject: "Foundational architecture; our model reuses its encoder block."
 ```
 
 #### Adding a new field
@@ -373,7 +373,7 @@ Seven dictionaries in two classes.
 
 | Dictionary | Drives field | Managed by | Typical values |
 |---|---|---|---|
-| `projects` | `projects` | `lit project {add,rename,set-path,rm,list}` | `PepForge`, `PepCodec` |
+| `projects` | `projects` | `lit project {add,rename,set-path,rm,list}` | `MyProject`, `SideProject` |
 | `topics` | `topics` | `lit taxonomy {add,rename,merge,rm}` | `transformer`, `peptide-design` |
 | `methods` | `methods` | `lit taxonomy {add,rename,merge,rm}` | `GAN`, `diffusion`, `cell-free` |
 | `data` | `data` | `lit taxonomy {add,rename,merge,rm}` | `UniProt`, `APD3`, `PDB` |
@@ -404,7 +404,7 @@ The parser accepts any non-empty string, but these conventions keep the
 vocabulary scannable and metadata grep-friendly:
 
 1. **kebab-case, lowercase** (`peptide-design`). Project names are the one
-   exception and may use mixed case (`PepCodec`) to match a real directory.
+   exception and may use mixed case (`MyProject`) to match a real directory.
 2. **No leading punctuation, whitespace, or slashes.**
 3. **ASCII only.**
 4. **Singular** (`transformer`, not `transformers`).

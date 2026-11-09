@@ -20,7 +20,7 @@ def platform(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch) ->
 @pytest.mark.parametrize(
     "value",
     [
-        "pepforge",
+        "seahorse",
         "Isidro_2009_Crystal-x",
         "si-02",
         "topics=x",

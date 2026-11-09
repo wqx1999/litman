@@ -40,20 +40,20 @@ def vault(tmp_path: Path) -> Path:
     _seed_paper(
         v, "2023_Pandi_Cellfree",
         year=2023, type="research", status="inbox",
-        **{"priority-PepForge": "B"},
+        **{"priority-SeaHorse": "B"},
         topics=["AMP-prediction", "deep-learning"],
         methods=["transformer"],
-        projects=["PepForge"],
+        projects=["SeaHorse"],
         authors=["Pandi, Amir", "Smith, John"],
         title="Cell-free biosynthesis paper",
     )
     _seed_paper(
         v, "2024_Smith_BERT",
         year=2024, type="review", status="deep-read",
-        **{"priority-PepCodec": "A"},
+        **{"priority-BlueBell": "A"},
         topics=["NLP", "transformer"],
         methods=["BERT-style"],
-        projects=["PepCodec"],
+        projects=["BlueBell"],
         authors=["Smith, John", "Doe, Jane"],
         title="A review of BERT-based methods",
     )
@@ -62,10 +62,10 @@ def vault(tmp_path: Path) -> Path:
         year=2024, type="research", status="skim",
         # Different grades in the two projects: this is the paper that makes
         # `--project` narrowing observable (ADR-025 decision 8).
-        **{"priority-PepForge": "C", "priority-PepCodec": "A"},
+        **{"priority-SeaHorse": "C", "priority-BlueBell": "A"},
         topics=["GNN"],
         methods=["GNN"],
-        projects=["PepForge", "PepCodec"],
+        projects=["SeaHorse", "BlueBell"],
         authors=["Doe, Jane"],
         title="GNN survey",
     )
@@ -142,12 +142,12 @@ def test_list_priority_filter(vault: Path) -> None:
     """No --project: any project's grade qualifies (ADR-025 decision 8)."""
     result = _invoke(vault, "--priority", "C")
     assert result.exit_code == 0
-    assert "2024_Doe_GNN" in result.output   # C for PepForge
+    assert "2024_Doe_GNN" in result.output   # C for SeaHorse
     assert "1 of 3" in result.output
 
 
 def test_list_priority_filter_is_or_across_projects(vault: Path) -> None:
-    """Doe is a C for PepForge and an A for PepCodec, so it answers to both
+    """Doe is a C for SeaHorse and an A for BlueBell, so it answers to both
     when no project narrows the question."""
     for grade in ("A", "C"):
         result = _invoke(vault, "--priority", grade)
@@ -157,14 +157,14 @@ def test_list_priority_filter_is_or_across_projects(vault: Path) -> None:
 def test_list_priority_narrowed_by_project(vault: Path) -> None:
     """With --project, only that project's grade counts — the whole point of
     making the grade a property of the link."""
-    forge_c = _invoke(vault, "--project", "PepForge", "--priority", "C")
+    forge_c = _invoke(vault, "--project", "SeaHorse", "--priority", "C")
     assert "2024_Doe_GNN" in forge_c.output
 
-    forge_a = _invoke(vault, "--project", "PepForge", "--priority", "A")
+    forge_a = _invoke(vault, "--project", "SeaHorse", "--priority", "A")
     assert "2024_Doe_GNN" not in forge_a.output   # it is an A, but not here
     assert "No papers match" in forge_a.output
 
-    codec_a = _invoke(vault, "--project", "PepCodec", "--priority", "A")
+    codec_a = _invoke(vault, "--project", "BlueBell", "--priority", "A")
     assert "2024_Doe_GNN" in codec_a.output
     assert "2024_Smith_BERT" in codec_a.output
 
@@ -191,7 +191,7 @@ def test_list_method_filter(vault: Path) -> None:
 
 
 def test_list_project_filter_returns_multiple(vault: Path) -> None:
-    result = _invoke(vault, "--project", "PepForge")
+    result = _invoke(vault, "--project", "SeaHorse")
     assert result.exit_code == 0
     assert "2023_Pandi_Cellfree" in result.output
     assert "2024_Doe_GNN" in result.output
@@ -236,7 +236,7 @@ def test_list_combined_and_filter(vault: Path) -> None:
 def test_list_combined_three_filters(vault: Path) -> None:
     result = _invoke(
         vault,
-        "--project", "PepForge",
+        "--project", "SeaHorse",
         "--year", "2024",
         "--method", "GNN",
     )
@@ -280,7 +280,7 @@ def test_list_format_json_normalizes_absent_fields(tmp_path: Path) -> None:
         doi="10.1000/withdoi",
         topics=["AMP-prediction"],
         methods=["transformer"],
-        projects=["PepForge"],
+        projects=["SeaHorse"],
         title="Paper that has a doi",
     )
     _seed_paper(
@@ -963,15 +963,15 @@ def test_list_priority_column_names_the_project(
     # truncates the header this test is about. Widen the render, do not
     # weaken the assertion.
     monkeypatch.setenv("COLUMNS", "200")
-    out = _invoke(vault, "--project", "PepForge").output
-    assert "Priority(PepForge)" in out
+    out = _invoke(vault, "--project", "SeaHorse").output
+    assert "Priority(SeaHorse)" in out
 
 
 def test_list_priority_column_shows_that_projects_grade(vault: Path) -> None:
-    """Doe is a C for PepForge and an A for PepCodec; each listing shows the
+    """Doe is a C for SeaHorse and an A for BlueBell; each listing shows the
     grade for the project it was asked about."""
-    forge = _invoke(vault, "--project", "PepForge").output
-    codec = _invoke(vault, "--project", "PepCodec").output
+    forge = _invoke(vault, "--project", "SeaHorse").output
+    codec = _invoke(vault, "--project", "BlueBell").output
     doe_forge = next(ln for ln in forge.splitlines() if "2024_Doe_GNN" in ln)
     doe_codec = next(ln for ln in codec.splitlines() if "2024_Doe_GNN" in ln)
     assert " C " in doe_forge and " A " not in doe_forge
@@ -981,7 +981,7 @@ def test_list_priority_column_shows_that_projects_grade(vault: Path) -> None:
 def test_list_no_priority_column_for_several_projects(vault: Path) -> None:
     """Two projects name no single grade, so the column stays away rather than
     silently picking one."""
-    out = _invoke(vault, "--project", "PepForge,PepCodec").output
+    out = _invoke(vault, "--project", "SeaHorse,BlueBell").output
     assert "Priority(" not in out
 
 
@@ -989,11 +989,11 @@ def test_list_ungraded_link_renders_as_a_dash(vault: Path) -> None:
     _seed_paper(
         vault, "2025_Zed_Ungraded",
         year=2025, type="research", status="inbox",
-        projects=["PepForge"], authors=["Zed, Z."], title="Ungraded",
+        projects=["SeaHorse"], authors=["Zed, Z."], title="Ungraded",
     )
     line = next(
         ln
-        for ln in _invoke(vault, "--project", "PepForge").output.splitlines()
+        for ln in _invoke(vault, "--project", "SeaHorse").output.splitlines()
         if "2025_Zed_Ungraded" in ln
     )
     assert " - " in line
@@ -1004,7 +1004,7 @@ def test_list_json_never_grows_a_priority_column(vault: Path) -> None:
     asking for a project must not smuggle one in."""
     import json as _json
 
-    out = _invoke(vault, "--project", "PepForge", "--format", "json").output
+    out = _invoke(vault, "--project", "SeaHorse", "--format", "json").output
     rows = _json.loads(out)
     assert rows
     for row in rows:
@@ -1025,8 +1025,8 @@ def test_ac4_list_and_export_agree_on_priority_semantics(
     papers = list_papers(vault)
     for filters, expected in (
         ({"priority": ["A"], "project": None}, {"2024_Smith_BERT", "2024_Doe_GNN"}),
-        ({"priority": ["A"], "project": ["PepForge"]}, set()),
-        ({"priority": ["C"], "project": ["PepForge"]}, {"2024_Doe_GNN"}),
+        ({"priority": ["A"], "project": ["SeaHorse"]}, set()),
+        ({"priority": ["C"], "project": ["SeaHorse"]}, {"2024_Doe_GNN"}),
     ):
         got = {p["id"] for p in papers if matches_filters(p, filters)}
         assert got == expected, filters

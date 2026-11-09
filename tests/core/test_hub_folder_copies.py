@@ -130,15 +130,15 @@ def _linked_project(
     parent = tmp_path / "vault_parent"
     parent.mkdir()
     vault = create_vault(parent)
-    project_dir = tmp_path / "pepforge"
+    project_dir = tmp_path / "seahorse"
     project_dir.mkdir()
-    _write_config_with_project(vault, "pepforge", project_dir)
+    _write_config_with_project(vault, "seahorse", project_dir)
     for repo_name in code_clones or []:
         _make_clone(vault, repo_name)
-    _make_paper(vault, "p1", projects=["pepforge"], code_clones=code_clones)
+    _make_paper(vault, "p1", projects=["seahorse"], code_clones=code_clones)
     for pid in extra_papers or []:
-        _make_paper(vault, pid, projects=["pepforge"])
-    rebuild_all_project_links(vault, {"pepforge": str(project_dir)})
+        _make_paper(vault, pid, projects=["seahorse"])
+    rebuild_all_project_links(vault, {"seahorse": str(project_dir)})
     assert is_portable_link(project_dir / "litman_reflib" / "p1")
     return vault, project_dir
 
@@ -272,13 +272,13 @@ def test_settle_moves_a_differing_copy_aside(
     mutate(copy)
 
     out = settle_hub_entry(
-        copy, target, vault=vault, project="pepforge", hub="litman_reflib"
+        copy, target, vault=vault, project="seahorse", hub="litman_reflib"
     )
     assert out.verdict == "moved-aside"
     assert out.moved_to is not None
     assert not copy.exists()
     assert out.moved_to.is_dir()
-    assert out.moved_to.parent == _replaced_root(vault, "pepforge", "litman_reflib")
+    assert out.moved_to.parent == _replaced_root(vault, "seahorse", "litman_reflib")
     assert out.moved_to.name.startswith("p1-")
     assert (target / "metadata.yaml").is_file()
 
@@ -296,7 +296,7 @@ def test_settle_moves_aside_when_there_is_no_vault_original(
     (orphan / "README.md").write_text("orphan\n", encoding="utf-8")
 
     out = settle_hub_entry(
-        orphan, None, vault=vault, project="pepforge", hub="litman_code"
+        orphan, None, vault=vault, project="seahorse", hub="litman_code"
     )
     assert out.verdict == "moved-aside"
     assert out.moved_to is not None
@@ -319,7 +319,7 @@ def test_settle_disambiguates_a_second_move_of_the_same_name(
         copy.mkdir()
         (copy / "notes.md").write_text(text, encoding="utf-8")
         out = settle_hub_entry(
-            copy, None, vault=vault, project="pepforge", hub="litman_reflib"
+            copy, None, vault=vault, project="seahorse", hub="litman_reflib"
         )
         assert out.moved_to is not None
         landed.append(out.moved_to)
@@ -355,7 +355,7 @@ def test_settle_leaves_the_copy_alone_when_links_are_impossible(
     _LINK_MECHANISM[str(project_dir)] = "none"
 
     out = settle_hub_entry(
-        copy, target, vault=vault, project="pepforge", hub="litman_reflib"
+        copy, target, vault=vault, project="seahorse", hub="litman_reflib"
     )
     assert out == HubSettlement("blocked", None)
     assert (copy / "metadata.yaml").is_file()
@@ -380,7 +380,7 @@ def test_settle_deletes_a_copy_whose_only_extra_is_a_link(
     assert make_portable_link(copy / "elsewhere", target)
 
     out = settle_hub_entry(
-        copy, target, vault=vault, project="pepforge", hub="litman_reflib"
+        copy, target, vault=vault, project="seahorse", hub="litman_reflib"
     )
     assert out.verdict == "replaced-copy"
     assert not copy.exists()
@@ -405,7 +405,7 @@ def test_settle_deletes_an_empty_folder(tmp_path: Path) -> None:
     (hub / "p1").mkdir()
 
     out = settle_hub_entry(
-        hub / "p1", target, vault=vault, project="pepforge", hub="litman_reflib"
+        hub / "p1", target, vault=vault, project="seahorse", hub="litman_reflib"
     )
     assert out == HubSettlement("replaced-copy", None)
     assert not (hub / "p1").exists()
@@ -425,7 +425,7 @@ def test_settle_deletes_a_tree_of_empty_folders(tmp_path: Path) -> None:
     (hub / "p1" / "a" / "b").mkdir(parents=True)
 
     out = settle_hub_entry(
-        hub / "p1", target, vault=vault, project="pepforge", hub="litman_reflib"
+        hub / "p1", target, vault=vault, project="seahorse", hub="litman_reflib"
     )
     assert out == HubSettlement("replaced-copy", None)
     assert not (hub / "p1").exists()
@@ -447,7 +447,7 @@ def test_settle_deletes_an_empty_folder_with_no_vault_original(
     (hub / "someRepo").mkdir()
 
     out = settle_hub_entry(
-        hub / "someRepo", None, vault=vault, project="pepforge", hub="litman_code"
+        hub / "someRepo", None, vault=vault, project="seahorse", hub="litman_code"
     )
     assert out == HubSettlement("replaced-copy", None)
     assert not (hub / "someRepo").exists()
@@ -476,7 +476,7 @@ def test_settle_keeps_a_fileless_folder_that_holds_a_link(
     assert make_portable_link(fileless / "elsewhere", target)
 
     out = settle_hub_entry(
-        fileless, target, vault=vault, project="pepforge", hub="litman_reflib"
+        fileless, target, vault=vault, project="seahorse", hub="litman_reflib"
     )
     assert out.verdict == "moved-aside"
     assert out.moved_to is not None
@@ -496,14 +496,14 @@ def test_verbatim_reflib_copy_becomes_a_link_silently(
     _expand_to_copy(link, vault / "papers" / "p1")
     said = _record_link_warnings(monkeypatch)
 
-    out = rebuild_all_project_links(vault, {"pepforge": str(project_dir)})
+    out = rebuild_all_project_links(vault, {"seahorse": str(project_dir)})
 
     assert is_portable_link(link)
     assert (link / "notes.md").read_text(encoding="utf-8") == "# Notes\n\nfirst\n"
-    assert out["pepforge"]["n_replaced_copies"] == 1
-    assert out["pepforge"]["n_moved_aside"] == 0
-    assert out["pepforge"]["aside_paths"] == []
-    assert out["pepforge"]["n_paper_links"] == 1
+    assert out["seahorse"]["n_replaced_copies"] == 1
+    assert out["seahorse"]["n_moved_aside"] == 0
+    assert out["seahorse"]["aside_paths"] == []
+    assert out["seahorse"]["n_paper_links"] == 1
     assert said == []
     assert not (vault / ".trash" / "replaced-folders").exists()
 
@@ -513,7 +513,7 @@ def test_explorer_shaped_empty_folders_heal_without_filling_the_trash(
 ) -> None:
     """The commonest Windows shape end to end: both hubs, empty folders only.
 
-    wangq measured it on Windows 2026-09-09 — Explorer's copy of a project
+    Measured on Windows — Explorer's copy of a project
     directory leaves an empty folder per junction in BOTH hubs. Before the
     empty branch this ran through _move_aside and left one trash entry per
     position plus a standing ``replaced_folders`` info issue; the user's only
@@ -528,13 +528,13 @@ def test_explorer_shaped_empty_folders_heal_without_filling_the_trash(
         link.mkdir()
     said = _record_link_warnings(monkeypatch)
 
-    out = rebuild_all_project_links(vault, {"pepforge": str(project_dir)})
+    out = rebuild_all_project_links(vault, {"seahorse": str(project_dir)})
 
     assert is_portable_link(reflib) and is_portable_link(code)
     assert (reflib / "notes.md").read_text(encoding="utf-8") == "# Notes\n\nfirst\n"
-    assert out["pepforge"]["n_replaced_copies"] == 2
-    assert out["pepforge"]["n_moved_aside"] == 0
-    assert out["pepforge"]["aside_paths"] == []
+    assert out["seahorse"]["n_replaced_copies"] == 2
+    assert out["seahorse"]["n_moved_aside"] == 0
+    assert out["seahorse"]["aside_paths"] == []
     assert said == []
     assert not (vault / ".trash" / "replaced-folders").exists()
 
@@ -552,14 +552,14 @@ def test_differing_copy_is_moved_to_replaced_folders(
     )
     said = _record_link_warnings(monkeypatch)
 
-    out = rebuild_all_project_links(vault, {"pepforge": str(project_dir)})
+    out = rebuild_all_project_links(vault, {"seahorse": str(project_dir)})
 
     assert is_portable_link(link)
     assert (link / "notes.md").read_text(encoding="utf-8") == "# Notes\n\nfirst\n"
-    assert out["pepforge"]["n_replaced_copies"] == 0
-    assert out["pepforge"]["n_moved_aside"] == 1
-    aside = Path(out["pepforge"]["aside_paths"][0])
-    assert aside.parent == _replaced_root(vault, "pepforge", "litman_reflib")
+    assert out["seahorse"]["n_replaced_copies"] == 0
+    assert out["seahorse"]["n_moved_aside"] == 1
+    aside = Path(out["seahorse"]["aside_paths"][0])
+    assert aside.parent == _replaced_root(vault, "seahorse", "litman_reflib")
     assert aside.name.startswith("p1-")
     assert (aside / "notes.md").read_text(encoding="utf-8") == (
         "# Notes\n\nfirst\nwritten on the other machine\n"
@@ -579,11 +579,11 @@ def test_orphan_copy_with_no_vault_original_is_moved_aside(
     (orphan / "notes.md").write_text("stale\n", encoding="utf-8")
     said = _record_link_warnings(monkeypatch)
 
-    out = rebuild_all_project_links(vault, {"pepforge": str(project_dir)})
+    out = rebuild_all_project_links(vault, {"seahorse": str(project_dir)})
 
     assert not orphan.exists()
-    assert out["pepforge"]["n_moved_aside"] == 1
-    aside = Path(out["pepforge"]["aside_paths"][0])
+    assert out["seahorse"]["n_moved_aside"] == 1
+    aside = Path(out["seahorse"]["aside_paths"][0])
     assert aside.name.startswith("2020_Gone_Paper-")
     assert (aside / "notes.md").read_text(encoding="utf-8") == "stale\n"
     assert said == []
@@ -600,22 +600,22 @@ def test_code_hub_copy_replaced_and_moved_aside(
 
     _expand_to_copy(code_link, clone)
     said = _record_link_warnings(monkeypatch)
-    out = rebuild_all_project_links(vault, {"pepforge": str(project_dir)})
+    out = rebuild_all_project_links(vault, {"seahorse": str(project_dir)})
 
     assert is_portable_link(code_link)
-    assert out["pepforge"]["n_replaced_copies"] == 1
-    assert out["pepforge"]["n_moved_aside"] == 0
-    assert out["pepforge"]["n_code_links"] == 1
+    assert out["seahorse"]["n_replaced_copies"] == 1
+    assert out["seahorse"]["n_moved_aside"] == 0
+    assert out["seahorse"]["n_code_links"] == 1
     assert said == []
 
     _expand_to_copy(code_link, clone)
     (code_link / "src" / "main.py").write_text("print('mine')\n", encoding="utf-8")
-    out2 = rebuild_all_project_links(vault, {"pepforge": str(project_dir)})
+    out2 = rebuild_all_project_links(vault, {"seahorse": str(project_dir)})
 
     assert is_portable_link(code_link)
-    assert out2["pepforge"]["n_moved_aside"] == 1
-    aside = Path(out2["pepforge"]["aside_paths"][0])
-    assert aside.parent == _replaced_root(vault, "pepforge", "litman_code")
+    assert out2["seahorse"]["n_moved_aside"] == 1
+    aside = Path(out2["seahorse"]["aside_paths"][0])
+    assert aside.parent == _replaced_root(vault, "seahorse", "litman_code")
     assert (aside / "src" / "main.py").read_text(encoding="utf-8") == (
         "print('mine')\n"
     )
@@ -629,10 +629,10 @@ def test_references_md_survives_the_settling(tmp_path: Path) -> None:
     refs = project_dir / "litman_reflib" / "REFERENCES.md"
     assert refs.is_file()
 
-    rebuild_all_project_links(vault, {"pepforge": str(project_dir)})
+    rebuild_all_project_links(vault, {"seahorse": str(project_dir)})
 
     assert refs.is_file()
-    assert not _replaced_root(vault, "pepforge", "litman_reflib").exists()
+    assert not _replaced_root(vault, "seahorse", "litman_reflib").exists()
 
 
 def test_skipped_project_still_reports_the_new_counters(tmp_path: Path) -> None:
@@ -688,12 +688,12 @@ def test_copy_untouched_when_project_drive_cannot_link(
     monkeypatch.setattr(portable_link, "_create_junction", boom)
     reset_link_probe_cache()
 
-    out = rebuild_all_project_links(vault, {"pepforge": str(project_dir)})
+    out = rebuild_all_project_links(vault, {"seahorse": str(project_dir)})
 
     assert copy.is_dir() and not is_portable_link(copy)
     assert (copy / "metadata.yaml").is_file()
-    assert out["pepforge"]["n_replaced_copies"] == 0
-    assert out["pepforge"]["n_moved_aside"] == 0
+    assert out["seahorse"]["n_replaced_copies"] == 0
+    assert out["seahorse"]["n_moved_aside"] == 0
     assert not (vault / ".trash" / "replaced-folders").exists()
     assert len(said) == 1
     assert "cannot hold folder links" in said[0]
@@ -730,7 +730,7 @@ def test_settle_reports_failure_instead_of_raising(
     said = _record_link_warnings(monkeypatch)
 
     out = settle_hub_entry(
-        copy, None, vault=vault, project="pepforge", hub="litman_reflib"
+        copy, None, vault=vault, project="seahorse", hub="litman_reflib"
     )
 
     assert out == HubSettlement("failed", None)
@@ -742,7 +742,7 @@ def test_settle_reports_failure_instead_of_raising(
     assert "re-run `lit health-check --fix`" in joined
     # The destination directory gets created before the move is attempted;
     # what matters is that nothing landed in it.
-    assert list(_replaced_root(vault, "pepforge", "litman_reflib").iterdir()) == []
+    assert list(_replaced_root(vault, "seahorse", "litman_reflib").iterdir()) == []
 
 
 @pytest.mark.skipif(
@@ -767,7 +767,7 @@ def test_settle_reports_failure_on_a_real_read_only_hub(tmp_path: Path) -> None:
     trash.chmod(stat.S_IRUSR | stat.S_IXUSR)
     try:
         out = settle_hub_entry(
-            copy, None, vault=vault, project="pepforge", hub="litman_reflib"
+            copy, None, vault=vault, project="seahorse", hub="litman_reflib"
         )
         assert out.verdict == "failed"
     finally:
@@ -793,15 +793,15 @@ def test_one_failed_position_does_not_stop_the_rebuild(
     monkeypatch.setattr(project_link, "rmtree", flaky_rmtree)
     said = _record_link_warnings(monkeypatch)
 
-    out = rebuild_all_project_links(vault, {"pepforge": str(project_dir)})
+    out = rebuild_all_project_links(vault, {"seahorse": str(project_dir)})
 
     stuck = project_dir / "litman_reflib" / "p1"
     healed = project_dir / "litman_reflib" / "p2"
     assert stuck.is_dir() and not is_portable_link(stuck)
     assert (stuck / "metadata.yaml").is_file()
     assert is_portable_link(healed)
-    assert out["pepforge"]["n_replaced_copies"] == 1
-    assert out["pepforge"]["n_paper_links"] == 1
+    assert out["seahorse"]["n_replaced_copies"] == 1
+    assert out["seahorse"]["n_paper_links"] == 1
     # Exactly one warning, about the one folder — the create loop must not add
     # a second for the position it was told to leave alone.
     assert len(said) == 1
@@ -835,7 +835,7 @@ def test_unreadable_subtree_is_never_called_verbatim(tmp_path: Path) -> None:
     try:
         assert project_link._is_verbatim_copy(copy, target) is False
         out = settle_hub_entry(
-            copy, target, vault=vault, project="pepforge", hub="litman_reflib"
+            copy, target, vault=vault, project="seahorse", hub="litman_reflib"
         )
         moved = out.moved_to
     finally:
@@ -926,7 +926,7 @@ def test_a_cross_device_rename_falls_back_to_copying(
     monkeypatch.setattr(os, "rename", exdev)
 
     out = settle_hub_entry(
-        copy, target, vault=vault, project="pepforge", hub="litman_reflib"
+        copy, target, vault=vault, project="seahorse", hub="litman_reflib"
     )
 
     assert out.verdict == "moved-aside"
@@ -961,13 +961,13 @@ def test_any_other_rename_failure_never_copies_the_folder(
     said = _record_link_warnings(monkeypatch)
 
     out = settle_hub_entry(
-        copy, target, vault=vault, project="pepforge", hub="litman_reflib"
+        copy, target, vault=vault, project="seahorse", hub="litman_reflib"
     )
 
     assert out.verdict == "failed"
     assert copied == [], "a non-EXDEV failure must not duplicate the folder"
     assert (copy / "notes.md").read_text(encoding="utf-8") == "mine\n"
-    assert list(_replaced_root(vault, "pepforge", "litman_reflib").iterdir()) == []
+    assert list(_replaced_root(vault, "seahorse", "litman_reflib").iterdir()) == []
     assert len(said) == 1
 
 
@@ -989,7 +989,7 @@ def test_repeated_failed_settles_do_not_pile_up_copies(
     for _ in range(3):
         assert (
             settle_hub_entry(
-                copy, target, vault=vault, project="pepforge", hub="litman_reflib"
+                copy, target, vault=vault, project="seahorse", hub="litman_reflib"
             ).verdict
             == "failed"
         )

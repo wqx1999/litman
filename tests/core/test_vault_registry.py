@@ -3,7 +3,7 @@
 Every test redirects ``$HOME`` via monkeypatch so ``Path.home()`` resolves
 inside ``tmp_path``. Without the redirect, ``registry_path()`` would
 point at the real ``~/.config/litman/vaults.yaml`` and the tests would
-either fail (HOME read-only on CI) or worse, scribble over wangq's real
+either fail (HOME read-only on CI) or worse, scribble over the developer's real
 registry on a dev machine.
 """
 
@@ -725,16 +725,16 @@ def test_add_provenance_fields_persist(
         VaultRegistry(),
         "zhang-shared",
         vault_a,
-        imported_from="Zhang via USB drop",
+        imported_from="a colleague, via USB",
         imported_at="2026-05-12",
     )
     entry = reg.vaults[0]
-    assert entry.imported_from == "Zhang via USB drop"
+    assert entry.imported_from == "a colleague, via USB"
     assert entry.imported_at == "2026-05-12"
 
 
 def test_add_resolves_path_to_absolute(vault_a: Path, tmp_path: Path) -> None:
-    """add_vault stores the resolved absolute path, not whatever wangq passed."""
+    """add_vault stores the resolved absolute path, not whatever the caller passed."""
     # Build a relative-ish path that resolves to vault_a.
     relative = Path(vault_a)  # already absolute, but resolve is idempotent
     reg = add_vault(VaultRegistry(), "main", relative)
@@ -816,7 +816,7 @@ def test_set_vault_path_repoints_and_preserves_the_rest(
         VaultRegistry(),
         "main",
         vault_a,
-        imported_from="Zhang via USB drop",
+        imported_from="a colleague, via USB",
         imported_at="2026-05-12",
         set_active=True,
     )
@@ -826,7 +826,7 @@ def test_set_vault_path_repoints_and_preserves_the_rest(
     entry = find_by_name(out, "main")
     assert Path(entry.path) == vault_b.resolve()
     assert entry.is_active is True
-    assert entry.imported_from == "Zhang via USB drop"
+    assert entry.imported_from == "a colleague, via USB"
     assert entry.imported_at == "2026-05-12"
     assert entry.last_health_check_at == "2026-05-30T00:00:00+00:00"
 

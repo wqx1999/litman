@@ -10,7 +10,7 @@ Operations within a single invocation apply in the order
 full reclassification:
 
     lit modify 2023_Pandi_Cell-free \\
-        --set priority-pepforge=A --set status=deep-read \\
+        --set priority-my-project=A --set status=deep-read \\
         --add-tag topics=peptide --add-tag methods=cell-free
 
 Multi-file atomicity (metadata.yaml + INDEX.json) goes through

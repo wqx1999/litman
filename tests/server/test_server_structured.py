@@ -674,20 +674,20 @@ def test_post_project_links_paper_writes_backend_and_reprojects_index(
     reprojects INDEX.json to match AND runs the project-side side effects
     (litman_reflib symlink + REFERENCES.md)."""
     vault, paper_id = vault_with_paper
-    project_dir = tmp_path / "pepforge"
-    _register_project(vault, "pepforge", project_dir)
+    project_dir = tmp_path / "seahorse"
+    _register_project(vault, "seahorse", project_dir)
     assert _meta(vault, paper_id)["projects"] == []  # fixture default
 
     resp = _client(vault).post(
-        f"/api/paper/{paper_id}/project", json={"project": "pepforge"}
+        f"/api/paper/{paper_id}/project", json={"project": "seahorse"}
     )
     assert resp.status_code == 200
     assert resp.json() == {"ok": True}
 
     # TRUTH updated …
-    assert _meta(vault, paper_id)["projects"] == ["pepforge"]
+    assert _meta(vault, paper_id)["projects"] == ["seahorse"]
     # … DERIVED projection recomputed to match …
-    assert _index_paper(vault, paper_id)["projects"] == ["pepforge"]
+    assert _index_paper(vault, paper_id)["projects"] == ["seahorse"]
     # … and the project-side side effects ran (symlink + REFERENCES.md).
     assert is_portable_link(project_dir / "litman_reflib" / paper_id)
     assert (project_dir / "litman_reflib" / "REFERENCES.md").is_file()
@@ -697,28 +697,28 @@ def test_post_project_with_relevance(
     vault_with_paper: tuple[Path, str], tmp_path: Path
 ) -> None:
     vault, paper_id = vault_with_paper
-    _register_project(vault, "pepforge", tmp_path / "pepforge")
+    _register_project(vault, "seahorse", tmp_path / "seahorse")
 
     resp = _client(vault).post(
         f"/api/paper/{paper_id}/project",
-        json={"project": "pepforge", "relevance": "core baseline"},
+        json={"project": "seahorse", "relevance": "core baseline"},
     )
     assert resp.status_code == 200
-    assert _meta(vault, paper_id)["relevance-pepforge"] == "core baseline"
+    assert _meta(vault, paper_id)["relevance-seahorse"] == "core baseline"
 
 
 def test_delete_project_unlinks_roundtrip(
     vault_with_paper: tuple[Path, str], tmp_path: Path
 ) -> None:
     vault, paper_id = vault_with_paper
-    project_dir = tmp_path / "pepforge"
-    _register_project(vault, "pepforge", project_dir)
+    project_dir = tmp_path / "seahorse"
+    _register_project(vault, "seahorse", project_dir)
     client = _client(vault)
 
-    client.post(f"/api/paper/{paper_id}/project", json={"project": "pepforge"})
-    assert _meta(vault, paper_id)["projects"] == ["pepforge"]
+    client.post(f"/api/paper/{paper_id}/project", json={"project": "seahorse"})
+    assert _meta(vault, paper_id)["projects"] == ["seahorse"]
 
-    resp = client.delete(f"/api/paper/{paper_id}/project/pepforge")
+    resp = client.delete(f"/api/paper/{paper_id}/project/seahorse")
     assert resp.status_code == 200
     assert resp.json() == {"ok": True}
     # TRUTH + DERIVED both reflect the unlink, symlink torn down.
@@ -744,9 +744,9 @@ def test_post_project_unknown_paper_404(
     vault_with_paper: tuple[Path, str], tmp_path: Path
 ) -> None:
     vault, _ = vault_with_paper
-    _register_project(vault, "pepforge", tmp_path / "pepforge")
+    _register_project(vault, "seahorse", tmp_path / "seahorse")
     resp = _client(vault).post(
-        "/api/paper/2099_Nobody_Missing/project", json={"project": "pepforge"}
+        "/api/paper/2099_Nobody_Missing/project", json={"project": "seahorse"}
     )
     assert resp.status_code == 404
 
@@ -764,7 +764,7 @@ def test_post_project_empty_name_400(
 def test_post_project_bad_id_404(vault_with_paper: tuple[Path, str]) -> None:
     vault, _ = vault_with_paper
     resp = _client(vault).post(
-        "/api/paper/foo..bar/project", json={"project": "pepforge"}
+        "/api/paper/foo..bar/project", json={"project": "seahorse"}
     )
     assert resp.status_code == 404
 
@@ -1141,8 +1141,8 @@ def test_delete_project_cascades_and_keeps_dir(
     from litman.core.taxonomy import parse_taxonomy
 
     vault, paper_id = vault_with_paper
-    project_dir = tmp_path / "pepforge"
-    _register_project(vault, "pepforge", project_dir)
+    project_dir = tmp_path / "seahorse"
+    _register_project(vault, "seahorse", project_dir)
 
     # Seed two non-default config fields so the full-config rewrite inside
     # remove_project is guarded against silently dropping unrelated keys (the
@@ -1160,19 +1160,19 @@ def test_delete_project_cascades_and_keeps_dir(
     client = _client(vault)
 
     # Link the paper so the cascade has something to untag + symlinks to tear down.
-    client.post(f"/api/paper/{paper_id}/project", json={"project": "pepforge"})
-    assert _meta(vault, paper_id)["projects"] == ["pepforge"]
+    client.post(f"/api/paper/{paper_id}/project", json={"project": "seahorse"})
+    assert _meta(vault, paper_id)["projects"] == ["seahorse"]
     assert is_portable_link(project_dir / "litman_reflib" / paper_id)
     assert (project_dir / "litman_reflib" / "REFERENCES.md").is_file()
 
-    resp = client.delete("/api/projects/pepforge")
+    resp = client.delete("/api/projects/seahorse")
     assert resp.status_code == 200
     assert resp.json() == {"ok": True, "changed": 1, "foldersLeft": []}
 
     # TRUTH: paper untagged + dropped from both truth sources …
     assert _meta(vault, paper_id)["projects"] == []
-    assert "pepforge" not in parse_taxonomy((vault / "TAXONOMY.md").read_text())["projects"]
-    assert "pepforge" not in load_config(vault).projects
+    assert "seahorse" not in parse_taxonomy((vault / "TAXONOMY.md").read_text())["projects"]
+    assert "seahorse" not in load_config(vault).projects
     # … DERIVED: INDEX reprojected, symlink + REFERENCES.md torn down …
     assert _index_paper(vault, paper_id)["projects"] == []
     assert not (project_dir / "litman_reflib" / paper_id).exists()
@@ -1330,36 +1330,36 @@ def test_put_project_renames_across_truth_and_relevance(
     from litman.core.taxonomy import parse_taxonomy
 
     vault, paper_id = vault_with_paper
-    project_dir = tmp_path / "pepforge"
-    _register_project(vault, "pepforge", project_dir)
+    project_dir = tmp_path / "seahorse"
+    _register_project(vault, "seahorse", project_dir)
     client = _client(vault)
 
     client.post(
         f"/api/paper/{paper_id}/project",
-        json={"project": "pepforge", "relevance": "core baseline"},
+        json={"project": "seahorse", "relevance": "core baseline"},
     )
-    assert _meta(vault, paper_id)["projects"] == ["pepforge"]
-    assert _meta(vault, paper_id)["relevance-pepforge"] == "core baseline"
+    assert _meta(vault, paper_id)["projects"] == ["seahorse"]
+    assert _meta(vault, paper_id)["relevance-seahorse"] == "core baseline"
 
-    resp = client.put("/api/projects/pepforge", json={"new": "pepcodec"})
+    resp = client.put("/api/projects/seahorse", json={"new": "bluebell"})
     assert resp.status_code == 200
     assert resp.json() == {"ok": True, "changed": 1}
 
     meta = _meta(vault, paper_id)
     # TRUTH: paper field renamed + relevance annotation carried over under the
     # new key (no orphan left behind) …
-    assert meta["projects"] == ["pepcodec"]
-    assert meta["relevance-pepcodec"] == "core baseline"
-    assert "relevance-pepforge" not in meta
+    assert meta["projects"] == ["bluebell"]
+    assert meta["relevance-bluebell"] == "core baseline"
+    assert "relevance-seahorse" not in meta
     # … both registry truth sources renamed, path carried over unchanged …
     cfg = load_config(vault)
-    assert "pepforge" not in cfg.projects
-    assert cfg.projects["pepcodec"] == str(project_dir)
+    assert "seahorse" not in cfg.projects
+    assert cfg.projects["bluebell"] == str(project_dir)
     parsed = parse_taxonomy((vault / "TAXONOMY.md").read_text())
-    assert "pepforge" not in parsed["projects"]
-    assert "pepcodec" in parsed["projects"]
+    assert "seahorse" not in parsed["projects"]
+    assert "bluebell" in parsed["projects"]
     # … and DERIVED reprojected.
-    assert _index_paper(vault, paper_id)["projects"] == ["pepcodec"]
+    assert _index_paper(vault, paper_id)["projects"] == ["bluebell"]
 
 
 def test_put_project_unregistered_400(
@@ -1411,12 +1411,12 @@ def test_put_project_path_updates_config_only(
     old_dir = tmp_path / "old_loc"
     new_dir = tmp_path / "new_loc"
     new_dir.mkdir()
-    _register_project(vault, "pepforge", old_dir)
+    _register_project(vault, "seahorse", old_dir)
     client = _client(vault)
-    client.post(f"/api/paper/{paper_id}/project", json={"project": "pepforge"})
+    client.post(f"/api/paper/{paper_id}/project", json={"project": "seahorse"})
 
     resp = client.put(
-        "/api/projects/pepforge/path", json={"path": str(new_dir)}
+        "/api/projects/seahorse/path", json={"path": str(new_dir)}
     )
     assert resp.status_code == 200
     body = resp.json()
@@ -1425,8 +1425,8 @@ def test_put_project_path_updates_config_only(
     assert body["path"] == str(new_dir)
 
     # Config re-pointed; the paper's membership (by NAME) is unchanged.
-    assert load_config(vault).projects["pepforge"] == str(new_dir)
-    assert _meta(vault, paper_id)["projects"] == ["pepforge"]
+    assert load_config(vault).projects["seahorse"] == str(new_dir)
+    assert _meta(vault, paper_id)["projects"] == ["seahorse"]
 
 
 def test_put_project_path_noop_when_same(
@@ -1435,10 +1435,10 @@ def test_put_project_path_noop_when_same(
     """Re-pointing to the path it already has is a benign no-op (changed=False),
     not an error."""
     vault, _ = vault_with_paper
-    project_dir = tmp_path / "pepforge"
-    _register_project(vault, "pepforge", project_dir)
+    project_dir = tmp_path / "seahorse"
+    _register_project(vault, "seahorse", project_dir)
     resp = _client(vault).put(
-        "/api/projects/pepforge/path", json={"path": str(project_dir)}
+        "/api/projects/seahorse/path", json={"path": str(project_dir)}
     )
     assert resp.status_code == 200
     assert resp.json()["changed"] is False
@@ -1463,9 +1463,9 @@ def test_put_project_path_nonexistent_400(
 ) -> None:
     """A path that does not exist → 400 (no silent registration of a dead path)."""
     vault, _ = vault_with_paper
-    _register_project(vault, "pepforge", tmp_path / "pepforge")
+    _register_project(vault, "seahorse", tmp_path / "seahorse")
     resp = _client(vault).put(
-        "/api/projects/pepforge/path", json={"path": str(tmp_path / "missing")}
+        "/api/projects/seahorse/path", json={"path": str(tmp_path / "missing")}
     )
     assert resp.status_code == 400
     assert "does not exist" in resp.json()["detail"]
@@ -1476,9 +1476,9 @@ def test_put_project_path_relative_400(
 ) -> None:
     """A relative path is rejected (the server cwd is opaque), not resolved."""
     vault, _ = vault_with_paper
-    _register_project(vault, "pepforge", tmp_path / "pepforge")
+    _register_project(vault, "seahorse", tmp_path / "seahorse")
     resp = _client(vault).put(
-        "/api/projects/pepforge/path", json={"path": "relative/dir"}
+        "/api/projects/seahorse/path", json={"path": "relative/dir"}
     )
     assert resp.status_code == 400
     assert "absolute" in resp.json()["detail"]
@@ -1489,11 +1489,11 @@ def test_put_project_path_is_file_400(
 ) -> None:
     """A path that exists but is a file, not a directory → 400."""
     vault, _ = vault_with_paper
-    _register_project(vault, "pepforge", tmp_path / "pepforge")
+    _register_project(vault, "seahorse", tmp_path / "seahorse")
     f = tmp_path / "afile.txt"
     f.write_text("x", encoding="utf-8")
     resp = _client(vault).put(
-        "/api/projects/pepforge/path", json={"path": str(f)}
+        "/api/projects/seahorse/path", json={"path": str(f)}
     )
     assert resp.status_code == 400
     assert "not a directory" in resp.json()["detail"]
@@ -1581,9 +1581,9 @@ def test_put_active_vault_empty_name_400(tmp_path: Path) -> None:
 
 
 def _linked_paper(vault: Path, paper_id: str, project_dir: Path) -> None:
-    _register_project(vault, "pepforge", project_dir)
+    _register_project(vault, "seahorse", project_dir)
     resp = _client(vault).post(
-        f"/api/paper/{paper_id}/project", json={"project": "pepforge"}
+        f"/api/paper/{paper_id}/project", json={"project": "seahorse"}
     )
     assert resp.status_code == 200, resp.text
 
@@ -1619,12 +1619,12 @@ def test_put_metadata_priority_out_of_range_is_400(
     vault_with_paper: tuple[Path, str], tmp_path: Path
 ) -> None:
     vault, paper_id = vault_with_paper
-    _linked_paper(vault, paper_id, tmp_path / "pepforge")
+    _linked_paper(vault, paper_id, tmp_path / "seahorse")
     resp = _client(vault).put(
-        f"/api/paper/{paper_id}/metadata", json={"set": {"priority-pepforge": "Q"}}
+        f"/api/paper/{paper_id}/metadata", json={"set": {"priority-seahorse": "Q"}}
     )
     assert resp.status_code == 400
-    assert "Invalid priority-pepforge 'Q'" in resp.json()["detail"]
+    assert "Invalid priority-seahorse 'Q'" in resp.json()["detail"]
 
 
 def test_put_metadata_empty_priority_is_400_not_a_null_grade(
@@ -1634,28 +1634,28 @@ def test_put_metadata_empty_priority_is_400_not_a_null_grade(
     dropdown entry. There is no such entry by design: absence is the ungraded
     form, so the API must refuse to write a null rather than invent one."""
     vault, paper_id = vault_with_paper
-    _linked_paper(vault, paper_id, tmp_path / "pepforge")
+    _linked_paper(vault, paper_id, tmp_path / "seahorse")
     resp = _client(vault).put(
-        f"/api/paper/{paper_id}/metadata", json={"set": {"priority-pepforge": ""}}
+        f"/api/paper/{paper_id}/metadata", json={"set": {"priority-seahorse": ""}}
     )
     assert resp.status_code == 400
     assert "absent key" in resp.json()["detail"]
-    assert "priority-pepforge" not in _meta(vault, paper_id)
+    assert "priority-seahorse" not in _meta(vault, paper_id)
 
 
 def test_put_metadata_priority_for_a_linked_project_is_written(
     vault_with_paper: tuple[Path, str], tmp_path: Path
 ) -> None:
     vault, paper_id = vault_with_paper
-    _linked_paper(vault, paper_id, tmp_path / "pepforge")
+    _linked_paper(vault, paper_id, tmp_path / "seahorse")
     resp = _client(vault).put(
-        f"/api/paper/{paper_id}/metadata", json={"set": {"priority-pepforge": "B"}}
+        f"/api/paper/{paper_id}/metadata", json={"set": {"priority-seahorse": "B"}}
     )
     assert resp.status_code == 200
     assert resp.json() == {"ok": True, "changed": True}
-    assert _meta(vault, paper_id)["priority-pepforge"] == "B"
+    assert _meta(vault, paper_id)["priority-seahorse"] == "B"
     # Not in the INDEX projection — variable-width keys never are (ADR-025).
-    assert "priority-pepforge" not in _index_paper(vault, paper_id)
+    assert "priority-seahorse" not in _index_paper(vault, paper_id)
 
 
 def test_post_project_links_and_grades_in_one_request(
@@ -1664,31 +1664,31 @@ def test_post_project_links_and_grades_in_one_request(
     """Decision 5's gesture: picking a letter on an UNLINKED panel row is one
     write, not a link followed by a metadata PUT."""
     vault, paper_id = vault_with_paper
-    _register_project(vault, "pepforge", tmp_path / "pepforge")
+    _register_project(vault, "seahorse", tmp_path / "seahorse")
 
     resp = _client(vault).post(
         f"/api/paper/{paper_id}/project",
-        json={"project": "pepforge", "priority": "A"},
+        json={"project": "seahorse", "priority": "A"},
     )
     assert resp.status_code == 200, resp.text
 
     meta = _meta(vault, paper_id)
-    assert meta["projects"] == ["pepforge"]
-    assert meta["priority-pepforge"] == "A"
+    assert meta["projects"] == ["seahorse"]
+    assert meta["priority-seahorse"] == "A"
 
 
 def test_post_project_without_priority_links_ungraded(
     vault_with_paper: tuple[Path, str], tmp_path: Path
 ) -> None:
     vault, paper_id = vault_with_paper
-    _register_project(vault, "pepforge", tmp_path / "pepforge")
+    _register_project(vault, "seahorse", tmp_path / "seahorse")
 
     resp = _client(vault).post(
-        f"/api/paper/{paper_id}/project", json={"project": "pepforge"}
+        f"/api/paper/{paper_id}/project", json={"project": "seahorse"}
     )
     assert resp.status_code == 200, resp.text
     meta = _meta(vault, paper_id)
-    assert meta["projects"] == ["pepforge"]
+    assert meta["projects"] == ["seahorse"]
     assert not any(k.startswith("priority") for k in meta)
 
 
@@ -1698,11 +1698,11 @@ def test_post_project_out_of_range_priority_is_400_from_core(
     """Only the TYPE is checked in the handler; the A/B/C range is core's, so
     the client sees exactly what `lit link --priority Q` prints."""
     vault, paper_id = vault_with_paper
-    _register_project(vault, "pepforge", tmp_path / "pepforge")
+    _register_project(vault, "seahorse", tmp_path / "seahorse")
 
     resp = _client(vault).post(
         f"/api/paper/{paper_id}/project",
-        json={"project": "pepforge", "priority": "Q"},
+        json={"project": "seahorse", "priority": "Q"},
     )
     assert resp.status_code == 400
     assert "Invalid priority 'Q'" in resp.json()["detail"]
@@ -1717,11 +1717,11 @@ def test_post_project_non_string_priority_is_400_at_the_boundary(
     """The one check the handler DOES own, mirroring `relevance`: a non-string
     would reach core as a type it cannot compare."""
     vault, paper_id = vault_with_paper
-    _register_project(vault, "pepforge", tmp_path / "pepforge")
+    _register_project(vault, "seahorse", tmp_path / "seahorse")
 
     resp = _client(vault).post(
         f"/api/paper/{paper_id}/project",
-        json={"project": "pepforge", "priority": 3},
+        json={"project": "seahorse", "priority": 3},
     )
     assert resp.status_code == 400
     assert resp.json()["detail"] == "priority must be a string."
@@ -1731,18 +1731,18 @@ def test_delete_project_link_drops_the_grade(
     vault_with_paper: tuple[Path, str], tmp_path: Path
 ) -> None:
     vault, paper_id = vault_with_paper
-    _register_project(vault, "pepforge", tmp_path / "pepforge")
+    _register_project(vault, "seahorse", tmp_path / "seahorse")
     client = _client(vault)
     client.post(
         f"/api/paper/{paper_id}/project",
-        json={"project": "pepforge", "priority": "A"},
+        json={"project": "seahorse", "priority": "A"},
     )
 
-    resp = client.delete(f"/api/paper/{paper_id}/project/pepforge")
+    resp = client.delete(f"/api/paper/{paper_id}/project/seahorse")
     assert resp.status_code == 200, resp.text
     meta = _meta(vault, paper_id)
     assert meta["projects"] == []
-    assert "priority-pepforge" not in meta
+    assert "priority-seahorse" not in meta
 
 
 def test_get_paper_passes_the_grade_through_untouched(
@@ -1752,16 +1752,16 @@ def test_get_paper_passes_the_grade_through_untouched(
     variable-width, so it can never enter the INDEX projection `/api/papers`
     returns. The cockpit reads it from here."""
     vault, paper_id = vault_with_paper
-    _register_project(vault, "pepforge", tmp_path / "pepforge")
+    _register_project(vault, "seahorse", tmp_path / "seahorse")
     client = _client(vault)
     client.post(
         f"/api/paper/{paper_id}/project",
-        json={"project": "pepforge", "priority": "C", "relevance": "core baseline"},
+        json={"project": "seahorse", "priority": "C", "relevance": "core baseline"},
     )
 
     body = client.get(f"/api/paper/{paper_id}").json()
-    assert body["priority-pepforge"] == "C"
-    assert body["relevance-pepforge"] == "core baseline"
+    assert body["priority-seahorse"] == "C"
+    assert body["relevance-seahorse"] == "core baseline"
     assert "priority" not in body
     # Control: the same key is absent from the list projection.
     listed = client.get("/api/papers").json()
@@ -1777,20 +1777,20 @@ def test_project_rm_and_rename_cascade_the_grade_over_the_api(
     work in core; this pins that the API paths inherit it rather than the
     comments merely asserting it."""
     vault, paper_id = vault_with_paper
-    _register_project(vault, "pepforge", tmp_path / "pepforge")
+    _register_project(vault, "seahorse", tmp_path / "seahorse")
     client = _client(vault)
     client.post(
         f"/api/paper/{paper_id}/project",
-        json={"project": "pepforge", "priority": "A"},
+        json={"project": "seahorse", "priority": "A"},
     )
 
-    assert client.put("/api/projects/pepforge", json={"new": "pepcodec"}).status_code == 200
+    assert client.put("/api/projects/seahorse", json={"new": "bluebell"}).status_code == 200
     meta = _meta(vault, paper_id)
-    assert "priority-pepforge" not in meta
-    assert meta["priority-pepcodec"] == "A"     # carried over, value preserved
+    assert "priority-seahorse" not in meta
+    assert meta["priority-bluebell"] == "A"     # carried over, value preserved
 
-    assert client.delete("/api/projects/pepcodec").status_code == 200
-    assert "priority-pepcodec" not in _meta(vault, paper_id)
+    assert client.delete("/api/projects/bluebell").status_code == 200
+    assert "priority-bluebell" not in _meta(vault, paper_id)
 
 
 # ---------------------------------------------------------------------------
@@ -2156,9 +2156,9 @@ def test_put_metadata_drop_dangling_on_a_hand_edited_scalar_names_the_file(
         ("PUT", "/api/taxonomy/topics", {"old": "peptide", "new": "peptides"}),
         ("DELETE", "/api/taxonomy/topics?value=peptide", None),
         ("PUT", "/api/paper/{id}/metadata", {"addTag": {"topics": ["spps"]}}),
-        ("POST", "/api/projects", {"name": "pepforge", "path": "<dir>"}),
-        ("PUT", "/api/projects/pepforge", {"new": "pepforge2"}),
-        ("DELETE", "/api/projects/pepforge", None),
+        ("POST", "/api/projects", {"name": "seahorse", "path": "<dir>"}),
+        ("PUT", "/api/projects/seahorse", {"new": "seahorse2"}),
+        ("DELETE", "/api/projects/seahorse", None),
     ],
     ids=[
         "taxonomy-add",
@@ -2229,12 +2229,12 @@ def _assert_config_detail(detail: str, kind: str) -> None:
     ("method", "url", "body"),
     [
         ("GET", "/api/projects", None),
-        ("POST", "/api/projects", {"name": "pepforge2", "path": "<dir>"}),
-        ("PUT", "/api/projects/pepforge", {"new": "pepforge2"}),
-        ("PUT", "/api/projects/pepforge/path", {"path": "<dir>"}),
-        ("DELETE", "/api/projects/pepforge", None),
-        ("POST", "/api/paper/{id}/project", {"project": "pepforge"}),
-        ("DELETE", "/api/paper/{id}/project/pepforge", None),
+        ("POST", "/api/projects", {"name": "seahorse2", "path": "<dir>"}),
+        ("PUT", "/api/projects/seahorse", {"new": "seahorse2"}),
+        ("PUT", "/api/projects/seahorse/path", {"path": "<dir>"}),
+        ("DELETE", "/api/projects/seahorse", None),
+        ("POST", "/api/paper/{id}/project", {"project": "seahorse"}),
+        ("DELETE", "/api/paper/{id}/project/seahorse", None),
         ("GET", "/api/paper/{id}/rm-preview", None),
     ],
     ids=[
@@ -2260,9 +2260,9 @@ def test_a_config_that_cannot_be_read_is_a_described_500(
     """The toast says lit-config.yaml needs fixing instead of "Internal Server
     Error", and nothing is written."""
     vault, paper_id = vault_with_paper
-    _register_project(vault, "pepforge", tmp_path / "pepforge")
+    _register_project(vault, "seahorse", tmp_path / "seahorse")
     client = _client(vault)
-    linked = client.post(f"/api/paper/{paper_id}/project", json={"project": "pepforge"})
+    linked = client.post(f"/api/paper/{paper_id}/project", json={"project": "seahorse"})
     assert linked.status_code == 200
     _damage_config(vault, kind)
     before = {
@@ -2306,9 +2306,9 @@ def test_editing_a_project_member_saves_when_the_config_cannot_be_read(
     answers 200 rather than "fix it and try again" for a change that already
     landed. The health panel is where the unreadable config shows."""
     vault, paper_id = vault_with_paper
-    _register_project(vault, "pepforge", tmp_path / "pepforge")
+    _register_project(vault, "seahorse", tmp_path / "seahorse")
     client = _client(vault)
-    linked = client.post(f"/api/paper/{paper_id}/project", json={"project": "pepforge"})
+    linked = client.post(f"/api/paper/{paper_id}/project", json={"project": "seahorse"})
     assert linked.status_code == 200
     _damage_config(vault, kind)
 

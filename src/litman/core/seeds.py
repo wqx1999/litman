@@ -96,8 +96,8 @@ codes_ignore_patterns:
 # the per-project REFERENCES.md regeneration step of `lit refresh-views`.
 # Populate before linking papers, e.g.:
 #   projects:
-#     pepforge: /work/wangq/Project/PepForge
-#     pepcodec: /work/wangq/Project/PepCodec
+#     my-project: /home/alice/projects/my-project
+#     side-project: /home/alice/projects/side-project
 projects: {{}}
 
 # Cloud sync target (M6). Populated by `lit sync setup`. Leave commented

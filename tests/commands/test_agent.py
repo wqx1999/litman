@@ -261,7 +261,7 @@ def test_agent_windows_runs_npm_cmd_shim_through_cmd(
     vault: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setattr(sys, "platform", "win32")
-    codex = r"C:\Users\Wang\AppData\Roaming\npm\codex.CMD"
+    codex = r"C:\Users\alice\AppData\Roaming\npm\codex.CMD"
     monkeypatch.setattr(agents, "resolve_launch", lambda _spec: codex)
     # The real which breaks under a faked sys.platform on some Python versions.
     monkeypatch.setattr(agents.shutil, "which", lambda name: f"C:\\bin\\{name}.exe")

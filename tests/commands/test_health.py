@@ -2058,9 +2058,9 @@ def _vocab_library(vault: Path, *, methods_once: int = 10) -> None:
     from litman.core.project_link import add_project
     from litman.core.taxonomy import add_taxonomy_values
 
-    project_dir = vault.parent / "pepforge"
+    project_dir = vault.parent / "seahorse"
     project_dir.mkdir()
-    add_project(vault, "pepforge", project_dir)
+    add_project(vault, "seahorse", project_dir)
     add_taxonomy_values(vault, "topics", ("peptide", "peptidedrug", "spps"), force=True)
     add_taxonomy_values(vault, "methods", tuple(_METHODS))
     once, twice = _METHODS[:methods_once], _METHODS[methods_once:]
@@ -3583,7 +3583,7 @@ def _set_config_projects(vault: Path, mapping: dict[str, str]) -> None:
 def test_project_config_consistency_taxonomy_only_warns(
     vault: Path,
 ) -> None:
-    _set_taxonomy_projects(vault, ["pepforge"])
+    _set_taxonomy_projects(vault, ["seahorse"])
     _set_config_projects(vault, {})
     issues = check_project_config_consistency(vault, [])
     assert len(issues) == 1
@@ -3598,7 +3598,7 @@ def test_project_config_consistency_config_only_warns(
 ) -> None:
     d = tmp_path / "proj"
     d.mkdir()
-    _set_config_projects(vault, {"pepforge": str(d)})
+    _set_config_projects(vault, {"seahorse": str(d)})
     # TAXONOMY projects stays empty (seed default).
     issues = check_project_config_consistency(vault, [])
     assert len(issues) == 1
@@ -3611,8 +3611,8 @@ def test_project_config_consistency_in_sync_no_issue(
 ) -> None:
     d = tmp_path / "proj"
     d.mkdir()
-    _set_taxonomy_projects(vault, ["pepforge"])
-    _set_config_projects(vault, {"pepforge": str(d)})
+    _set_taxonomy_projects(vault, ["seahorse"])
+    _set_config_projects(vault, {"seahorse": str(d)})
     assert check_project_config_consistency(vault, []) == []
 
 

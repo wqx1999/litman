@@ -22,7 +22,7 @@ from litman.core.textclean import clean_metadata_text
 from litman.exceptions import ImporterError, coded
 
 _CROSSREF_URL = "https://api.crossref.org/works/{doi}"
-_USER_AGENT = f"litman/{__version__} (mailto:qingxinwong2@gmail.com)"
+_USER_AGENT = f"litman/{__version__} (mailto:contact@litman.dev)"
 _TIMEOUT_SECONDS = 10.0
 # The GUI's code for every way CrossRef failed to answer (not "no such DOI").
 _UNREACHABLE = "crossref-unreachable"

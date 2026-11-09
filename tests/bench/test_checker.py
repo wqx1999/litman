@@ -52,7 +52,7 @@ def synth_vault(tmp_path: Path) -> Path:
             "priority": "A",
             "type": "research",
             "topics": ["peptide", "protein-language-model"],
-            "projects": ["PepCodec"],
+            "projects": ["BlueBell"],
             "code-clones": [],
             "github": None,
             "read-date": None,
@@ -65,7 +65,7 @@ def synth_vault(tmp_path: Path) -> Path:
     )
     (vault / "TAXONOMY.md").write_text(
         "## topics\n- peptide\n- protein-language-model\n\n"
-        "## projects\n- PepCodec\n\n## methods\n(empty)\n\n## data\n(empty)\n",
+        "## projects\n- BlueBell\n\n## methods\n(empty)\n\n## data\n(empty)\n",
         encoding="utf-8",
     )
     return vault
@@ -184,15 +184,15 @@ def test_yaml_list_has_and_empty(synth_vault: Path) -> None:
         "yaml_list_has: papers/<peptidebert>/metadata.yaml :: topics has diffusion",
         synth_vault,
     ).passed
-    # case-insensitive membership: metadata stores `PepCodec`, but the agent's
+    # case-insensitive membership: metadata stores `BlueBell`, but the agent's
     # case is a coin-flip — a lowercase `has`/`empty-of` assertion must match the
     # stored CamelCase (mirrors litman's own case-folding for taxonomy keys).
     assert _ck(
-        "yaml_list_has: papers/<peptidebert>/metadata.yaml :: projects has pepcodec",
+        "yaml_list_has: papers/<peptidebert>/metadata.yaml :: projects has bluebell",
         synth_vault,
     ).passed
     assert not _ck(
-        "yaml_list_has: papers/<peptidebert>/metadata.yaml :: projects empty-of pepcodec",
+        "yaml_list_has: papers/<peptidebert>/metadata.yaml :: projects empty-of bluebell",
         synth_vault,
     ).passed
 
@@ -211,16 +211,16 @@ def test_index_has(synth_vault: Path) -> None:
 
 def test_taxonomy_has_absent(synth_vault: Path) -> None:
     assert _ck("taxonomy_has: topics :: peptide", synth_vault).passed
-    assert _ck("taxonomy_has: projects :: PepCodec", synth_vault).passed
+    assert _ck("taxonomy_has: projects :: BlueBell", synth_vault).passed
     assert _ck("taxonomy_absent: topics :: diffusion", synth_vault).passed
     assert not _ck("taxonomy_has: topics :: diffusion", synth_vault).passed
     assert not _ck("taxonomy_absent: topics :: peptide", synth_vault).passed
-    # case-insensitive: the dict stores `PepCodec` but the agent's case is a
+    # case-insensitive: the dict stores `BlueBell` but the agent's case is a
     # coin-flip; a lowercase (or upper) assertion must still resolve to the same
     # project, mirroring litman's case-folding match for all 4 TAXONOMY keys.
-    assert _ck("taxonomy_has: projects :: pepcodec", synth_vault).passed
-    assert _ck("taxonomy_has: projects :: PEPCODEC", synth_vault).passed
-    assert not _ck("taxonomy_absent: projects :: pepcodec", synth_vault).passed
+    assert _ck("taxonomy_has: projects :: bluebell", synth_vault).passed
+    assert _ck("taxonomy_has: projects :: BLUEBELL", synth_vault).passed
+    assert not _ck("taxonomy_absent: projects :: bluebell", synth_vault).passed
 
 
 # ---------------------------------------------------------------------------

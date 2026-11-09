@@ -174,7 +174,7 @@ class LitConfig(BaseModel):
             "the project's `litman_reflib/` symlinks and regenerate "
             "REFERENCES.md. Stored as strings (not Path) so the yaml "
             "round-trip is plain; paths are resolved per command. Empty "
-            "default — populate as `pepforge: /work/wangq/Project/PepForge` "
+            "default — populate as `my-project: /home/alice/projects/my-project` "
             "before linking papers to that project."
         ),
     )

@@ -61,7 +61,7 @@ def _fresh_vault(tmp_path: Path) -> Path:
         v, "2023_One_Alpha",
         year=2023, status="inbox",
         topics=["peptide", "deep-learning"], methods=["transformer"],
-        projects=["PepForge"], authors=["One, A."], title="Alpha",
+        projects=["SeaHorse"], authors=["One, A."], title="Alpha",
     )
     _seed_paper(
         v, "2024_Two_Beta",
@@ -83,16 +83,16 @@ def _graded_vault(tmp_path: Path) -> Path:
     _seed_paper(
         v, "2023_One_Alpha",
         year=2023, status="inbox", type="research",
-        topics=["peptide"], projects=["PepForge"],
+        topics=["peptide"], projects=["SeaHorse"],
         authors=["One, A."], title="Alpha",
-        **{"priority-PepForge": "A"},
+        **{"priority-SeaHorse": "A"},
     )
     _seed_paper(
         v, "2024_Two_Beta",
         year=2024, status="deep-read", type="research",
-        topics=["peptide"], projects=["PepForge"],
+        topics=["peptide"], projects=["SeaHorse"],
         authors=["Two, B."], title="Beta",
-        **{"priority-PepForge": "C"},
+        **{"priority-SeaHorse": "C"},
     )
     reconcile_derived(v, project_refs=False)
     return v
@@ -127,15 +127,15 @@ def test_priority_filter_is_identical_with_and_without_the_index(
     # below points at the filter and not at this harness.
     moved_index = tmp_path / "moved-INDEX.json"
 
-    fast_plain = _list_output(v, "--project", "PepForge")
+    fast_plain = _list_output(v, "--project", "SeaHorse")
     fast_filtered = _list_output(v, "--priority", "A")
-    fast_narrowed = _list_output(v, "--project", "PepForge", "--priority", "A")
+    fast_narrowed = _list_output(v, "--project", "SeaHorse", "--priority", "A")
 
     shutil.move(str(v / "INDEX.json"), str(moved_index))          # force the scan
     assert load_index_papers(v) is None
-    scan_plain = _list_output(v, "--project", "PepForge")
+    scan_plain = _list_output(v, "--project", "SeaHorse")
     scan_filtered = _list_output(v, "--priority", "A")
-    scan_narrowed = _list_output(v, "--project", "PepForge", "--priority", "A")
+    scan_narrowed = _list_output(v, "--project", "SeaHorse", "--priority", "A")
 
     assert fast_plain == scan_plain, "control failed: the harness itself diverges"
     assert fast_filtered == scan_filtered

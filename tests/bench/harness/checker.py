@@ -336,7 +336,7 @@ def _check_yaml_list(data: Any, rest: str, arg: str) -> AssertResult:
     Membership (``has`` / ``empty-of``) compares case-insensitively (``_norm``)
     so a taxonomy-key list (projects/topics/methods/data) is judged by litman's
     OWN case-folding equivalence rather than a byte match — the agent's cosmetic
-    case choice (`PepCodec` vs `pepcodec`) must not decide the card. List values
+    case choice (`BlueBell` vs `bluebell`) must not decide the card. List values
     litman derives deterministically (paper ids in ``related``, clone-dir names
     in ``code-clones``) carry no case coin-flip, so the looser compare never
     yields a false membership there.
@@ -421,7 +421,7 @@ def _check_taxonomy(vault: Path, arg: str, *, want: bool) -> AssertResult:
     # litman matches all 4 TAXONOMY keys case-insensitively (query.py:104
     # `token.lower() in entry.lower()`) while storage is case-preserving
     # (strip-only). Judge presence by litman's OWN equivalence so the card never
-    # measures the agent's cosmetic case coin-flip — `PepCodec` and `pepcodec`
+    # measures the agent's cosmetic case coin-flip — `BlueBell` and `bluebell`
     # are one project, not two.
     present = any(_norm(value) == _norm(e) for e in parsed.get(dict_name, []))
     ok = present is want

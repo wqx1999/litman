@@ -33,7 +33,7 @@ notes: |
      `lit rename` 原子更新反向边，故 promote 成 `yaml_list_has ... related has <新id>`
      机检：agent 没更新 / 手 mv 致悬空都判挂，忠实。
 
-  3. "#5 notes.md wikilink"、"PepCodec litman_reflib symlink" 两条 —— seed-2papers
+  3. "#5 notes.md wikilink"、"BlueBell litman_reflib symlink" 两条 —— seed-2papers
      **从未注入** wikilink / 项目 link（原 notes 自承 deferred 到"Phase E"，但该注入
      never built），即在断言**不存在的状态** → 必然 manual-fail。已删除（不静默丢：
      wikilink / 项目-link rename 涟漪的覆盖留待未来给 seed 加 `_notes` wikilink +

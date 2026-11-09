@@ -169,7 +169,7 @@ def test_launch_windows_passes_resolved_absolute_command_to_terminal(
 ) -> None:
     monkeypatch.setattr(sys, "platform", "win32")
     monkeypatch.setattr(agents, "detect", lambda _spec: True)
-    codex = r"C:\Users\Wang\AppData\Roaming\npm\codex.CMD"
+    codex = r"C:\Users\alice\AppData\Roaming\npm\codex.CMD"
     monkeypatch.setattr(agents, "resolve_launch", lambda _spec: codex)
     spawned: list[list[str]] = []
     monkeypatch.setattr(

@@ -188,7 +188,7 @@ export default function WelcomePage({
               value={parentDir}
               onChange={setParentDir}
               disabled={busy}
-              placeholder="/work/you"
+              placeholder="/home/you"
               onEnter={create}
               className="mt-1"
             />

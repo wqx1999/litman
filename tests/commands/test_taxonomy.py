@@ -678,7 +678,7 @@ def test_taxonomy_atomicity_metadata_and_index_match(vault: Path) -> None:
 def test_taxonomy_add_projects_hard_error(vault: Path) -> None:
     runner = CliRunner()
     result = runner.invoke(
-        cli, ["taxonomy", "add", "projects", "pepforge",
+        cli, ["taxonomy", "add", "projects", "seahorse",
               "--library", str(vault)]
     )
     assert result.exit_code != 0
@@ -1242,9 +1242,9 @@ def test_read_taxonomy_text_names_a_missing_file(vault: Path) -> None:
         ["taxonomy", "merge", "topics", "peptide", "--into", "spps", "--yes"],
         ["taxonomy", "rm", "topics", "peptide", "--yes"],
         ["project", "list"],
-        ["project", "add", "pepforge", "--path", "<dir>"],
-        ["project", "rename", "pepforge", "pepforge2"],
-        ["project", "rm", "pepforge", "--yes"],
+        ["project", "add", "seahorse", "--path", "<dir>"],
+        ["project", "rename", "seahorse", "seahorse2"],
+        ["project", "rm", "seahorse", "--yes"],
         ["modify", "2024_Foo_Bar", "--add-tag", "topics=spps"],
     ],
     ids=lambda args: "-".join(args[:2]),

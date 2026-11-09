@@ -145,7 +145,7 @@ def test_cli_vault_add_import_from_auto_fills_today(
         cli,
         [
             "vault", "add", "zhang", str(vault_a),
-            "--import-from", "Zhang via USB drop",
+            "--import-from", "a colleague, via USB",
         ],
     )
     assert result.exit_code == 0, result.output
@@ -153,7 +153,7 @@ def test_cli_vault_add_import_from_auto_fills_today(
     reg = load_registry()
     entry = find_by_name(reg, "zhang")
     assert entry is not None
-    assert entry.imported_from == "Zhang via USB drop"
+    assert entry.imported_from == "a colleague, via USB"
     assert entry.imported_at == date.today().isoformat()
 
 
@@ -403,12 +403,12 @@ def test_cli_vault_list_shows_provenance(
         cli,
         [
             "vault", "add", "zhang", str(vault_a),
-            "--import-from", "Zhang via USB drop",
+            "--import-from", "a colleague, via USB",
         ],
     )
     result = runner.invoke(cli, ["vault", "list"])
     assert result.exit_code == 0, result.output
-    assert "Zhang via USB drop" in result.output
+    assert "a colleague, via USB" in result.output
 
 
 def test_cli_vault_list_warns_when_no_active(
@@ -467,13 +467,13 @@ def test_cli_vault_info_with_provenance(
         cli,
         [
             "vault", "add", "zhang", str(vault_a),
-            "--import-from", "Zhang via USB drop",
+            "--import-from", "a colleague, via USB",
             "--import-at", "2026-01-15",
         ],
     )
     result = runner.invoke(cli, ["vault", "info", "zhang"])
     assert result.exit_code == 0, result.output
-    assert "Zhang via USB drop" in result.output
+    assert "a colleague, via USB" in result.output
     assert "2026-01-15" in result.output
     assert "Imported at:" in result.output
 

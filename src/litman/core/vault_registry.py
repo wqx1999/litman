@@ -1,7 +1,7 @@
 """User-level vault registry (M8.1).
 
 litman supports multiple registered vaults on the same machine — one
-"main" vault wangq curates plus any number of forks (snapshots received
+"main" vault the user curates plus any number of forks (snapshots received
 from colleagues, archived projects, DR-restored backups). The registry
 file lives in a per-user config directory; ``registry_path()`` resolves
 it via the cross-platform precedence chain below. At most one entry has
@@ -206,8 +206,8 @@ class VaultEntry(BaseModel):
     imported_from: str | None = Field(
         default=None,
         description=(
-            "Free-form provenance for forked vaults (e.g. 'Zhang via USB "
-            "drop 2026-05'). None for vaults wangq created locally."
+            "Free-form provenance for forked vaults (e.g. 'a colleague, via "
+            "USB, 2026-05'). None for vaults created on this machine."
         ),
     )
     imported_at: str | None = Field(

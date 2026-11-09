@@ -527,14 +527,14 @@ def sync_setup_cmd(
 ) -> None:
     """Configure the cloud sync target in lit-config.yaml.
 
-    Default flow: invoke rclone config so wangq can register a new
+    Default flow: invoke rclone config so you can register a new
     remote (browser OAuth, etc. — rclone owns that). After it exits we
     prompt for the remote name and a path inside it, validate the remote
     exists in rclone listremotes, then write to lit-config.yaml.
 
     Pass --remote NAME to skip the interactive rclone config step
-    entirely — useful when wangq already has a remote configured and just
-    wants to point litman at it.
+    entirely — useful when you already have a remote configured and just
+    want to point litman at it.
     """
     vault = find_vault(resolve_library_or_vault(library, vault_name))
     config_path = vault / CONFIG_FILENAME

@@ -259,7 +259,7 @@ def test_names_every_affected_scope_in_one_line(
     from litman.core.project_link import add_project
 
     vault = create_vault(tmp_path)
-    for name in ("pepforge", "drugx"):
+    for name in ("seahorse", "drugx"):
         d = tmp_path / name
         d.mkdir()
         add_project(vault, name, d)
@@ -272,7 +272,7 @@ def test_names_every_affected_scope_in_one_line(
     assert len(issues) == 1
     msg = issues[0].message
     assert "views/" in msg
-    assert "pepforge" in msg
+    assert "seahorse" in msg
     assert "drugx" in msg
 
 
@@ -414,9 +414,9 @@ def test_one_line_for_access_denied_naming_every_scope(
     from litman.core.project_link import add_project
 
     vault = create_vault(tmp_path)
-    project = tmp_path / "pepforge"
+    project = tmp_path / "seahorse"
     project.mkdir()
-    add_project(vault, "pepforge", project)
+    add_project(vault, "seahorse", project)
     _refuse_links_with(monkeypatch, errno.EACCES)
 
     issues = checks.check_link_access(vault, [])
@@ -424,7 +424,7 @@ def test_one_line_for_access_denied_naming_every_scope(
     assert [(i.category, i.severity) for i in issues] == [("links_denied", "info")]
     assert "access denied" in issues[0].message
     assert "views/" in issues[0].message
-    assert "pepforge" in issues[0].message
+    assert "seahorse" in issues[0].message
     assert issues[0].hint == LINKS_DENIED_HINT
     assert checks.check_link_support(vault, []) == []
 

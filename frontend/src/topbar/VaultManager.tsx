@@ -383,7 +383,7 @@ function LocateVaultDialog({
             onChange={setPath}
             disabled={busy}
             autoFocus
-            placeholder="/work/you/literature_vault"
+            placeholder="/home/you/literature_vault"
             onEnter={() => {
               if (canSubmit) submit()
             }}
@@ -506,7 +506,7 @@ function RegisterVaultDialog({
               value={path}
               onChange={setPath}
               disabled={busy}
-              placeholder="/work/you/literature_vault"
+              placeholder="/home/you/literature_vault"
               onEnter={submit}
             />
             <span className="text-[11px] text-stone-400">
@@ -676,7 +676,7 @@ function CreateVaultDialog({
               value={parentDir}
               onChange={setParentDir}
               disabled={busy}
-              placeholder="/work/you"
+              placeholder="/home/you"
               onEnter={submit}
             />
             <span className="text-[11px] text-stone-400">

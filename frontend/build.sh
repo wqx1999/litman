@@ -14,8 +14,14 @@
 # between source and product means the user runs a stale GUI.
 set -euo pipefail
 
-ENV_BIN="/work/wangq/software/miniconda3/envs/litman/bin"
-if [ -d "$ENV_BIN" ]; then
+# The env sits next to the conda install the shell has initialised (CONDA_EXE);
+# LITMAN_ENV_BIN names a bin directory directly. With neither, node/npm/npx
+# come from PATH as they are.
+ENV_BIN="${LITMAN_ENV_BIN:-}"
+if [ -z "$ENV_BIN" ] && [ -n "${CONDA_EXE:-}" ]; then
+  ENV_BIN="$(dirname "$(dirname "$CONDA_EXE")")/envs/litman/bin"
+fi
+if [ -n "$ENV_BIN" ] && [ -d "$ENV_BIN" ]; then
   export PATH="$ENV_BIN:$PATH"
 fi
 

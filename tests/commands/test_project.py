@@ -172,12 +172,12 @@ def test_project_add_happy_dual_write(vault: Path, proj_dir: Path) -> None:
     runner = CliRunner()
     result = runner.invoke(
         cli,
-        ["project", "add", "pepforge", "--path", str(proj_dir),
+        ["project", "add", "seahorse", "--path", str(proj_dir),
          "--library", str(vault)],
     )
     assert result.exit_code == 0, result.output
-    assert _taxonomy_projects(vault) == ["pepforge"]
-    assert _config_projects(vault) == {"pepforge": str(proj_dir)}
+    assert _taxonomy_projects(vault) == ["seahorse"]
+    assert _config_projects(vault) == {"seahorse": str(proj_dir)}
 
 
 def test_project_add_path_not_exist_rejected(vault: Path) -> None:
@@ -215,12 +215,12 @@ def test_project_add_duplicate_name_rejected(
     runner = CliRunner()
     runner.invoke(
         cli,
-        ["project", "add", "pepforge", "--path", str(proj_dir),
+        ["project", "add", "seahorse", "--path", str(proj_dir),
          "--library", str(vault)],
     )
     result = runner.invoke(
         cli,
-        ["project", "add", "pepforge", "--path", str(proj_dir),
+        ["project", "add", "seahorse", "--path", str(proj_dir),
          "--library", str(vault)],
     )
     assert result.exit_code != 0
@@ -237,14 +237,14 @@ def test_project_list_join_clean(vault: Path, proj_dir: Path) -> None:
     runner = CliRunner()
     runner.invoke(
         cli,
-        ["project", "add", "pepforge", "--path", str(proj_dir),
+        ["project", "add", "seahorse", "--path", str(proj_dir),
          "--library", str(vault)],
     )
     result = runner.invoke(
         cli, ["project", "list", "--format", "table", "--library", str(vault)]
     )
     assert result.exit_code == 0, result.output
-    assert "pepforge" in result.output
+    assert "seahorse" in result.output
     assert "✓" in result.output
 
 
@@ -310,23 +310,23 @@ def test_project_rename_happy_ripple(
     runner = CliRunner()
     runner.invoke(
         cli,
-        ["project", "add", "pepforge", "--path", str(proj_dir),
+        ["project", "add", "seahorse", "--path", str(proj_dir),
          "--library", str(vault)],
     )
-    _write_paper(vault, "2024_A", projects=["pepforge"])
-    _write_paper(vault, "2024_B", projects=["pepforge", "other"])
+    _write_paper(vault, "2024_A", projects=["seahorse"])
+    _write_paper(vault, "2024_B", projects=["seahorse", "other"])
 
     result = runner.invoke(
         cli,
-        ["project", "rename", "pepforge", "pepcodec",
+        ["project", "rename", "seahorse", "bluebell",
          "--library", str(vault)],
     )
     assert result.exit_code == 0, result.output
-    assert _taxonomy_projects(vault) == ["pepcodec"]
-    assert _config_projects(vault) == {"pepcodec": str(proj_dir)}
-    assert _meta(vault, "2024_A")["projects"] == ["pepcodec"]
-    assert "pepcodec" in _meta(vault, "2024_B")["projects"]
-    assert "pepforge" not in _meta(vault, "2024_B")["projects"]
+    assert _taxonomy_projects(vault) == ["bluebell"]
+    assert _config_projects(vault) == {"bluebell": str(proj_dir)}
+    assert _meta(vault, "2024_A")["projects"] == ["bluebell"]
+    assert "bluebell" in _meta(vault, "2024_B")["projects"]
+    assert "seahorse" not in _meta(vault, "2024_B")["projects"]
 
 
 def test_project_rename_to_existing_rejected(
@@ -618,14 +618,14 @@ def test_project_rm_with_refs_prompt_then_cascade(
     runner = CliRunner()
     runner.invoke(
         cli,
-        ["project", "add", "pepforge", "--path", str(proj_dir),
+        ["project", "add", "seahorse", "--path", str(proj_dir),
          "--library", str(vault)],
     )
-    _write_paper(vault, "2024_A", projects=["pepforge"])
-    _write_paper(vault, "2024_B", projects=["pepforge", "other"])
+    _write_paper(vault, "2024_A", projects=["seahorse"])
+    _write_paper(vault, "2024_B", projects=["seahorse", "other"])
     result = runner.invoke(
         cli,
-        ["project", "rm", "pepforge", "--library", str(vault)],
+        ["project", "rm", "seahorse", "--library", str(vault)],
         input="y\n",
     )
     assert result.exit_code == 0, result.output
@@ -645,20 +645,20 @@ def test_project_rm_prompt_abort_on_n(
     runner = CliRunner()
     runner.invoke(
         cli,
-        ["project", "add", "pepforge", "--path", str(proj_dir),
+        ["project", "add", "seahorse", "--path", str(proj_dir),
          "--library", str(vault)],
     )
-    _write_paper(vault, "2024_A", projects=["pepforge"])
+    _write_paper(vault, "2024_A", projects=["seahorse"])
     result = runner.invoke(
         cli,
-        ["project", "rm", "pepforge", "--library", str(vault)],
+        ["project", "rm", "seahorse", "--library", str(vault)],
         input="n\n",
     )
     assert result.exit_code == 0, result.output
     assert "Aborted" in result.output
     # Nothing changed.
-    assert _taxonomy_projects(vault) == ["pepforge"]
-    assert _meta(vault, "2024_A")["projects"] == ["pepforge"]
+    assert _taxonomy_projects(vault) == ["seahorse"]
+    assert _meta(vault, "2024_A")["projects"] == ["seahorse"]
 
 
 def test_project_rm_yes_skips_prompt(
@@ -667,13 +667,13 @@ def test_project_rm_yes_skips_prompt(
     runner = CliRunner()
     runner.invoke(
         cli,
-        ["project", "add", "pepforge", "--path", str(proj_dir),
+        ["project", "add", "seahorse", "--path", str(proj_dir),
          "--library", str(vault)],
     )
-    _write_paper(vault, "2024_A", projects=["pepforge"])
+    _write_paper(vault, "2024_A", projects=["seahorse"])
     result = runner.invoke(
         cli,
-        ["project", "rm", "pepforge", "--yes", "--library", str(vault)],
+        ["project", "rm", "seahorse", "--yes", "--library", str(vault)],
     )
     assert result.exit_code == 0, result.output
     assert _taxonomy_projects(vault) == []
@@ -686,19 +686,19 @@ def test_project_rm_non_tty_no_yes_aborts(
     runner = CliRunner()
     runner.invoke(
         cli,
-        ["project", "add", "pepforge", "--path", str(proj_dir),
+        ["project", "add", "seahorse", "--path", str(proj_dir),
          "--library", str(vault)],
     )
-    _write_paper(vault, "2024_A", projects=["pepforge"])
+    _write_paper(vault, "2024_A", projects=["seahorse"])
     # CliRunner default stdin is not a tty; no --yes and refs exist.
     result = runner.invoke(
-        cli, ["project", "rm", "pepforge", "--library", str(vault)]
+        cli, ["project", "rm", "seahorse", "--library", str(vault)]
     )
     assert result.exit_code != 0
     assert "Non-interactive environment" in result.output
     # Nothing changed.
-    assert _taxonomy_projects(vault) == ["pepforge"]
-    assert _meta(vault, "2024_A")["projects"] == ["pepforge"]
+    assert _taxonomy_projects(vault) == ["seahorse"]
+    assert _meta(vault, "2024_A")["projects"] == ["seahorse"]
 
 
 def test_project_rm_unregistered_rejected(vault: Path) -> None:
@@ -717,14 +717,14 @@ def test_project_rm_atomicity_index_matches_metadata(
     runner = CliRunner()
     runner.invoke(
         cli,
-        ["project", "add", "pepforge", "--path", str(proj_dir),
+        ["project", "add", "seahorse", "--path", str(proj_dir),
          "--library", str(vault)],
     )
-    _write_paper(vault, "2024_A", projects=["pepforge"])
-    _write_paper(vault, "2024_B", projects=["pepforge"])
+    _write_paper(vault, "2024_A", projects=["seahorse"])
+    _write_paper(vault, "2024_B", projects=["seahorse"])
     runner.invoke(
         cli,
-        ["project", "rm", "pepforge", "--yes", "--library", str(vault)],
+        ["project", "rm", "seahorse", "--yes", "--library", str(vault)],
     )
     payload = json.loads((vault / "INDEX.json").read_text())
     for p in payload["papers"]:
@@ -746,10 +746,10 @@ def test_project_rm_junction_bridges_torn_down(
     runner = CliRunner()
     runner.invoke(
         cli,
-        ["project", "add", "pepforge", "--path", str(proj_dir),
+        ["project", "add", "seahorse", "--path", str(proj_dir),
          "--library", str(vault)],
     )
-    _write_paper(vault, "2024_A", projects=["pepforge"])
+    _write_paper(vault, "2024_A", projects=["seahorse"])
     reflib = proj_dir / "litman_reflib"
     bridge = fake_junction(reflib / "2024_A")
     (reflib / "REFERENCES.md").write_text("# refs\n", encoding="utf-8")
@@ -757,7 +757,7 @@ def test_project_rm_junction_bridges_torn_down(
 
     result = runner.invoke(
         cli,
-        ["project", "rm", "pepforge", "--yes", "--library", str(vault)],
+        ["project", "rm", "seahorse", "--yes", "--library", str(vault)],
     )
     assert result.exit_code == 0, result.output
     assert not bridge.exists()
@@ -782,16 +782,16 @@ def test_project_rm_stray_stdin_no_yes_aborts_unmutated(
     runner = CliRunner()
     runner.invoke(
         cli,
-        ["project", "add", "pepforge", "--path", str(proj_dir),
+        ["project", "add", "seahorse", "--path", str(proj_dir),
          "--library", str(vault)],
     )
-    _write_paper(vault, "2024_A", projects=["pepforge"])
-    _write_paper(vault, "2024_B", projects=["pepforge", "other"])
+    _write_paper(vault, "2024_A", projects=["seahorse"])
+    _write_paper(vault, "2024_B", projects=["seahorse", "other"])
 
     before = _vault_snapshot(vault)
     result = runner.invoke(
         cli,
-        ["project", "rm", "pepforge", "--library", str(vault)],
+        ["project", "rm", "seahorse", "--library", str(vault)],
         input="y\n",
     )
     assert result.exit_code != 0
@@ -817,11 +817,11 @@ def test_project_rm_atomicity_rollback_on_staged_write_failure(
     runner = CliRunner()
     runner.invoke(
         cli,
-        ["project", "add", "pepforge", "--path", str(proj_dir),
+        ["project", "add", "seahorse", "--path", str(proj_dir),
          "--library", str(vault)],
     )
-    _write_paper(vault, "2024_A", projects=["pepforge"])
-    _write_paper(vault, "2024_B", projects=["pepforge"])
+    _write_paper(vault, "2024_A", projects=["seahorse"])
+    _write_paper(vault, "2024_B", projects=["seahorse"])
 
     before = _vault_snapshot(vault)
 
@@ -840,7 +840,7 @@ def test_project_rm_atomicity_rollback_on_staged_write_failure(
 
     result = runner.invoke(
         cli,
-        ["project", "rm", "pepforge", "--yes", "--library", str(vault)],
+        ["project", "rm", "seahorse", "--yes", "--library", str(vault)],
     )
     assert result.exit_code != 0
     assert calls["n"] >= 2  # failure was actually reached
@@ -858,17 +858,17 @@ def test_project_rm_rebuilds_views_drops_stale_by_project(
     runner = CliRunner()
     runner.invoke(
         cli,
-        ["project", "add", "pepforge", "--path", str(proj_dir),
+        ["project", "add", "seahorse", "--path", str(proj_dir),
          "--library", str(vault)],
     )
-    _write_paper(vault, "2024_A", projects=["pepforge"])
+    _write_paper(vault, "2024_A", projects=["seahorse"])
     runner.invoke(cli, ["refresh-views", "--library", str(vault)])
-    by_project = vault / "views" / "by-project" / "pepforge"
+    by_project = vault / "views" / "by-project" / "seahorse"
     assert by_project.exists()  # stale entry present before rm
 
     result = runner.invoke(
         cli,
-        ["project", "rm", "pepforge", "--yes", "--library", str(vault)],
+        ["project", "rm", "seahorse", "--yes", "--library", str(vault)],
     )
     assert result.exit_code == 0, result.output
     assert not by_project.exists()  # rm rebuilt views, stale entry gone
@@ -880,21 +880,21 @@ def test_project_rename_rebuilds_views_swaps_by_project(
     runner = CliRunner()
     runner.invoke(
         cli,
-        ["project", "add", "pepforge", "--path", str(proj_dir),
+        ["project", "add", "seahorse", "--path", str(proj_dir),
          "--library", str(vault)],
     )
-    _write_paper(vault, "2024_A", projects=["pepforge"])
+    _write_paper(vault, "2024_A", projects=["seahorse"])
     runner.invoke(cli, ["refresh-views", "--library", str(vault)])
-    assert (vault / "views" / "by-project" / "pepforge").exists()
+    assert (vault / "views" / "by-project" / "seahorse").exists()
 
     result = runner.invoke(
         cli,
-        ["project", "rename", "pepforge", "pepcodec",
+        ["project", "rename", "seahorse", "bluebell",
          "--library", str(vault)],
     )
     assert result.exit_code == 0, result.output
-    assert not (vault / "views" / "by-project" / "pepforge").exists()
-    assert (vault / "views" / "by-project" / "pepcodec").exists()
+    assert not (vault / "views" / "by-project" / "seahorse").exists()
+    assert (vault / "views" / "by-project" / "bluebell").exists()
 
 
 # ---------------------------------------------------------------------------
@@ -922,19 +922,19 @@ def test_project_rm_relevance_orphan_without_projects_key_no_crash(
     runner = CliRunner()
     runner.invoke(
         cli,
-        ["project", "add", "pepforge", "--path", str(proj_dir),
+        ["project", "add", "seahorse", "--path", str(proj_dir),
          "--library", str(vault)],
     )
-    _write_relevance_orphan(vault, "2024_A", "pepforge")
+    _write_relevance_orphan(vault, "2024_A", "seahorse")
 
     result = runner.invoke(
         cli,
-        ["project", "rm", "pepforge", "--yes", "--library", str(vault)],
+        ["project", "rm", "seahorse", "--yes", "--library", str(vault)],
     )
     assert result.exit_code == 0, result.output
     # The stray relevance is dropped; no `projects` key was ever fabricated.
     meta = _meta(vault, "2024_A")
-    assert "relevance-pepforge" not in meta
+    assert "relevance-seahorse" not in meta
 
 
 def test_project_rename_relevance_orphan_without_projects_key_no_crash(
@@ -943,20 +943,20 @@ def test_project_rename_relevance_orphan_without_projects_key_no_crash(
     runner = CliRunner()
     runner.invoke(
         cli,
-        ["project", "add", "pepforge", "--path", str(proj_dir),
+        ["project", "add", "seahorse", "--path", str(proj_dir),
          "--library", str(vault)],
     )
-    _write_relevance_orphan(vault, "2024_A", "pepforge")
+    _write_relevance_orphan(vault, "2024_A", "seahorse")
 
     result = runner.invoke(
         cli,
-        ["project", "rename", "pepforge", "pepcodec", "--library", str(vault)],
+        ["project", "rename", "seahorse", "bluebell", "--library", str(vault)],
     )
     assert result.exit_code == 0, result.output
     # The stray relevance is carried old -> new, never stranded.
     meta = _meta(vault, "2024_A")
-    assert "relevance-pepforge" not in meta
-    assert meta.get("relevance-pepcodec") == "high"
+    assert "relevance-seahorse" not in meta
+    assert meta.get("relevance-bluebell") == "high"
 
 
 # ---------------------------------------------------------------------------
@@ -973,25 +973,25 @@ def test_project_rename_carries_the_priority_grade(
     runner = CliRunner()
     runner.invoke(
         cli,
-        ["project", "add", "pepforge", "--path", str(proj_dir),
+        ["project", "add", "seahorse", "--path", str(proj_dir),
          "--library", str(vault)],
     )
-    _write_paper(vault, "2024_A", projects=["pepforge"])
+    _write_paper(vault, "2024_A", projects=["seahorse"])
     _append_keys(
-        vault, "2024_A", {"priority-pepforge": "A", "relevance-pepforge": "core"}
+        vault, "2024_A", {"priority-seahorse": "A", "relevance-seahorse": "core"}
     )
 
     result = runner.invoke(
         cli,
-        ["project", "rename", "pepforge", "pepcodec", "--library", str(vault)],
+        ["project", "rename", "seahorse", "bluebell", "--library", str(vault)],
     )
     assert result.exit_code == 0, result.output
 
     meta = _meta(vault, "2024_A")
-    assert meta["projects"] == ["pepcodec"]
-    assert "priority-pepforge" not in meta
-    assert meta["priority-pepcodec"] == "A"          # value preserved
-    assert meta["relevance-pepcodec"] == "core"      # unchanged behavior
+    assert meta["projects"] == ["bluebell"]
+    assert "priority-seahorse" not in meta
+    assert meta["priority-bluebell"] == "A"          # value preserved
+    assert meta["relevance-bluebell"] == "core"      # unchanged behavior
     assert checks.check_priority_orphan(vault, list_papers(vault)) == []
 
 
@@ -1001,24 +1001,24 @@ def test_project_rm_drops_the_priority_grade(
     runner = CliRunner()
     runner.invoke(
         cli,
-        ["project", "add", "pepforge", "--path", str(proj_dir),
+        ["project", "add", "seahorse", "--path", str(proj_dir),
          "--library", str(vault)],
     )
-    _write_paper(vault, "2024_A", projects=["pepforge"])
+    _write_paper(vault, "2024_A", projects=["seahorse"])
     _append_keys(
-        vault, "2024_A", {"priority-pepforge": "A", "relevance-pepforge": "core"}
+        vault, "2024_A", {"priority-seahorse": "A", "relevance-seahorse": "core"}
     )
 
     result = runner.invoke(
         cli,
-        ["project", "rm", "pepforge", "--yes", "--library", str(vault)],
+        ["project", "rm", "seahorse", "--yes", "--library", str(vault)],
     )
     assert result.exit_code == 0, result.output
 
     meta = _meta(vault, "2024_A")
     assert meta["projects"] == []
-    assert "priority-pepforge" not in meta
-    assert "relevance-pepforge" not in meta
+    assert "priority-seahorse" not in meta
+    assert "relevance-seahorse" not in meta
     assert checks.check_priority_orphan(vault, list_papers(vault)) == []
 
 
@@ -1030,18 +1030,18 @@ def test_project_rm_drops_a_stray_grade_with_no_membership(
     runner = CliRunner()
     runner.invoke(
         cli,
-        ["project", "add", "pepforge", "--path", str(proj_dir),
+        ["project", "add", "seahorse", "--path", str(proj_dir),
          "--library", str(vault)],
     )
     _write_paper(vault, "2024_A", projects=[])
-    _append_keys(vault, "2024_A", {"priority-pepforge": "B"})
+    _append_keys(vault, "2024_A", {"priority-seahorse": "B"})
 
     result = runner.invoke(
         cli,
-        ["project", "rm", "pepforge", "--yes", "--library", str(vault)],
+        ["project", "rm", "seahorse", "--yes", "--library", str(vault)],
     )
     assert result.exit_code == 0, result.output
-    assert "priority-pepforge" not in _meta(vault, "2024_A")
+    assert "priority-seahorse" not in _meta(vault, "2024_A")
 
 
 # ---------------------------------------------------------------------------
@@ -1060,9 +1060,9 @@ def test_reflib_removal_line_uses_one_separator_style() -> None:
 
     from litman.commands.project import _reflib_removal_line
 
-    line = _reflib_removal_line(PureWindowsPath(r"C:\Users\wang\proj-binder"))
+    line = _reflib_removal_line(PureWindowsPath(r"C:\Users\alice\proj-binder"))
 
-    assert r"C:\Users\wang\proj-binder\litman_reflib" in line
+    assert r"C:\Users\alice\proj-binder\litman_reflib" in line
     assert "/" not in line
 
 
@@ -1072,9 +1072,9 @@ def test_reflib_removal_line_posix_unchanged() -> None:
 
     from litman.commands.project import _reflib_removal_line
 
-    line = _reflib_removal_line(PurePosixPath("/home/wang/proj-binder"))
+    line = _reflib_removal_line(PurePosixPath("/home/alice/proj-binder"))
 
-    assert "/home/wang/proj-binder/litman_reflib" in line
+    assert "/home/alice/proj-binder/litman_reflib" in line
     assert "\\" not in line
 
 
@@ -1087,14 +1087,14 @@ def test_project_rm_warning_block_names_the_reflib_dir(
     runner = CliRunner()
     runner.invoke(
         cli,
-        ["project", "add", "pepforge", "--path", str(proj_dir),
+        ["project", "add", "seahorse", "--path", str(proj_dir),
          "--library", str(vault)],
     )
 
     monkeypatch.setattr(confirm_mod, "_stdin_is_tty", lambda: True)
     result = runner.invoke(
         cli,
-        ["project", "rm", "pepforge", "--library", str(vault)],
+        ["project", "rm", "seahorse", "--library", str(vault)],
         input="N\n",
     )
 
@@ -1119,10 +1119,10 @@ def test_project_rename_reports_a_moved_aside_folder(
     runner = CliRunner()
     runner.invoke(
         cli,
-        ["project", "add", "pepforge", "--path", str(proj_dir),
+        ["project", "add", "seahorse", "--path", str(proj_dir),
          "--library", str(vault)],
     )
-    _write_paper(vault, "2024_A", projects=["pepforge"])
+    _write_paper(vault, "2024_A", projects=["seahorse"])
     runner.invoke(cli, ["refresh-views", "--library", str(vault)])
     link = proj_dir / "litman_reflib" / "2024_A"
     assert remove_link_if_present(link)
@@ -1131,7 +1131,7 @@ def test_project_rename_reports_a_moved_aside_folder(
 
     result = runner.invoke(
         cli,
-        ["project", "rename", "pepforge", "pepcodec", "--library", str(vault)],
+        ["project", "rename", "seahorse", "bluebell", "--library", str(vault)],
     )
 
     assert result.exit_code == 0, result.output
@@ -1139,7 +1139,7 @@ def test_project_rename_reports_a_moved_aside_folder(
     assert "kept 1 folder that does not match the vault:" in flat
     # Filed under the NEW name: the config key is renamed before the rebuild.
     kept_root = (
-        vault / ".trash" / "replaced-folders" / "pepcodec" / "litman_reflib"
+        vault / ".trash" / "replaced-folders" / "bluebell" / "litman_reflib"
     )
     kept = sorted(kept_root.iterdir())
     assert len(kept) == 1

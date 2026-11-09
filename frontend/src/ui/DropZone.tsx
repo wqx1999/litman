@@ -4,7 +4,7 @@ import { getT, useT } from '../i18n'
 
 /** Window-level PDF drag catcher for the drag-in ingest (task-gui-doi-add).
  *
- * The ONLY entry to GUI add — deliberately no button/file-picker twin (wangq:
+ * The ONLY entry to GUI add — deliberately no button/file-picker twin (by design:
  * a click-through picker flow is worse than asking the agent; an extra button
  * is noise). Behavior contract:
  *

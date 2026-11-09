@@ -12,17 +12,14 @@ authors:
   - family-names: Wang
     given-names: Qingxin
     orcid: "https://orcid.org/0009-0001-5601-5979"
-    email: qingxin.wang@chem.tu-berlin.de
     affiliation: "Institut für Chemie, Technische Universität Berlin"
   - family-names: He
     given-names: Zhanyu
     orcid: "https://orcid.org/0009-0009-9516-1862"
-    email: zhanyu.he@chem.tu-berlin.de
     affiliation: "Institut für Chemie, Technische Universität Berlin"
   - family-names: Süssmuth
     given-names: Roderich D.
     orcid: "https://orcid.org/0000-0001-7027-2069"
-    email: roderich.suessmuth@tu-berlin.de
     affiliation: "Institut für Chemie, Technische Universität Berlin"
 repository-code: "https://github.com/wqx1999/litman"
 url: "https://litman.dev"

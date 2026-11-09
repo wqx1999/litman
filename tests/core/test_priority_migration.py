@@ -36,7 +36,7 @@ from litman.core.project_link import add_project
 from litman.core.project_refs import LITERATURE_SUBDIR, REFERENCES_FILENAME
 from litman.core.ripple import migrate_retired_priority
 
-_MAIN = "pepcodec"
+_MAIN = "bluebell"
 # Hyphenated on purpose: the key is the prefix plus the WHOLE name, so
 # `priority-binder-design` must never be read as project "binder".
 _SECOND = "binder-design"
@@ -49,7 +49,7 @@ _FIXTURE: tuple[tuple[str, str, str | None, list[str], str], ...] = (
         "deep-read",
         "A",
         [_MAIN],
-        "relevance-pepcodec: seeded the whole approach\n",
+        "relevance-bluebell: seeded the whole approach\n",
     ),
     ("2024_Baker_Hallucination", "deep-read", "A", [_MAIN], ""),
     # Two projects: the grade must land on BOTH links.
@@ -58,12 +58,12 @@ _FIXTURE: tuple[tuple[str, str, str | None, list[str], str], ...] = (
         "deep-read",
         "A",
         [_MAIN, _SECOND],
-        "relevance-pepcodec: the tokenizer we copied\n"
+        "relevance-bluebell: the tokenizer we copied\n"
         "relevance-binder-design: same trick, other target\n",
     ),
     # Already graded for the project it is linked to: setdefault must not
     # overwrite the C with the retired A.
-    ("2024_Dunn_Latent", "deep-read", "A", [_MAIN], "priority-pepcodec: C\n"),
+    ("2024_Dunn_Latent", "deep-read", "A", [_MAIN], "priority-bluebell: C\n"),
     ("2023_Evans_Folding", "deep-read", "B", [_MAIN], ""),
     # --- 7 skim ------------------------------------------------------------
     ("2023_Foster_Docking", "skim", "C", [_MAIN], ""),
@@ -282,14 +282,14 @@ def test_m2_migration_moves_grades_onto_the_links(vault: Path) -> None:
     assert all("priority" not in p for p in papers.values())
 
     # Graded + linked -> the letter lands on the project key.
-    assert papers["2024_Adams_Diffusion"]["priority-pepcodec"] == "A"
-    assert papers["2023_Evans_Folding"]["priority-pepcodec"] == "B"
-    assert papers["2022_Hall_Sampling"]["priority-pepcodec"] == "C"
+    assert papers["2024_Adams_Diffusion"]["priority-bluebell"] == "A"
+    assert papers["2023_Evans_Folding"]["priority-bluebell"] == "B"
+    assert papers["2022_Hall_Sampling"]["priority-bluebell"] == "C"
 
     # Ungraded (`priority:` null) -> the key is simply gone. An ungraded link
-    # is the ABSENT key: writing `priority-pepcodec: null` would invent a state
+    # is the ABSENT key: writing `priority-bluebell: null` would invent a state
     # nothing reads and check_schema rejects.
-    assert "priority-pepcodec" not in papers["2018_Usman_Library"]
+    assert "priority-bluebell" not in papers["2018_Usman_Library"]
 
     # No project -> nowhere to put the grade, so it is dropped outright.
     for pid in ("2022_Jones_Motif", "2021_Kim_Rosetta", "2021_Lopez_Assay"):
@@ -360,7 +360,7 @@ def test_m3_files_are_untouched_apart_from_the_priority_lines(
     # `after`, which is the half the loop cannot see.
     assert "priority: A\n" in before["2024_Adams_Diffusion"]
     assert "priority: A\n" not in after["2024_Adams_Diffusion"]
-    assert "priority-pepcodec: A\n" in after["2024_Adams_Diffusion"]
+    assert "priority-bluebell: A\n" in after["2024_Adams_Diffusion"]
 
 
 def test_m3_updated_at_is_not_bumped(vault: Path) -> None:
@@ -433,7 +433,7 @@ def _groups_from_the_retired_field(project: str) -> dict[str, list[str]]:
     for paper_id, _status, priority, projects, _extra in _FIXTURE:
         if project not in projects:
             continue
-        # 2024_Dunn_Latent was already graded C for pepcodec by hand, and
+        # 2024_Dunn_Latent was already graded C for bluebell by hand, and
         # setdefault must not have overwritten it with the retired A.
         grade = (
             "C"
@@ -502,7 +502,7 @@ def test_ac3_one_paper_sits_in_different_groups_in_two_projects(
 def test_m5_a_paper_in_two_projects_is_graded_for_both(vault: Path) -> None:
     migrate_retired_priority(vault)
     paper = _meta(vault, "2024_Chen_Codebook")
-    assert paper["priority-pepcodec"] == "A"
+    assert paper["priority-bluebell"] == "A"
     # The hyphenated name proves the key is built by prefixing the WHOLE
     # project name, and read back by stripping the prefix — never by splitting.
     assert paper["priority-binder-design"] == "A"
@@ -510,15 +510,15 @@ def test_m5_a_paper_in_two_projects_is_graded_for_both(vault: Path) -> None:
 
 def test_m5_an_existing_grade_is_never_overwritten(vault: Path) -> None:
     """setdefault, not assignment: the user already decided this paper is a C
-    for pepcodec, and the retired global A must not undo that."""
+    for bluebell, and the retired global A must not undo that."""
     before = _meta(vault, "2024_Dunn_Latent")
     assert before["priority"] == "A"
-    assert before["priority-pepcodec"] == "C"
+    assert before["priority-bluebell"] == "C"
 
     migrate_retired_priority(vault)
 
     after = _meta(vault, "2024_Dunn_Latent")
-    assert after["priority-pepcodec"] == "C"
+    assert after["priority-bluebell"] == "C"
     assert "priority" not in after
 
 
@@ -536,7 +536,7 @@ def _bare_paper(vault: Path, folder: str, declared_id: str, priority: str) -> Pa
             f"id: {declared_id}\n"
             "title: T\n"
             "year: 2024\n"
-            "projects:\n  - pepcodec\n"
+            "projects:\n  - bluebell\n"
             "status: skim\n"
             f"priority: {priority}\n"
             "created-at: '2026-04-28T10:00:00+02:00'\n"
@@ -569,7 +569,7 @@ def test_two_folders_declaring_one_id_are_both_migrated(vault: Path) -> None:
             encoding="utf-8"
         )
         assert "priority:" not in text, folder
-        assert f"priority-pepcodec: {grade}" in text, folder
+        assert f"priority-bluebell: {grade}" in text, folder
 
     # Idempotence (the spec's red line) survives the collision.
     assert migrate_retired_priority(vault) == 0
@@ -588,22 +588,22 @@ def test_a_declared_id_that_disagrees_with_its_folder_still_migrates(
         encoding="utf-8"
     )
     assert "priority:" not in text
-    assert "priority-pepcodec: B" in text
+    assert "priority-bluebell: B" in text
     assert not (vault / "papers" / "2024_Wrong_Name").exists()
 
 
 def test_a_scalar_projects_field_is_never_iterated(vault: Path) -> None:
     """metadata is schema-less (invariant #7), so a hand-edit can leave
-    `projects: pepcodec`. Iterating a string yields one key PER CHARACTER
+    `projects: bluebell`. Iterating a string yields one key PER CHARACTER
     (`priority-p`, `priority-e`, ...) and check_priority_orphan cannot catch it
-    — `set("pepcodec")` contains every one of those letters. The readers
+    — `set("bluebell")` contains every one of those letters. The readers
     refuse the file instead, so the migration never sees it."""
     d = vault / "papers" / "2024_Xray_Three"
     d.mkdir(parents=True)
     with (d / "metadata.yaml").open("w", encoding="utf-8", newline="\n") as f:
         f.write(
             "id: 2024_Xray_Three\ntitle: T\nyear: 2024\n"
-            "projects: pepcodec\nstatus: skim\npriority: A\n"
+            "projects: bluebell\nstatus: skim\npriority: A\n"
             "created-at: '2026-04-28T10:00:00+02:00'\n"
             "updated-at: '2026-04-28T10:00:00+02:00'\n"
         )
@@ -659,7 +659,7 @@ def test_m6_migrates_through_the_read_only_truth_lock(vault: Path) -> None:
 
     assert migrate_retired_priority(vault) == 21
 
-    assert "priority-pepcodec: A" in locked.read_text(encoding="utf-8")
+    assert "priority-bluebell: A" in locked.read_text(encoding="utf-8")
     # Still locked afterwards — the migration must not leave TRUTH writable.
     with pytest.raises(PermissionError), locked.open("a", encoding="utf-8"):
         pass

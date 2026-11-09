@@ -1880,7 +1880,7 @@ export default function App() {
   )
 
   // Close-others keeps the tab being READ (the active one), not the tab under
-  // the cursor — wangq's call, diverging from the browser convention on
+  // the cursor — a deliberate choice, diverging from the browser convention on
   // purpose: the menu means the same thing wherever on the strip you invoke it,
   // and the page you are reading never vanishes. (To keep a background tab:
   // activate it first.)

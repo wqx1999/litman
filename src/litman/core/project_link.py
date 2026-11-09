@@ -247,8 +247,8 @@ def _holds_no_files(root: Path) -> bool:
     """True when ``root``'s tree holds no file and no link — nothing to lose.
 
     Explorer does not copy *through* a junction: it leaves a same-named EMPTY
-    directory behind (wangq measured it on Windows 2026-09-09 — ``dir`` on the
-    copy reports "0 个文件"), and that is the commonest way a hub position ends
+    directory behind (measured on Windows — ``dir`` on the copy reports
+    "0 个文件"), and that is the commonest way a hub position ends
     up occupied. Preserving such a folder under ``.trash/`` buys nothing and
     costs the user a trash entry plus a standing health-check reminder for
     every position, which is the cleanup burden this whole feature exists to

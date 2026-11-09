@@ -100,7 +100,7 @@ directory.
 
 ```
 lit init <parent_dir>
-lit init <parent_dir> --name pepforge_lib
+lit init <parent_dir> --name my_library
 lit init <parent_dir> --no-register
 ```
 
@@ -1060,7 +1060,7 @@ supported update path. One of `--project` / `--all` is required.
 lit export --project <name>
 lit export --all
 lit export --project <name> -o path/to/refs.bib
-lit export --all --topic transformer --author wang
+lit export --all --topic transformer --author smith
 lit export --project <name> --format ris
 ```
 

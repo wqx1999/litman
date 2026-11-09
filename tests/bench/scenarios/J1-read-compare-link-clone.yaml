@@ -8,15 +8,15 @@ needs_network: true          # 第 5 步 clone PeptideBERT 的 repo
 invariants: [1, 7, 11, 12]
 routing_label: [lit-library, lit-reading]   # 多步跨两 skill，逐步判
 seed: seed-empty
-skip_reason: "needs_network — 整链第 5 步含 git clone。**“沙箱无网”是错的前提**：2026-07-16 于计算节点 node460 实测 github.com HTTP 200、`git clone --depth 1` 成功、api.anthropic.com 可达。真实跳过原因是**范围**：本轮只做尺子对账，不解封；与 E1/E2/H1/J1-corrupt/J2 同列，留下一批。（另注：本卡 intent 是分步喂的多轮链，与 bench 的单轮冷启动方法学本就不合 —— 解封时要先解决这个，不只是网。）"
+skip_reason: "needs_network — 整链第 5 步含 git clone。**“沙箱无网”是错的前提**：2026-07-16 于计算节点实测 github.com HTTP 200、`git clone --depth 1` 成功、api.anthropic.com 可达。真实跳过原因是**范围**：本轮只做尺子对账，不解封；与 E1/E2/H1/J1-corrupt/J2 同列，留下一批。（另注：本卡 intent 是分步喂的多轮链，与 bench 的单轮冷启动方法学本就不合 —— 解封时要先解决这个，不只是网。）"
 precondition: |
-  隔离库已 init，项目 PepCodec 已注册。#4/#5 的 PDF 待加。
+  隔离库已 init，项目 BlueBell 已注册。#4/#5 的 PDF 待加。
 intent: |
   分步喂（每步一条 user 话，不给命令）：
   1. "把 PeptideBERT 加进来，我读完了。"
   2. "标记成已读。"
   3. "写一段 discussion，跟同组那篇 Multi-Peptide 比一比。"   # 需要 agent 先把 #5 也加进来
-  4. "这两篇都归到我的 PepCodec 项目下。"
+  4. "这两篇都归到我的 BlueBell 项目下。"
   5. "把 PeptideBERT 的代码仓库也 clone 下来绑上。"
   6. "最后检查一下库干不干净。"
 expected_end_state:
@@ -27,10 +27,10 @@ expected_end_state:
   # 锚一个 dated section（格式契约要求的 `## YYYY-MM-DD HH:MM`）：只有真写了才成立，
   # 且不随 agent 用中英文蒸馏而漂移。同 B4。
   - "vault_file_contains: papers/<peptidebert>/discussion.md :: ~## 20"
-  - "yaml_list_has: papers/<peptidebert>/metadata.yaml :: projects has PepCodec"
-  - "yaml_list_has: papers/<multipeptide>/metadata.yaml :: projects has PepCodec"
+  - "yaml_list_has: papers/<peptidebert>/metadata.yaml :: projects has BlueBell"
+  - "yaml_list_has: papers/<multipeptide>/metadata.yaml :: projects has BlueBell"
   - "yaml_list_has: papers/<peptidebert>/metadata.yaml :: code-clones has <repo>"
-  - PepCodec/litman_reflib/... 是有效 symlink         # 项目侧派生物（vault 外）
+  - BlueBell/litman_reflib/... 是有效 symlink         # 项目侧派生物（vault 外）
   - "health: clean"
 auto_fail:
   - 手改任何 metadata / TAXONOMY 文件
@@ -39,5 +39,5 @@ auto_fail:
 notes: |
   长链是状态累积缺陷的唯一暴露面。可派生变体 J1-corrupt：在第 4、5 步之间
   harness 删掉一个 link，看第 6 步 health-check 能否暴露。
-  项目侧 symlink 在 vault 外，DSL 路径锚不到，转录为 prose；pepcodec 大小写以
+  项目侧 symlink 在 vault 外，DSL 路径锚不到，转录为 prose；bluebell 大小写以
   执行器实际 link 结果为准（占位按字段查）。

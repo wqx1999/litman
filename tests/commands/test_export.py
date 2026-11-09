@@ -53,8 +53,8 @@ def vault(tmp_path: Path) -> Path:
         doi="10.1/cellfree",
         type="research",
         status="deep-read",
-        **{"priority-pepforge": "A"},
-        projects=["pepforge"],
+        **{"priority-seahorse": "A"},
+        projects=["seahorse"],
         topics=["AMP"],
         methods=["cell-free"],
         data=[],
@@ -80,8 +80,8 @@ def vault(tmp_path: Path) -> Path:
         doi="10.1/bert",
         type="review",
         status="skim",
-        **{"priority-pepcodec": "B"},
-        projects=["pepcodec"],
+        **{"priority-bluebell": "B"},
+        projects=["bluebell"],
         topics=["NLP"],
         methods=["BERT"],
         data=[],
@@ -107,8 +107,8 @@ def vault(tmp_path: Path) -> Path:
         doi="10.1/gnn",
         type="research",
         status="inbox",
-        **{"priority-pepforge": "C", "priority-pepcodec": "C"},
-        projects=["pepforge", "pepcodec"],
+        **{"priority-seahorse": "C", "priority-bluebell": "C"},
+        projects=["seahorse", "bluebell"],
         topics=["GNN"],
         methods=["GNN"],
         data=[],
@@ -156,7 +156,7 @@ def test_no_scope_arg_fails(vault: Path, tmp_path: Path) -> None:
 
 def test_project_and_all_together_fail(vault: Path, tmp_path: Path) -> None:
     """--project and --all are mutually exclusive."""
-    result = _invoke(vault, "--project", "pepforge", "--all",
+    result = _invoke(vault, "--project", "seahorse", "--all",
                      "-o", str(tmp_path / "refs.bib"))
     assert result.exit_code != 0
     assert isinstance(result.exception, ExportError)
@@ -196,7 +196,7 @@ def test_export_all_writes_every_paper(vault: Path, tmp_path: Path) -> None:
 
 def test_export_project_filters(vault: Path, tmp_path: Path) -> None:
     target = tmp_path / "refs.bib"
-    result = _invoke(vault, "--project", "pepforge", "-o", str(target))
+    result = _invoke(vault, "--project", "seahorse", "-o", str(target))
     assert result.exit_code == 0, result.output
     content = target.read_text(encoding="utf-8")
     assert "2023_Pandi_Cellfree" in content
@@ -257,12 +257,12 @@ def test_filters_combined_and(vault: Path, tmp_path: Path) -> None:
 
 def test_project_plus_priority_and_combined(vault: Path, tmp_path: Path) -> None:
     target = tmp_path / "refs.bib"
-    result = _invoke(vault, "--project", "pepforge",
+    result = _invoke(vault, "--project", "seahorse",
                      "--priority", "A,C",
                      "-o", str(target))
     assert result.exit_code == 0
     content = target.read_text(encoding="utf-8")
-    # pepforge contains Pandi (A) + Doe (C); both pass priority filter.
+    # seahorse contains Pandi (A) + Doe (C); both pass priority filter.
     assert "2023_Pandi_Cellfree" in content
     assert "2024_Doe_GNN" in content
     assert "2024_Smith_BERT" not in content
@@ -320,7 +320,7 @@ def test_export_data_filter(vault: Path, tmp_path: Path) -> None:
         type="research",
         status="inbox",
         priority="B",
-        projects=["pepforge"],
+        projects=["seahorse"],
         topics=["AMP"],
         methods=["x"],
         data=["GDP-2"],
@@ -366,7 +366,7 @@ def test_overwrite_existing_sentinel_file(vault: Path, tmp_path: Path) -> None:
     assert first.exit_code == 0, first.output
     first_content = target.read_text(encoding="utf-8")
 
-    second = _invoke(vault, "--project", "pepforge", "-o", str(target))
+    second = _invoke(vault, "--project", "seahorse", "-o", str(target))
     assert second.exit_code == 0, second.output
     second_content = target.read_text(encoding="utf-8")
     assert second_content != first_content
@@ -414,7 +414,7 @@ def test_missing_venue_type_falls_back_to_misc(vault: Path, tmp_path: Path) -> N
         type="research",
         status="inbox",
         priority="B",
-        projects=["pepforge"],
+        projects=["seahorse"],
         topics=[],
         methods=[],
         data=[],
@@ -423,7 +423,7 @@ def test_missing_venue_type_falls_back_to_misc(vault: Path, tmp_path: Path) -> N
         extends=[],
     )
     target = tmp_path / "refs.bib"
-    result = _invoke(vault, "--project", "pepforge", "-o", str(target))
+    result = _invoke(vault, "--project", "seahorse", "-o", str(target))
     assert result.exit_code == 0, result.output
     content = target.read_text(encoding="utf-8")
     assert "@misc{2024_Legacy_X," in content
@@ -432,7 +432,7 @@ def test_missing_venue_type_falls_back_to_misc(vault: Path, tmp_path: Path) -> N
 def test_proceedings_paper_renders_with_booktitle(vault: Path, tmp_path: Path) -> None:
     """Doe_GNN has venue-type=proceedings-article + booktitle set."""
     target = tmp_path / "refs.bib"
-    result = _invoke(vault, "--project", "pepforge", "-o", str(target))
+    result = _invoke(vault, "--project", "seahorse", "-o", str(target))
     assert result.exit_code == 0, result.output
     content = target.read_text(encoding="utf-8")
     assert "@inproceedings{2024_Doe_GNN," in content
@@ -444,10 +444,10 @@ def test_proceedings_paper_renders_with_booktitle(vault: Path, tmp_path: Path) -
 def test_sparse_paper_drops_empty_fields(vault: Path, tmp_path: Path) -> None:
     """A paper with empty volume/pages/publisher should not emit those keys."""
     target = tmp_path / "refs.bib"
-    result = _invoke(vault, "--project", "pepcodec", "-o", str(target))
+    result = _invoke(vault, "--project", "bluebell", "-o", str(target))
     assert result.exit_code == 0, result.output
     content = target.read_text(encoding="utf-8")
-    # 2024_Smith_BERT is in pepcodec, has no volume/pages/publisher.
+    # 2024_Smith_BERT is in bluebell, has no volume/pages/publisher.
     # Slice out its block using the trailing "\n}" line that closes the
     # entry — the inner title is wrapped in `{{...}}` so a naive
     # `}` search would land inside the title.
@@ -526,7 +526,7 @@ def test_ris_overwrites_its_own_earlier_export(vault: Path, tmp_path: Path) -> N
     target = tmp_path / "refs.ris"
     first = _invoke(vault, "--all", "--format", "ris", "-o", str(target))
     assert first.exit_code == 0, first.output
-    second = _invoke(vault, "--project", "pepforge", "--format", "ris",
+    second = _invoke(vault, "--project", "seahorse", "--format", "ris",
                      "-o", str(target))
     assert second.exit_code == 0, second.output
     assert "2024_Smith_BERT" not in target.read_bytes().decode("utf-8-sig")

@@ -376,10 +376,10 @@ def _link_paper_into_project(vault: Path, tmp_path: Path) -> Path:
 
     from litman.core.project_link import rebuild_all_project_links
 
-    project_dir = tmp_path / "pepforge"
+    project_dir = tmp_path / "seahorse"
     project_dir.mkdir()
     (vault / "lit-config.yaml").write_text(
-        f"library_name: {vault.name}\nprojects:\n  pepforge: {project_dir}\n",
+        f"library_name: {vault.name}\nprojects:\n  seahorse: {project_dir}\n",
         encoding="utf-8",
     )
     paper_dir = vault / "papers" / "p1"
@@ -394,7 +394,7 @@ def _link_paper_into_project(vault: Path, tmp_path: Path) -> Path:
                 "doi": "10.test/p1",
                 "status": "inbox",
                 "type": "research",
-                "projects": ["pepforge"],
+                "projects": ["seahorse"],
                 "topics": [],
                 "methods": [],
                 "code-clones": [],
@@ -403,7 +403,7 @@ def _link_paper_into_project(vault: Path, tmp_path: Path) -> Path:
             },
             f,
         )
-    rebuild_all_project_links(vault, {"pepforge": str(project_dir)})
+    rebuild_all_project_links(vault, {"seahorse": str(project_dir)})
     link = project_dir / "litman_reflib" / "p1"
     assert is_portable_link(link) and link.exists()
     return link
@@ -466,7 +466,7 @@ def test_switch_heal_touches_only_dangling_projects(tmp_path: Path) -> None:
 
     (vault / "lit-config.yaml").write_text(
         f"library_name: {vault.name}\nprojects:\n"
-        f"  pepforge: {tmp_path / 'pepforge'}\n"
+        f"  seahorse: {tmp_path / 'seahorse'}\n"
         f"  other: {other}\n",
         encoding="utf-8",
     )
@@ -772,7 +772,7 @@ def test_relocate_heal_touches_only_dangling_projects(tmp_path: Path) -> None:
 
     (vault / "lit-config.yaml").write_text(
         f"library_name: {vault.name}\nprojects:\n"
-        f"  pepforge: {tmp_path / 'pepforge'}\n"
+        f"  seahorse: {tmp_path / 'seahorse'}\n"
         f"  other: {other}\n",
         encoding="utf-8",
     )

@@ -9,7 +9,7 @@ vault present, by standing up a *decoy* ``$LIT_LIBRARY`` vault and asserting:
      is NOT created by the run;
   3. the child's ``find_vault`` resolves to the /tmp run vault, never the decoy.
 
-NEVER references ``/work/wangq/literature_vault`` (the real vault). Everything
+NEVER references the developer's real vault. Everything
 lives under tmp_path / /tmp.
 """
 
@@ -257,24 +257,24 @@ def test_seed_projects_dir_is_copied_in_as_the_vaults_sibling(tmp_path: Path) ->
     <id>), so this layout — and only this one — makes them resolve to the run's
     own papers without rebuilding a single link.
     """
-    seed = _seed_with_project(tmp_path, project="PepCodec", folder="PepCodec")
-    (seed.parent / "projects" / "PepCodec" / "marker.txt").write_text("x", encoding="utf-8")
+    seed = _seed_with_project(tmp_path, project="BlueBell", folder="BlueBell")
+    (seed.parent / "projects" / "BlueBell" / "marker.txt").write_text("x", encoding="utf-8")
 
     with RunVault(seed, run_root=tmp_path / "work") as rv:
-        assert (rv.run_dir / "projects" / "PepCodec" / "marker.txt").is_file()
+        assert (rv.run_dir / "projects" / "BlueBell" / "marker.txt").is_file()
         assert rv.vault.parent == rv.run_dir  # the vault's own shape is unchanged
 
 
 def test_copied_config_no_longer_points_at_the_seed(tmp_path: Path) -> None:
     """The bug itself: a copied vault whose config still names the shared seed."""
-    seed = _seed_with_project(tmp_path, project="PepCodec", folder="PepCodec")
+    seed = _seed_with_project(tmp_path, project="BlueBell", folder="BlueBell")
     seed_root = seed.parent
-    assert str(seed_root) in _configured_project_path(seed, "PepCodec")
+    assert str(seed_root) in _configured_project_path(seed, "BlueBell")
 
     with RunVault(seed, run_root=tmp_path / "work") as rv:
-        got = _configured_project_path(rv.vault, "PepCodec")
+        got = _configured_project_path(rv.vault, "BlueBell")
         assert str(seed_root) not in got, f"run copy still points at the seed: {got}"
-        assert got == str(rv.run_dir / "projects" / "PepCodec")
+        assert got == str(rv.run_dir / "projects" / "BlueBell")
 
 
 def test_remap_follows_the_configured_path_not_the_project_name(tmp_path: Path) -> None:
@@ -285,11 +285,11 @@ def test_remap_follows_the_configured_path_not_the_project_name(tmp_path: Path) 
     whenever the two happen to coincide and silently repoints the project at a
     nonexistent dir the moment they do not.
     """
-    seed = _seed_with_project(tmp_path, project="PepCodec", folder="pepcodec-workdir")
+    seed = _seed_with_project(tmp_path, project="BlueBell", folder="bluebell-workdir")
 
     with RunVault(seed, run_root=tmp_path / "work") as rv:
-        got = Path(_configured_project_path(rv.vault, "PepCodec"))
-        assert got == rv.run_dir / "projects" / "pepcodec-workdir"
+        got = Path(_configured_project_path(rv.vault, "BlueBell"))
+        assert got == rv.run_dir / "projects" / "bluebell-workdir"
         assert got.is_dir(), "the remapped path must actually exist"
 
 
@@ -297,13 +297,13 @@ def test_a_project_configured_outside_the_seed_root_is_loud(tmp_path: Path) -> N
     """No seed builds this today; if one starts to, it must not pass silently."""
     outside = tmp_path / "elsewhere"
     outside.mkdir()
-    seed = _seed_with_project(tmp_path, project="PepCodec", folder="PepCodec")
+    seed = _seed_with_project(tmp_path, project="BlueBell", folder="BlueBell")
     # Re-point the seed itself out of its root, through the product's own CLI.
     env = os.environ.copy()
     env["LITMAN_REGISTRY_DIR"] = str(tmp_path / "seed-registry")
     env.pop("LIT_LIBRARY", None)
     proc = subprocess.run(
-        [str(LIT_BIN), "project", "set-path", "PepCodec", str(outside),
+        [str(LIT_BIN), "project", "set-path", "BlueBell", str(outside),
          "--library", str(seed)],
         env=env, stdin=subprocess.DEVNULL, capture_output=True, text=True,
     )
@@ -327,7 +327,7 @@ def test_localizing_keeps_the_harnesss_own_commands_out_of_the_evidence(
     """
     from harness.runlit import read_run_log
 
-    seed = _seed_with_project(tmp_path, project="PepCodec", folder="PepCodec")
+    seed = _seed_with_project(tmp_path, project="BlueBell", folder="BlueBell")
     with RunVault(seed, run_root=tmp_path / "work") as rv:
         assert read_run_log(rv.log_path) == []
         rv.run("list")
@@ -349,11 +349,11 @@ def test_a_project_write_never_reaches_the_shared_seed(tmp_path: Path) -> None:
     before = seeds.seed_digest(seed_root)
 
     with RunVault(seed, run_root=tmp_path / "work") as rv:
-        bridge = rv.run_dir / "projects" / "PepCodec" / "litman_reflib"
+        bridge = rv.run_dir / "projects" / "BlueBell" / "litman_reflib"
         linked = [p.name for p in bridge.iterdir() if p.is_symlink()]
-        assert linked, "precondition: #4 is bridged into PepCodec"
+        assert linked, "precondition: #4 is bridged into BlueBell"
 
-        res = rv.run("unlink", linked[0], "--project", "PepCodec")
+        res = rv.run("unlink", linked[0], "--project", "BlueBell")
         assert res.exit_code == 0, res.stderr
 
         # (a) it really did the work — in THIS copy.

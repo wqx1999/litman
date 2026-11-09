@@ -498,7 +498,7 @@ function SetProjectPathDialog({
             disabled={busy}
             autoFocus
             selectOnFocus
-            placeholder="/work/you/Project/pepforge"
+            placeholder="/home/you/projects/my-project"
             onEnter={() => {
               if (canSubmit) onConfirm(trimmed)
             }}
@@ -594,7 +594,7 @@ function NewProjectDialog({
               type="text"
               value={name}
               disabled={busy}
-              placeholder="pepforge"
+              placeholder="my-project"
               onChange={(e) => setName(e.target.value)}
               className={INPUT}
             />
@@ -608,7 +608,7 @@ function NewProjectDialog({
               value={path}
               onChange={setPath}
               disabled={busy}
-              placeholder="/work/you/Project/pepforge"
+              placeholder="/home/you/projects/my-project"
               onEnter={submit}
             />
             <span className="text-[11px] text-stone-400">

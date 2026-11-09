@@ -95,8 +95,8 @@ def test_bat_script_contains_the_contract(tmp_path: Path) -> None:
 def test_bat_script_moves_stubs_aside_and_settles_them(tmp_path: Path) -> None:
     """Each stub: renamed aside pre-upgrade; post-upgrade the .old is dropped
     when the stub came back, renamed back when it did not (both outcomes)."""
-    lit = r"C:\Users\W X\.local\bin\lit.exe"
-    litw = r"C:\Users\W X\.local\bin\litw.exe"
+    lit = r"C:\Users\A B\.local\bin\lit.exe"
+    litw = r"C:\Users\A B\.local\bin\litw.exe"
     s = _build(tmp_path, windows=True, stub_paths=[Path(lit), Path(litw)])
     for stub in (lit, litw):
         assert f'if exist "{stub}" move /y "{stub}" "{stub}.old"' in s

@@ -107,18 +107,18 @@ def _make_repo(vault: Path, repo_name: str) -> None:
 
 @pytest.fixture
 def lib(tmp_path: Path) -> Library:
-    """Project ``pepcodec`` with member ``p1``; ``p2`` is in no project.
+    """Project ``bluebell`` with member ``p1``; ``p2`` is in no project.
 
     ``repo1`` is in the vault, bound to nothing; ``source/`` is a folder
     ``lit code add`` can import.
     """
     vault = create_vault(tmp_path)
-    project_dir = tmp_path / "pepcodec_proj"
+    project_dir = tmp_path / "bluebell_proj"
     project_dir.mkdir()
-    add_project(vault, "pepcodec", project_dir)
+    add_project(vault, "bluebell", project_dir)
     _make_paper(vault, "p1")
     _make_paper(vault, "p2")
-    link_paper_to_project(vault, "p1", "pepcodec", load_config(vault).projects)
+    link_paper_to_project(vault, "p1", "bluebell", load_config(vault).projects)
     _make_repo(vault, "repo1")
     source = tmp_path / "source"
     source.mkdir()
@@ -176,9 +176,9 @@ CASES = [
     ),
     Case(
         "modify-projects",
-        lambda lib: ["modify", "p2", "--add-tag", "projects=pepcodec"],
+        lambda lib: ["modify", "p2", "--add-tag", "projects=bluebell"],
         "✓ Modified p2",
-        written=lambda lib: lib.meta("p2")["projects"] == ["pepcodec"],
+        written=lambda lib: lib.meta("p2")["projects"] == ["bluebell"],
         repaired=lambda lib: lib.reflib_link("p2") and "p2" in lib.references(),
     ),
     Case(
@@ -257,7 +257,7 @@ def test_a_write_finishes_and_warns_when_the_config_cannot_be_read(
 def test_a_projects_change_with_a_readable_config_reports_the_refresh(lib: Library) -> None:
     """Control for ``REFS_REFRESHED not in output`` above: with the file intact
     the same command does print it, so its absence there means something."""
-    code, output, shown = _run(lib, ["modify", "p2", "--add-tag", "projects=pepcodec"])
+    code, output, shown = _run(lib, ["modify", "p2", "--add-tag", "projects=bluebell"])
 
     assert code == 0, shown
     assert REFS_REFRESHED in output

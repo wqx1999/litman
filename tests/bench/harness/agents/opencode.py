@@ -69,8 +69,8 @@ OPENCODE_BIN = os.environ.get("LITMAN_BENCH_OPENCODE_BIN", "opencode")
 # opencode is a ROUTER: `--model` is ALWAYS passed explicitly on a real run, so a
 # run served by any default is not a data point. This default is a currently-live
 # FREE model (loginless), used only to keep a smoke invocation working; which
-# CONTROLLED model opencode routes for the real comparison is wangq's call (spec
-# "待 wangq 决定"). Run `opencode models` for the live `*-free` list.
+# CONTROLLED model opencode routes for the real comparison is the maintainer's call (spec
+# "待定"). Run `opencode models` for the live `*-free` list.
 DEFAULT_MODEL = "opencode/deepseek-v4-flash-free"
 
 # opencode's own permission bypass: "auto-approve permissions that are not

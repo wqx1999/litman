@@ -615,7 +615,7 @@ def test_hook_corrupt_config_surfaces_finding(
 
 
 def _seed_active_vault_with_dangling_bridge(
-    tmp_path: Path, project_dirname: str = "pepforge"
+    tmp_path: Path, project_dirname: str = "seahorse"
 ) -> tuple[Path, Path]:
     """An active vault whose project bridges dangle: linked, then MOVED.
 
@@ -636,7 +636,7 @@ def _seed_active_vault_with_dangling_bridge(
     project_dir = tmp_path / project_dirname
     project_dir.mkdir()
     (vault / "lit-config.yaml").write_text(
-        f"library_name: {vault.name}\nprojects:\n  pepforge: {project_dir}\n",
+        f"library_name: {vault.name}\nprojects:\n  seahorse: {project_dir}\n",
         encoding="utf-8",
     )
 
@@ -653,7 +653,7 @@ def _seed_active_vault_with_dangling_bridge(
                 "doi": "10.test/p1",
                 "status": "inbox",
                 "type": "research",
-                "projects": ["pepforge"],
+                "projects": ["seahorse"],
                 "topics": [],
                 "methods": [],
                 "code-clones": [],
@@ -663,7 +663,7 @@ def _seed_active_vault_with_dangling_bridge(
             f,
         )
     reconcile_derived(vault, project_refs=False)  # INDEX + views current
-    rebuild_all_project_links(vault, {"pepforge": str(project_dir)})
+    rebuild_all_project_links(vault, {"seahorse": str(project_dir)})
     assert (project_dir / "litman_reflib" / "p1").exists()
 
     moved_parent = tmp_path / "bridge_moved"

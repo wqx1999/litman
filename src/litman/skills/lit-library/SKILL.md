@@ -94,7 +94,7 @@ A local PDF with no DOI anywhere (none from the user, none printed in it), or a 
 | The user says | Command |
 |---|---|
 | "导出 bib" / names no project | `lit export --all -o refs.bib` — just run it |
-| "导出和 pepforge 有关的文献" | `lit export --project pepforge` (writes `./refs.bib`) |
+| "导出和 my-project 有关的文献" | `lit export --project my-project` (writes `./refs.bib`) |
 | "写 thesis，把 priority A 的都导出来" | `lit export --all --priority A -o thesis.bib` (A for any project; `--project <P>` for one) |
 | "导出到 EndNote" / "给 Zotero 用" | the same command plus `--format ris` (writes `./refs.ris`); EndNote imports it with the Reference Manager (RIS) option. A .bib does not import into EndNote reliably — don't offer it there |
 

@@ -168,7 +168,7 @@ def test_rebuild_views_creates_relative_symlinks(tmp_path: Path) -> None:
         vault,
         "2024_Foo_Bar",
         topics=["alpha", "beta"],
-        projects=["pepforge"],
+        projects=["seahorse"],
         methods=["transformer"],
         status="deep-read",
     )
@@ -176,7 +176,7 @@ def test_rebuild_views_creates_relative_symlinks(tmp_path: Path) -> None:
         {
             "id": "2024_Foo_Bar",
             "topics": ["alpha", "beta"],
-            "projects": ["pepforge"],
+            "projects": ["seahorse"],
             "methods": ["transformer"],
             "status": "deep-read",
         }
@@ -302,7 +302,7 @@ def test_lit_refresh_views_with_paper(tmp_path: Path) -> None:
         type="research",
         status="inbox",
         topics=["alpha"],
-        projects=["pepforge"],
+        projects=["seahorse"],
         methods=["transformer"],
     )
 
@@ -315,12 +315,12 @@ def test_lit_refresh_views_with_paper(tmp_path: Path) -> None:
     p = payload["papers"][0]
     assert p["id"] == "2024_Test_Paper"
     assert "alpha" in p["topics"]
-    assert "pepforge" in p["projects"]
+    assert "seahorse" in p["projects"]
     assert "transformer" in p["methods"]
 
     # Symlinks
     assert is_portable_link(vault / "views" / "by-topic" / "alpha" / "2024_Test_Paper")
-    assert is_portable_link(vault / "views" / "by-project" / "pepforge" / "2024_Test_Paper")
+    assert is_portable_link(vault / "views" / "by-project" / "seahorse" / "2024_Test_Paper")
     assert is_portable_link(vault / "views" / "by-status" / "inbox" / "2024_Test_Paper")
 
 

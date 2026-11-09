@@ -157,9 +157,8 @@ class AgentSpec:
 # it loaded both litman skills from there), so their adapters are the same too.
 #
 # Order: claude (the fallback default tops the picker), zcode, agy, codex,
-# dsh, cursor, opencode — set by wangq (2026-10-30), who put DeepSeek Harness
-# right under Codex. The GUI picker and `skills_parent_dirs()` follow this
-# order.
+# dsh, cursor, opencode — DeepSeek Harness sits right under Codex. The GUI
+# picker and `skills_parent_dirs()` follow this order.
 AGENTS: tuple[AgentSpec, ...] = (
     AgentSpec(
         name="claude",

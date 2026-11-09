@@ -760,7 +760,7 @@ def test_claude_on_linux_is_its_link_handler_opened_by_xdg(
     ("vault", "encoded"),
     [
         (r"C:\lib", "C%3A%5Clib"),
-        (r"C:\Users\Wang Q\My Lib", "C%3A%5CUsers%5CWang%20Q%5CMy%20Lib"),
+        (r"C:\Users\Alice B\My Lib", "C%3A%5CUsers%5CAlice%20B%5CMy%20Lib"),
         (r"D:\文献库", "D%3A%5C%E6%96%87%E7%8C%AE%E5%BA%93"),
     ],
 )
@@ -774,7 +774,7 @@ def test_claude_link_encodes_a_windows_vault_path(vault: str, encoded: str) -> N
     ("vault", "encoded"),
     [
         (r"C:\lib", "C%3A%5Clib"),
-        (r"C:\Users\Wang Q\My Lib", "C%3A%5CUsers%5CWang%20Q%5CMy%20Lib"),
+        (r"C:\Users\Alice B\My Lib", "C%3A%5CUsers%5CAlice%20B%5CMy%20Lib"),
         (r"D:\litm0 测试", "D%3A%5Clitm0%20%E6%B5%8B%E8%AF%95"),
     ],
 )
