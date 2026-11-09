@@ -96,6 +96,20 @@ const SMART_VIEWS: ReadonlySet<string> = new Set(['reading', 'recent-read'])
 // on the slow side of the ≤5s the spec asks for.
 const VAULT_POLL_MS = 4000
 
+// The longest "Sync now" shows syncing before the server reports anything of
+// the run. The auto sync finishes the look it is in before it starts the run
+// a click asks for, and a click has it check rclone again first: a remote-stamp
+// read (capped at 60 s) and then the two rclone calls of that check (30 s
+// each), plus a poll. Past this the server is taken to have not started it,
+// and the button goes back to what the server says.
+const SYNC_ASK_MAX_MS = 150_000
+
+/** What a status from the server is, as far as "has the asked-for run shown
+ * up yet" goes: a sync starting, ending, failing or stopping changes it. */
+function syncStatusKey(s: SyncStatus): string {
+  return [s.state, s.reason, s.seq, s.nextTryAt, s.runningSince, s.lastOkAt].join('|')
+}
+
 // An SI window that would pop on its own waits while someone is typing: an
 // editable has focus and a key went down within this long. Popping mid-word
 // would take the next keystrokes — and an Esc meant for the text would cancel
@@ -1471,11 +1485,33 @@ export default function App() {
   // has no `sync:`.
   const [syncStatus, setSyncStatus] = useState<SyncStatus | null | undefined>(undefined)
   const syncSeqRef = useRef<{ served: string; seq: number } | null>(null)
+  // "Sync now" was pressed: the key of the server's status then. The auto
+  // sync runs one sync at a time and ends the look it is in first, which on a
+  // slow cloud takes a while, and all that time the server still says what it
+  // said before. So from the press until the server's status changes (the run
+  // starts, or ends, fails or stops before a poll saw it start) the button
+  // shows the run as already under way; SYNC_ASK_MAX_MS is the fallback.
+  const [syncAsked, setSyncAsked] = useState<string | null>(null)
   useEffect(() => {
     setSyncStatus(undefined)
+    setSyncAsked(null)
   }, [served])
+  useEffect(() => {
+    if (syncAsked === null) return
+    const timer = setTimeout(() => setSyncAsked(null), SYNC_ASK_MAX_MS)
+    return () => clearTimeout(timer)
+  }, [syncAsked])
+  const shownSyncStatus = useMemo<SyncStatus | null | undefined>(
+    () =>
+      syncAsked !== null && syncStatus
+        ? { ...syncStatus, state: 'running', reason: null, holder: null }
+        : syncStatus,
+    [syncAsked, syncStatus],
+  )
   const onSyncPoll = (status: SyncStatus | null) => {
     setSyncStatus(status)
+    if (syncAsked !== null && (status === null || syncStatusKey(status) !== syncAsked))
+      setSyncAsked(null)
     if (!status || !served) return
     const seen = syncSeqRef.current
     syncSeqRef.current = { served, seq: status.seq }
@@ -1522,13 +1558,20 @@ export default function App() {
   const onSyncPollRef = useRef(onSyncPoll)
   onSyncPollRef.current = onSyncPoll
 
-  // "Sync now" in the cloud button's popover, then look again at once so the
-  // button turns to "syncing" without waiting for the next poll.
+  // "Sync now" in the cloud button's popover. The button shows syncing at once
+  // (syncAsked), and a poll right after the request picks up a run that has
+  // already started. A press while one is pending does nothing more: the
+  // syncing popover has no "Sync now" to press.
   const syncNow = useCallback(() => {
+    if (!syncStatus || syncAsked !== null) return
+    setSyncAsked(syncStatusKey(syncStatus))
     postSyncNow()
       .then(() => pollNowRef.current?.())
-      .catch(() => notify(getT().sync.toast.syncNowFailed, 'error'))
-  }, [notify])
+      .catch(() => {
+        setSyncAsked(null)
+        notify(getT().sync.toast.syncNowFailed, 'error')
+      })
+  }, [notify, syncStatus, syncAsked])
 
   // A save that went over a file changed since it was read (a sync brought
   // the other machine's copy, an agent rewrote it): the save won, and the copy
@@ -2739,7 +2782,7 @@ export default function App() {
         onRegisterAgentManage={registerAgentManage}
         onRegisterVaultManagerOpen={registerVaultManagerOpen}
         trashMode={trashMode}
-        syncStatus={syncStatus}
+        syncStatus={shownSyncStatus}
         onSyncNow={syncNow}
       />
       <div className="flex min-h-0 flex-1">
