@@ -146,6 +146,10 @@ own entry. Read those before you upgrade, whatever the number says.
   at that folder.
 - **`lit sync push` and `pull` print the library's path whole.** A long path was
   folded mid-line, and a part of it in square brackets dropped out.
+- **A note opened for editing shows changes until you type.** A notes or
+  discussion tab double-clicked into edit mode kept the old text when a sync, the
+  CLI or an agent changed the file, until the tab was reopened. It now follows
+  the file; once you have typed, your text stays, as before.
 - **Crossref lookups no longer send a personal e-mail.** The contact address in
   litman's Crossref requests is now the project's own. Help texts, examples and
   the template of a new library's `lit-config.yaml` no longer name a person or

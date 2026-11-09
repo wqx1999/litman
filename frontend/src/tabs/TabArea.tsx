@@ -38,6 +38,7 @@ interface Props {
   mdReloadToken?: number
   /** Forwarded md edit-session callbacks (App owns the per-tab draft map). */
   onMdBeginEdit: (tabKey: string, seed: string, base: string | null) => void
+  onMdFileRead: (tabKey: string, text: string, base: string | null) => void
   onMdDraftChange: (tabKey: string, draft: string) => void
   onMdEndEdit: (tabKey: string) => void
   onMdSaveSettled: (tabKey: string, sent: string, base: string | null) => void
@@ -82,6 +83,7 @@ export default function TabArea({
   mdDraft,
   mdReloadToken,
   onMdBeginEdit,
+  onMdFileRead,
   onMdDraftChange,
   onMdEndEdit,
   onMdSaveSettled,
@@ -505,6 +507,7 @@ export default function TabArea({
             draftEntry={mdDraft}
             reloadToken={mdReloadToken}
             onBeginEdit={onMdBeginEdit}
+            onFileRead={onMdFileRead}
             onDraftChange={onMdDraftChange}
             onEndEdit={onMdEndEdit}
             onSaveSettled={onMdSaveSettled}

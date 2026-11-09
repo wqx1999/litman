@@ -321,6 +321,7 @@ export default function TrashView({
                 readOnly
                 onOpenPaper={() => {}}
                 onBeginEdit={() => {}}
+                onFileRead={() => {}}
                 onDraftChange={() => {}}
                 onEndEdit={() => {}}
                 onSaveSettled={() => {}}

@@ -27,9 +27,10 @@ export interface MdDraft {
   /** The on-disk text when the edit began — App diffs against it for dirtiness
    * (the close prompt + page-unload guard), mirroring PdfHandle.isDirty(). */
   savedText: string
-  /** The file's version when the edit began, sent with the save: a file that
-   * changed meanwhile (a sync, an agent) is kept in the backup before the
-   * save replaces it. Null when the file did not exist. */
+  /** The file's version when the edit began (or when the untouched session
+   * last followed the file), sent with the save: a file that changed meanwhile
+   * (a sync, an agent) is kept in the backup before the save replaces it.
+   * Null when the file did not exist. */
   base: string | null
 }
 
@@ -60,11 +61,16 @@ interface Props {
    * editing. Controlled: a present value puts the view in edit mode. */
   draftEntry?: MdDraft
   /** Bumped by the host on a resync-from-disk so this view re-reads its file
-   * (e.g. a CLI/agent rewrote notes.md). Skipped while editing — the draft is
-   * the source of truth then. */
+   * (e.g. a sync pulled it, a CLI/agent rewrote it). Skipped while the draft
+   * has been typed in — the draft is the source of truth then. */
   reloadToken?: number
   /** Begin editing: App records {draft: seed, savedText: seed, base}. */
   onBeginEdit: (tabKey: string, seed: string, base: string | null) => void
+  /** The file was read and holds `text` at version `base`. App re-seeds this
+   * tab's edit session from it if nobody has typed in the session yet, so an
+   * untouched textarea follows a sync instead of showing what the disk no
+   * longer has; a session with typing in it is left alone. */
+  onFileRead: (tabKey: string, text: string, base: string | null) => void
   /** A keystroke in the textarea: App updates the lifted draft. */
   onDraftChange: (tabKey: string, draft: string) => void
   /** Leave the session with nothing to save (an untouched draft). */
@@ -149,6 +155,7 @@ export default function MdView({
   draftEntry,
   reloadToken = 0,
   onBeginEdit,
+  onFileRead,
   onDraftChange,
   onEndEdit,
   onSaveSettled,
@@ -213,6 +220,15 @@ export default function MdView({
   // never opens, a drag selects nothing) and the search marks are wiped.
   const innerHtml = useMemo(() => ({ __html: html }), [html])
 
+  // Hand a fresh read to App, which re-seeds this tab's session only if it is
+  // still untouched — decided inside App's state update, so a keystroke that
+  // got there first wins. A file that is gone reads as ABSENT_BASE, as in
+  // enterEdit.
+  // Held in a ref: the load effect below runs per paper, not per render.
+  const followFile = useRef<(fresh: MdFile | null) => void>(() => {})
+  followFile.current = (fresh: MdFile | null) =>
+    onFileRead(tabKey, fresh?.text ?? '', fresh === null ? ABSENT_BASE : fresh.version)
+
   useEffect(() => {
     let cancelled = false
     setLoaded(false)
@@ -231,6 +247,9 @@ export default function MdView({
         setText(loadedFile?.text ?? null)
         setVersion(loadedFile?.version ?? null)
         setLoaded(true)
+        // A tab left mid-session in the back is not mounted, so the reload
+        // below never ran for it: the session catches up here, on the way back.
+        if (!readOnly) followFile.current(loadedFile)
       })
       .catch(() => {
         if (cancelled) return
@@ -244,20 +263,23 @@ export default function MdView({
     }
   }, [paperId, doc, readOnly])
 
-  // Re-read the file when the host bumps reloadToken (a resync-from-disk: the CLI
-  // or an agent rewrote this doc). The MOUNT run is skipped (firstReloadRef) — the
-  // load effect above already fetched then — so a tab opened while reloadToken is
-  // already > 0 (a focus resync happened earlier) does NOT double-fetch + double-
-  // parse. Subsequent bumps refetch. Skipped while editing (the App-owned draft is
-  // the source of truth) and in read-only/trash mode (a trashed file is immutable).
-  // Only `text` is touched, never the draft, so an in-progress GUI edit is safe.
+  // Re-read the file when the host bumps reloadToken (a resync-from-disk: a sync
+  // pulled this doc, or the CLI or an agent rewrote it). The MOUNT run is skipped
+  // (firstReloadRef) — the load effect above already fetched then — so a tab
+  // opened while reloadToken is already > 0 (a focus resync happened earlier)
+  // does NOT double-fetch + double-parse. Subsequent bumps refetch. Skipped in
+  // read-only/trash mode (a trashed file is immutable) and while the draft has
+  // been typed in (it is the source of truth then; the save's version check
+  // keeps what it replaces). An edit session nobody has typed in yet follows
+  // the file: double-clicking is not editing, and a stale textarea would hide
+  // the other machine's change until the tab is reopened.
   const firstReloadRef = useRef(true)
   useEffect(() => {
     if (firstReloadRef.current) {
       firstReloadRef.current = false
       return
     }
-    if (editing || readOnly) return
+    if (readOnly || (editing && draft !== savedText)) return
     let cancelled = false
     const load = doc === 'notes' ? fetchNotes : fetchDiscussion
     load(paperId)
@@ -269,6 +291,7 @@ export default function MdView({
         // fixed it on disk): clear the error and unlock the tab.
         setLoaded(true)
         setLoadError(false)
+        followFile.current(fresh)
       })
       .catch(() => {
         if (cancelled) return
@@ -277,9 +300,9 @@ export default function MdView({
     return () => {
       cancelled = true
     }
-    // Only reloadToken drives this refetch; paperId/doc/editing/readOnly are read
-    // for the current value but must not themselves re-trigger it (the mount
-    // effect owns paperId/doc loads; entering edit must not reload).
+    // Only reloadToken drives this refetch; paperId/doc/editing/readOnly/draft are
+    // read for the current value but must not themselves re-trigger it (the mount
+    // effect owns paperId/doc loads; entering edit or typing must not reload).
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [reloadToken])
 

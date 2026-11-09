@@ -1740,6 +1740,21 @@ export default function App() {
     })
   }, [])
 
+  // The tab's file was read afresh. A session nobody has typed in follows it:
+  // re-seeded from the new text and version, so the textarea shows what a
+  // sync brought and a later save does not count that sync as a conflict.
+  // Checked inside the update, against the draft as it is now, so typing that
+  // landed first keeps the session as it is.
+  const mdFileRead = useCallback((tabKey: string, text: string, base: string | null) => {
+    setMdDrafts((prev) => {
+      const cur = prev.get(tabKey)
+      if (!cur || cur.draft !== cur.savedText || cur.base === base) return prev
+      const next = new Map(prev)
+      next.set(tabKey, { draft: text, savedText: text, base })
+      return next
+    })
+  }, [])
+
   const mdDraftChange = useCallback((tabKey: string, draft: string) => {
     setMdDrafts((prev) => {
       const cur = prev.get(tabKey)
@@ -2783,6 +2798,7 @@ export default function App() {
               mdDraft={activeTab ? mdDrafts.get(activeTab) : undefined}
               mdReloadToken={mdReloadToken}
               onMdBeginEdit={mdBeginEdit}
+              onMdFileRead={mdFileRead}
               onMdDraftChange={mdDraftChange}
               onMdEndEdit={mdEndEdit}
               onMdSaveSettled={mdSaveSettled}
