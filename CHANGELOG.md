@@ -91,6 +91,9 @@ own entry. Read those before you upgrade, whatever the number says.
   cloud never holds, such as `lit-config.yaml` and code checkouts. Both now stop
   with one line pointing to `lit sync`. A library you only back up with `push`
   works as before.
+- **A collapsed side panel opens from anywhere on its strip.** In the GUI, the
+  narrow strip a collapsed panel leaves is now one button, with its arrow at
+  mid-height, instead of a small arrow at the top.
 
 ### Fixed
 

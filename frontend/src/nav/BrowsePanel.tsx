@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { IndexPaper } from '../types'
 import { enumLabel, useT } from '../i18n'
 import VocabPopover from '../ui/VocabPopover'
+import CollapsedStrip from '../ui/CollapsedStrip'
 import { IconTrash } from '../ui/icons'
 
 /** Sort presets: the two server-ordered smart-lists plus INDEX-order `all`. */
@@ -567,20 +568,12 @@ export default function BrowsePanel({
         collapsed ? 'w-9' : 'w-80'
       }`}
     >
-      {/* Collapsed strip: just the expand handle, fading in once narrowed. */}
-      <div
-        className={`absolute inset-0 flex flex-col items-center pt-3 transition-opacity duration-200 ${
-          collapsed ? 'opacity-100 delay-150' : 'pointer-events-none opacity-0'
-        }`}
-      >
-        <button
-          onClick={onToggle}
-          title={t.expandTitle}
-          className="text-stone-500 transition-colors hover:text-stone-800"
-        >
-          ›
-        </button>
-      </div>
+      <CollapsedStrip
+        collapsed={collapsed}
+        side="left"
+        title={t.expandTitle}
+        onExpand={onToggle}
+      />
 
       {/* Full panel — fixed w-80 so it never reflows while the container width
           animates; cross-fades out when collapsed. */}

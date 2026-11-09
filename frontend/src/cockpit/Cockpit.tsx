@@ -72,6 +72,7 @@ import { useEscapeLayer } from '../ui/escapeStack'
 import { modalBackdropProps } from '../ui/modalShell'
 import { enumLabel, getT, useT } from '../i18n'
 import { errorLine } from '../apiErrors'
+import CollapsedStrip from '../ui/CollapsedStrip'
 
 interface Props {
   paper: PaperMeta | null
@@ -314,19 +315,12 @@ function ReadOnlyCockpit({
         collapsed ? 'w-9' : 'w-80'
       }`}
     >
-      <div
-        className={`absolute inset-0 flex flex-col items-center pt-3 transition-opacity duration-200 ${
-          collapsed ? 'opacity-100 delay-150' : 'pointer-events-none opacity-0'
-        }`}
-      >
-        <button
-          onClick={onToggle}
-          title={m.expand}
-          className="text-stone-500 transition-colors hover:text-stone-800"
-        >
-          ‹
-        </button>
-      </div>
+      <CollapsedStrip
+        collapsed={collapsed}
+        side="right"
+        title={m.expand}
+        onExpand={onToggle}
+      />
 
       <aside
         className={`h-full w-80 overflow-auto p-4 transition-opacity duration-200 ${
@@ -923,20 +917,12 @@ function WriteCockpit({
         collapsed ? 'w-9' : 'w-80'
       }`}
     >
-      {/* Collapsed strip: just the expand handle, fading in once narrowed. */}
-      <div
-        className={`absolute inset-0 flex flex-col items-center pt-3 transition-opacity duration-200 ${
-          collapsed ? 'opacity-100 delay-150' : 'pointer-events-none opacity-0'
-        }`}
-      >
-        <button
-          onClick={onToggle}
-          title={m.expand}
-          className="text-stone-500 transition-colors hover:text-stone-800"
-        >
-          ‹
-        </button>
-      </div>
+      <CollapsedStrip
+        collapsed={collapsed}
+        side="right"
+        title={m.expand}
+        onExpand={onToggle}
+      />
 
       {/* Full inspector — fixed w-80 so it never reflows while the container
           width animates; cross-fades out when collapsed. */}
