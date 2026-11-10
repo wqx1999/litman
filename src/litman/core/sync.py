@@ -516,7 +516,9 @@ class SyncState:
     ``last_sync`` is the last successful two-way sync; ``last_sync_result`` is
     how the most recent two-way attempt ended: ``ok``, ``conflicts``,
     ``needs-choice`` or ``failed``. ``last_run`` holds that attempt's details
-    for ``lit sync status`` (:class:`LastRun`).
+    for ``lit sync status`` (:class:`LastRun`). ``set_up`` is when ``lit sync
+    setup`` last ran on this machine: the sync tip counts from it while
+    nothing has synced from here yet (None from a setup an older litman made).
     """
 
     last_push: str | None = None
@@ -524,6 +526,7 @@ class SyncState:
     last_sync: str | None = None
     last_sync_result: str | None = None
     last_run: LastRun | None = None
+    set_up: str | None = None
 
 
 def read_sync_state(vault: Path) -> SyncState:
@@ -553,6 +556,7 @@ def read_sync_state(vault: Path) -> SyncState:
         last_sync=field("last-sync"),
         last_sync_result=field("last-sync-result"),
         last_run=_last_run_from(data.get("last-run")),
+        set_up=field("set-up"),
     )
 
 
@@ -574,10 +578,18 @@ def write_sync_state(vault: Path, state: SyncState) -> None:
     }
     if state.last_run is not None:
         payload["last-run"] = _last_run_to(state.last_run)
+    if state.set_up is not None:
+        payload["set-up"] = state.set_up
     buf = io.StringIO()
     _yaml.dump(payload, buf)
     tmp.write_text(buf.getvalue(), encoding="utf-8")
     replace_file(tmp, path)
+
+
+def stamp_set_up(vault: Path) -> None:
+    """Record that sync was set up on this machine now, preserving the other fields."""
+    state = read_sync_state(vault)
+    write_sync_state(vault, replace(state, set_up=now_iso()))
 
 
 def stamp_push(vault: Path) -> None:

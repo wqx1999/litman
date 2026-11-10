@@ -73,6 +73,7 @@ from litman.core.sync import (
     remote_exists,
     require_one_way,
     sign_in_way_out,
+    stamp_set_up,
     two_way_sync,
     write_sync_to_config,
 )
@@ -628,6 +629,8 @@ def sync_setup_cmd(
         exclude_repos=prior_exclude,
     )
     write_sync_to_config(config_path, payload)
+    # The sync tip counts from here until this machine first syncs.
+    stamp_set_up(vault)
 
     target = f"{remote_name}:{remote_path}"
     console.print(

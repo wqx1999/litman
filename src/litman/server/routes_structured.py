@@ -19,6 +19,7 @@ read" ModifyError).
 from __future__ import annotations
 
 import os
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -56,6 +57,7 @@ from litman.core.vault_registry import (
     apply_vault_use,
     find_by_name,
     load_registry,
+    mark_health_checked,
     remove_vault,
     save_registry,
     suggest_vault_name,
@@ -1140,6 +1142,9 @@ async def post_vault(request: Request) -> dict[str, object]:
         reg = add_vault(reg, name, path)
     except VaultRegistryError as exc:
         raise api_error(400, exc) from exc
+    # As `lit vault add` does: the health-check tip counts from now, not from
+    # a check that never ran, so a library added today stays quiet.
+    reg = mark_health_checked(reg, name, datetime.now(UTC).isoformat())
     save_registry(reg)
 
     entry = find_by_name(reg, name)

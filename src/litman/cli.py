@@ -589,8 +589,12 @@ class LitGroup(click.Group):
 
         * health-check: ``last_health_check_at`` (registry) >
           :data:`HEALTH_CHECK_STALE_DAYS` → "run ``lit health-check``".
+          Registering a library stamps it, so a never-run check counts from
+          then; only an entry from before that stamp has None.
         * sync: ``.litman-sync-state.yaml`` ``last_push`` and ``last_sync``
-          both > :data:`SYNC_STALE_DAYS`, AND only when a remote is configured
+          both > :data:`SYNC_STALE_DAYS` (neither on record: ``set-up``, the
+          time ``lit sync setup`` ran here, in their place), AND only when a
+          remote is configured
           (``lit-config.yaml`` ``sync`` set) → "run ``lit sync push``" when
           this machine has only pushed or pulled
           (:func:`~litman.core.sync.local_sync_mode` ``one-way``), else "run
@@ -697,7 +701,12 @@ class LitGroup(click.Group):
                         _timestamp_is_stale(
                             stamp, now=now, stale_days=SYNC_STALE_DAYS
                         )
-                        for stamp in (state.last_push, state.last_sync)
+                        # Never synced from here: count from the setup.
+                        for stamp in (
+                            (state.last_push, state.last_sync)
+                            if state.last_push or state.last_sync
+                            else (state.set_up,)
+                        )
                     ):
                         mode = local_sync_mode(
                             vault, sync_config.target_url(), state

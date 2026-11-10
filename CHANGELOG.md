@@ -158,6 +158,10 @@ own entry. Read those before you upgrade, whatever the number says.
   litman's Crossref requests is now the project's own. Help texts, examples and
   the template of a new library's `lit-config.yaml` no longer name a person or
   a path on one machine.
+- **No reminders on a library that is new here.** A library added in the GUI
+  got "no `lit health-check` in 14+ days" from its first command, and a computer
+  just set up for sync got "no `lit sync` in 7+ days". Both reminders now count
+  from when the library was added or sync was set up.
 
 ## 1.3.11 — 2026-11-02
 
