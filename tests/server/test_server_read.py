@@ -848,7 +848,7 @@ def test_get_paper_still_carries_every_schemaless_extra(
         "topics: []\n"
         "journal: Nature\n"
         "created-at: '2026-01-01T00:00:00+02:00'\n"
-        "relevance-pepforge: Direct baseline\n"
+        "relevance-seahorse: Direct baseline\n"
         "funding: ERC-2024\n"
         "code-clones: []\n",
     )
@@ -856,7 +856,7 @@ def test_get_paper_still_carries_every_schemaless_extra(
     meta = _client(vault).get("/api/paper/2024_Extra").json()
 
     assert meta["journal"] == "Nature"
-    assert meta["relevance-pepforge"] == "Direct baseline"
+    assert meta["relevance-seahorse"] == "Direct baseline"
     assert meta["funding"] == "ERC-2024"
     assert meta["created-at"].startswith("2026-01-01")
     # And the derived hints the cockpit needs.

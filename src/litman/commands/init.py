@@ -153,8 +153,9 @@ def init_cmd(
     registration.
 
     The vault is deliberately NOT a git repository: version history is the
-    job of cloud sync (lit sync push/pull), and multi-file atomicity is
-    provided by an internal staging directory plus os.replace, not git.
+    job of cloud sync (lit sync keeps each file it replaces or deletes in a
+    backup), and multi-file atomicity is provided by an internal staging
+    directory plus os.replace, not git.
 
     PARENT_DIR defaults to the current working directory.
     """

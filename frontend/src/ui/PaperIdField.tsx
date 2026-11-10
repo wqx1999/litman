@@ -1,5 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import type { IdSegmentName, IdSegments } from '../api'
+import { useT } from '../i18n'
+import { rich } from '../i18n/rich'
 
 /** The Paper ID line on the add dialog, shared by both ways in.
  *
@@ -58,6 +60,7 @@ export default function PaperIdField({
 
   const inputRef = useRef<HTMLInputElement>(null)
   const [takeFocus, setTakeFocus] = useState(false)
+  const m = useT().cockpit.paperIdField
 
   const settled = proposedId !== null && !free
   const inParts = !settled && !free && segments !== null
@@ -121,34 +124,37 @@ export default function PaperIdField({
   if (settled) {
     return (
       <div className="mt-2 text-[11px] text-stone-400">
-        Saved as{' '}
-        <button
-          type="button"
-          onClick={() => {
-            onOverride(proposedId)
-            setFree(true)
-            setTakeFocus(true)
-          }}
-          disabled={disabled}
-          title="Click to choose the id yourself"
-          className="rounded font-mono text-stone-500 underline decoration-stone-300 decoration-dotted underline-offset-2 transition duration-200 ease-fluid hover:text-accent-600 hover:decoration-accent-500 disabled:opacity-40"
-        >
-          {proposedId}
-        </button>
+        {rich(m.savedAs, {
+          id: (
+            <button
+              type="button"
+              onClick={() => {
+                onOverride(proposedId)
+                setFree(true)
+                setTakeFocus(true)
+              }}
+              disabled={disabled}
+              title={m.chooseTitle}
+              className="rounded font-mono text-stone-500 underline decoration-stone-300 decoration-dotted underline-offset-2 transition duration-200 ease-fluid hover:text-accent-600 hover:decoration-accent-500 disabled:opacity-40"
+            >
+              {proposedId}
+            </button>
+          ),
+        })}
       </div>
     )
   }
 
   const label = (
     <span className="mb-0.5 block text-[11px] font-semibold uppercase tracking-wider text-stone-600">
-      Paper ID {proposedId === null && <span className="text-red-500">*</span>}
+      {m.label} {proposedId === null && <span className="text-red-500">*</span>}
       {/* The charset sits on the label, not on the hint line below, because
           that line is spoken for whenever `error` is set — which is exactly
           when a part is missing and the person has never been told what it
           accepts. Written as a character range rather than "letters" so it
           cannot be read as including 汉字, the one case that lands here. */}
       <span className="ml-2 font-normal normal-case tracking-normal text-stone-400">
-        A-Z, 0-9, - and _
+        {m.charset}
       </span>
     </span>
   )
@@ -168,7 +174,7 @@ export default function PaperIdField({
           spellCheck={false}
           placeholder={mine ? placeholder : ''}
           disabled={disabled}
-          aria-label={`Paper ID ${name}`}
+          aria-label={m.partAria[name]}
           className={`${width} min-w-0 rounded-md border px-2 py-1 font-mono text-xs focus:outline-none disabled:opacity-50 ${
             mine
               ? 'border-stone-300 bg-white text-stone-800 placeholder:font-sans placeholder:text-stone-400 focus:border-accent-500'
@@ -188,10 +194,10 @@ export default function PaperIdField({
           <span className="font-mono text-xs text-stone-400">_</span>
           {box('family', 'Zhang', 'w-24')}
           <span className="font-mono text-xs text-stone-400">_</span>
-          {box('keyword', 'Keyword', 'flex-1')}
+          {box('keyword', m.keywordPlaceholder, 'flex-1')}
         </div>
         <p className="mt-1 text-[11px] leading-4 text-stone-400">
-          {error ?? 'Permanent — `lit rename` changes it later.'}
+          {error ?? m.permanent}
         </p>
       </div>
     )
@@ -209,13 +215,13 @@ export default function PaperIdField({
           onOverride(e.target.value)
         }}
         spellCheck={false}
-        placeholder="2018_Zhang_Keyword"
+        placeholder={m.example}
         disabled={disabled}
-        aria-label="Paper ID"
+        aria-label={m.label}
         className="w-full rounded-md border border-stone-300 bg-white px-2 py-1 font-mono text-xs text-stone-800 placeholder:font-sans placeholder:text-stone-400 focus:border-accent-500 focus:outline-none disabled:opacity-50"
       />
       <p className="mt-1 text-[11px] leading-4 text-stone-400">
-        {error ?? 'Permanent — `lit rename` changes it later.'}
+        {error ?? m.permanent}
       </p>
     </div>
   )

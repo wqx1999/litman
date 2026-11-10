@@ -332,26 +332,26 @@ def test_project_rm_drops_relevance_field(
     runner = CliRunner()
     runner.invoke(
         cli,
-        ["project", "add", "pepforge", "--path", str(proj_dir),
+        ["project", "add", "seahorse", "--path", str(proj_dir),
          "--library", str(vault)],
     )
     _write_paper(
-        vault, "2024_A", projects=["pepforge"],
-        **{"relevance-pepforge": "core method paper"},
+        vault, "2024_A", projects=["seahorse"],
+        **{"relevance-seahorse": "core method paper"},
     )
     # Sanity: the orphan check would fire if rm stripped projects but kept
     # relevance — confirm the field is present pre-rm.
-    assert _meta(vault, "2024_A").get("relevance-pepforge") == "core method paper"
+    assert _meta(vault, "2024_A").get("relevance-seahorse") == "core method paper"
 
     result = runner.invoke(
         cli,
-        ["project", "rm", "pepforge", "--yes", "--library", str(vault)],
+        ["project", "rm", "seahorse", "--yes", "--library", str(vault)],
     )
     assert result.exit_code == 0, result.output
 
     meta = _meta(vault, "2024_A")
     assert meta["projects"] == []
-    assert "relevance-pepforge" not in meta
+    assert "relevance-seahorse" not in meta
     assert _no_relevance_orphans(vault)
 
 
@@ -362,24 +362,24 @@ def test_project_rename_remaps_relevance_field(
     runner = CliRunner()
     runner.invoke(
         cli,
-        ["project", "add", "pepforge", "--path", str(proj_dir),
+        ["project", "add", "seahorse", "--path", str(proj_dir),
          "--library", str(vault)],
     )
     _write_paper(
-        vault, "2024_A", projects=["pepforge"],
-        **{"relevance-pepforge": "core method paper"},
+        vault, "2024_A", projects=["seahorse"],
+        **{"relevance-seahorse": "core method paper"},
     )
 
     result = runner.invoke(
         cli,
-        ["project", "rename", "pepforge", "pepcodec", "--library", str(vault)],
+        ["project", "rename", "seahorse", "bluebell", "--library", str(vault)],
     )
     assert result.exit_code == 0, result.output
 
     meta = _meta(vault, "2024_A")
-    assert meta["projects"] == ["pepcodec"]
-    assert "relevance-pepforge" not in meta
-    assert meta["relevance-pepcodec"] == "core method paper"
+    assert meta["projects"] == ["bluebell"]
+    assert "relevance-seahorse" not in meta
+    assert meta["relevance-bluebell"] == "core method paper"
     assert _no_relevance_orphans(vault)
 
 
@@ -390,25 +390,25 @@ def test_project_rename_remaps_stray_relevance_without_membership(
     runner = CliRunner()
     runner.invoke(
         cli,
-        ["project", "add", "pepforge", "--path", str(proj_dir),
+        ["project", "add", "seahorse", "--path", str(proj_dir),
          "--library", str(vault)],
     )
     # Paper carries the relevance annotation but is NOT a member (hand-edit
     # orphan). Rename must still carry the key over so it does not strand.
     _write_paper(
         vault, "2024_A", projects=[],
-        **{"relevance-pepforge": "leftover note"},
+        **{"relevance-seahorse": "leftover note"},
     )
 
     result = runner.invoke(
         cli,
-        ["project", "rename", "pepforge", "pepcodec", "--library", str(vault)],
+        ["project", "rename", "seahorse", "bluebell", "--library", str(vault)],
     )
     assert result.exit_code == 0, result.output
 
     meta = _meta(vault, "2024_A")
-    assert "relevance-pepforge" not in meta
-    assert meta["relevance-pepcodec"] == "leftover note"
+    assert "relevance-seahorse" not in meta
+    assert meta["relevance-bluebell"] == "leftover note"
 
 
 def test_project_rm_drops_stray_relevance_without_membership(
@@ -424,23 +424,23 @@ def test_project_rm_drops_stray_relevance_without_membership(
     runner = CliRunner()
     runner.invoke(
         cli,
-        ["project", "add", "pepforge", "--path", str(proj_dir),
+        ["project", "add", "seahorse", "--path", str(proj_dir),
          "--library", str(vault)],
     )
     # Orphan: carries relevance but is NOT a member.
     _write_paper(
         vault, "2024_A", projects=[],
-        **{"relevance-pepforge": "leftover note"},
+        **{"relevance-seahorse": "leftover note"},
     )
 
     result = runner.invoke(
         cli,
-        ["project", "rm", "pepforge", "--yes", "--library", str(vault)],
+        ["project", "rm", "seahorse", "--yes", "--library", str(vault)],
     )
     assert result.exit_code == 0, result.output
 
     meta = _meta(vault, "2024_A")
-    assert "relevance-pepforge" not in meta
+    assert "relevance-seahorse" not in meta
     assert _no_relevance_orphans(vault)
 
 
@@ -467,7 +467,7 @@ def test_link_rebuilds_by_project_view(vault: Path, proj_dir: Path) -> None:
     runner = CliRunner()
     runner.invoke(
         cli,
-        ["project", "add", "pepforge", "--path", str(proj_dir),
+        ["project", "add", "seahorse", "--path", str(proj_dir),
          "--library", str(vault)],
     )
     _write_paper(vault, "2024_A", projects=[])
@@ -475,11 +475,11 @@ def test_link_rebuilds_by_project_view(vault: Path, proj_dir: Path) -> None:
 
     result = runner.invoke(
         cli,
-        ["link", "2024_A", "--project", "pepforge", "--library", str(vault)],
+        ["link", "2024_A", "--project", "seahorse", "--library", str(vault)],
     )
     assert result.exit_code == 0, result.output
 
-    assert _by_project_ids(vault, "pepforge") == {"2024_A"}
+    assert _by_project_ids(vault, "seahorse") == {"2024_A"}
     assert _no_views_drift(vault)
 
 
@@ -488,24 +488,24 @@ def test_unlink_clears_by_project_view(vault: Path, proj_dir: Path) -> None:
     runner = CliRunner()
     runner.invoke(
         cli,
-        ["project", "add", "pepforge", "--path", str(proj_dir),
+        ["project", "add", "seahorse", "--path", str(proj_dir),
          "--library", str(vault)],
     )
     _write_paper(vault, "2024_A", projects=[])
     correctors.reconcile_derived(vault, project_refs=False)
     runner.invoke(
         cli,
-        ["link", "2024_A", "--project", "pepforge", "--library", str(vault)],
+        ["link", "2024_A", "--project", "seahorse", "--library", str(vault)],
     )
-    assert _by_project_ids(vault, "pepforge") == {"2024_A"}
+    assert _by_project_ids(vault, "seahorse") == {"2024_A"}
 
     result = runner.invoke(
         cli,
-        ["unlink", "2024_A", "--project", "pepforge", "--library", str(vault)],
+        ["unlink", "2024_A", "--project", "seahorse", "--library", str(vault)],
     )
     assert result.exit_code == 0, result.output
 
-    assert _by_project_ids(vault, "pepforge") == set()
+    assert _by_project_ids(vault, "seahorse") == set()
     assert _no_views_drift(vault)
 
 
@@ -554,7 +554,7 @@ def test_modify_add_project_tag_builds_project_side(
     runner = CliRunner()
     runner.invoke(
         cli,
-        ["project", "add", "pepforge", "--path", str(proj_dir),
+        ["project", "add", "seahorse", "--path", str(proj_dir),
          "--library", str(vault)],
     )
     _write_paper(vault, "2024_A", projects=[])
@@ -562,7 +562,7 @@ def test_modify_add_project_tag_builds_project_side(
 
     result = runner.invoke(
         cli,
-        ["modify", "2024_A", "--add-tag", "projects=pepforge",
+        ["modify", "2024_A", "--add-tag", "projects=seahorse",
          "--library", str(vault)],
     )
     assert result.exit_code == 0, result.output
@@ -579,19 +579,19 @@ def test_modify_rm_project_tag_clears_project_side(
     runner = CliRunner()
     runner.invoke(
         cli,
-        ["project", "add", "pepforge", "--path", str(proj_dir),
+        ["project", "add", "seahorse", "--path", str(proj_dir),
          "--library", str(vault)],
     )
     _write_paper(vault, "2024_A", projects=[])
     runner.invoke(
         cli,
-        ["link", "2024_A", "--project", "pepforge", "--library", str(vault)],
+        ["link", "2024_A", "--project", "seahorse", "--library", str(vault)],
     )
     assert is_portable_link(_reflib(proj_dir) / "2024_A")
 
     result = runner.invoke(
         cli,
-        ["modify", "2024_A", "--rm-tag", "projects=pepforge",
+        ["modify", "2024_A", "--rm-tag", "projects=seahorse",
          "--library", str(vault)],
     )
     assert result.exit_code == 0, result.output
@@ -606,13 +606,13 @@ def test_rename_project_linked_paper_rebuilds_project_side(
     runner = CliRunner()
     runner.invoke(
         cli,
-        ["project", "add", "pepforge", "--path", str(proj_dir),
+        ["project", "add", "seahorse", "--path", str(proj_dir),
          "--library", str(vault)],
     )
     _write_paper(vault, "2024_A", projects=[])
     runner.invoke(
         cli,
-        ["link", "2024_A", "--project", "pepforge", "--library", str(vault)],
+        ["link", "2024_A", "--project", "seahorse", "--library", str(vault)],
     )
     assert is_portable_link(_reflib(proj_dir) / "2024_A")
 
@@ -636,13 +636,13 @@ def test_refresh_views_rebuilds_litman_reflib_symlinks(
     runner = CliRunner()
     runner.invoke(
         cli,
-        ["project", "add", "pepforge", "--path", str(proj_dir),
+        ["project", "add", "seahorse", "--path", str(proj_dir),
          "--library", str(vault)],
     )
     _write_paper(vault, "2024_A", projects=[])
     runner.invoke(
         cli,
-        ["link", "2024_A", "--project", "pepforge", "--library", str(vault)],
+        ["link", "2024_A", "--project", "seahorse", "--library", str(vault)],
     )
     link = _reflib(proj_dir) / "2024_A"
     assert is_portable_link(link)

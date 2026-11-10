@@ -256,12 +256,14 @@ def _isolate_machine_config_roots(
     )
     # config and cache must stay DISTINCT: the browser profile lives under the
     # cache dir precisely so it is not inside the config dir, and a test pins
-    # that separation.
+    # that separation. The data dir holds two-way sync's rclone state and its
+    # backups.
     for mod, attr, sub in (
         ("litman.core.vault_registry", "user_config_dir", ".config"),
         ("litman.core.agent_prefs", "user_config_dir", ".config"),
         ("litman.core.ui_state", "user_config_dir", ".config"),
         ("litman.commands.gui", "user_cache_dir", ".cache"),
+        ("litman.core.sync", "user_data_dir", ".local/share"),
     ):
         monkeypatch.setattr(
             f"{mod}.{attr}",

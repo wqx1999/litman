@@ -425,7 +425,7 @@ def test_remove_link_if_present_removes_junction_stand_in(
     reason="real junctions need a Windows kernel",
 )
 class TestRealJunctionsOnWindows:
-    """Live verification on a real Windows host (wangq's manual round covers
+    """Live verification on a real Windows host (the manual Windows round covers
     the same ground via the CLI; any on-Windows pytest run picks these up).
     They pin the two load-bearing stdlib facts the Linux suite can only
     assert through the seam."""
@@ -627,7 +627,7 @@ def test_copytree_failure_list_collapses_to_one_sentence(
 def test_os_error_reason_drops_the_os_own_full_stop() -> None:
     """A localized Windows strerror ends in its own punctuation.
 
-    wangq saw "进程无法访问。." on Chinese Windows 2026-09-09: the OS sentence
+    Chinese Windows showed "进程无法访问。.": the OS sentence
     already closed, and the caller's own "." closed it again. Punctuation is
     the caller's; this half hands back the words.
     """

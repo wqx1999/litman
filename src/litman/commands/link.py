@@ -53,7 +53,7 @@ console = Console()
     "--project",
     "project",
     default=None,
-    help="Project name (must be registered in lit-config.yaml's projects:).",
+    help="Project name (one `lit project list` shows).",
 )
 @click.option(
     "--relevance",
@@ -116,9 +116,9 @@ def link_cmd(
     \b
         lit link --rebuild-all
 
-    The project must be registered in lit-config.yaml's projects map BEFORE
-    linking, and its directory must exist on disk (lit-config.yaml stores
-    only the path, not the directory itself).
+    The project must be registered (lit project add), and a folder registered
+    for it on this machine must exist. A project with no folder on this
+    machine links too: only the paper's tag changes here.
     """
     if misplaced_project is not None:
         raise reject_second_positional(
@@ -267,16 +267,24 @@ def link_cmd(
     console.print(
         Panel.fit("\n".join(body_lines), title="lit link", border_style="green")
     )
-    print_unwrapped(
-        console,
-        path_lines(
-            [
-                ("Project dir:", result["project_dir"]),
-                ("Paper link:", result["paper_link"]),
-                ("REFERENCES.md:", result["references_md"]),
-            ]
-        ),
-    )
+    if result.get("no_folder"):
+        console.print(
+            f"[dim]note:[/] project {escape(project)} has no folder on this machine, "
+            "so only the paper's record changed. "
+            f"`lit project set-path {escape(shell_arg(project))} \"<path>\"` gives it one here.",
+            soft_wrap=True,
+        )
+    else:
+        print_unwrapped(
+            console,
+            path_lines(
+                [
+                    ("Project dir:", result["project_dir"]),
+                    ("Paper link:", result["paper_link"]),
+                    ("REFERENCES.md:", result["references_md"]),
+                ]
+            ),
+        )
     # Only the move-aside: a verbatim copy is deleted silently on purpose
     # (its original is in the vault), but a preserved folder is the only copy
     # of whatever the user put in it.
@@ -364,11 +372,13 @@ def unlink_cmd(
         purge_relevance=not keep_relevance,
     )
 
+    no_folder = bool(result.get("no_folder"))
     body_lines = [
         f"[bold green]Unlinked:[/] {escape(paper_id)} from "
         f"project {escape(project)}",
-        f"[dim]Project dir:[/] {result['project_dir']}",
     ]
+    if not no_folder:
+        body_lines.append(f"[dim]Project dir:[/] {result['project_dir']}")
     if result["metadata_changed"]:
         if result["was_in_projects"]:
             body_lines.append(
@@ -382,14 +392,15 @@ def unlink_cmd(
     else:
         body_lines.append("[dim]Metadata:[/] unchanged (was not linked)")
     removed = result["paper_link_removed"]
-    body_lines.append(
-        "[dim]Paper link:[/] "
-        + (
-            "removed" if removed
-            else "absent (already)" if removed is False
-            else "[yellow]not removed[/]"
+    if not no_folder:
+        body_lines.append(
+            "[dim]Paper link:[/] "
+            + (
+                "removed" if removed
+                else "absent (already)" if removed is False
+                else "[yellow]not removed[/]"
+            )
         )
-    )
     if result["code_links_removed"]:
         body_lines.append(
             f"[dim]Code links removed:[/] "
@@ -401,10 +412,17 @@ def unlink_cmd(
             for r, users in result["code_links_kept"]
         )
         body_lines.append(f"[dim]Code links kept:[/] {kept}")
-    body_lines.append(f"[dim]REFERENCES.md:[/] {result['references_md']}")
+    if not no_folder:
+        body_lines.append(f"[dim]REFERENCES.md:[/] {result['references_md']}")
     console.print(
         Panel.fit("\n".join(body_lines), title="lit unlink", border_style="green")
     )
+    if no_folder:
+        console.print(
+            f"[dim]note:[/] project {escape(project)} has no folder on this machine, "
+            "so only the paper's record changed.",
+            soft_wrap=True,
+        )
     if result["link_errors"]:
         console.print(
             project_folder_not_updated(result["link_errors"][0]), soft_wrap=True

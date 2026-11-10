@@ -41,7 +41,7 @@ from typing import TYPE_CHECKING, cast
 from urllib.parse import quote
 
 from litman.core import viewer
-from litman.exceptions import LitmanError
+from litman.exceptions import LitmanError, coded
 
 if TYPE_CHECKING:
     from litman.core.agents import AgentSpec
@@ -366,7 +366,9 @@ def open_app(spec: AgentSpec, vault: Path) -> None:
         AppNoDisplay: Linux without ``DISPLAY`` / ``WAYLAND_DISPLAY``.
     """
     if not app_installed(spec):
-        raise AppNotFound(not_installed_message(spec))
+        raise coded(
+            AppNotFound(not_installed_message(spec)), "agent-not-installed", agent=spec.display
+        )
     platform = _platform()
     try:
         if platform == "win32":
@@ -387,4 +389,8 @@ def open_app(spec: AgentSpec, vault: Path) -> None:
             )
         _spawn(["xdg-open", workspace_url(spec, vault)])
     except OSError as exc:
-        raise AppNotFound(f"Could not open {spec.display}: {exc}") from exc
+        raise coded(
+            AppNotFound(f"Could not open {spec.display}: {exc}"),
+            "agent-open-failed",
+            agent=spec.display,
+        ) from exc

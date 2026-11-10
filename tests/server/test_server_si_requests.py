@@ -123,7 +123,7 @@ def test_snapshot_shape(table: SiRequestTable, libs: tuple[Path, Path], clock: F
     snap = _open(table, one)
     assert set(snap) == {
         "id", "paperId", "title", "link", "status", "vaultServed",
-        "rows", "added", "warnings",
+        "rows", "added", "warnings", "warningCodes",
     }
     assert len(snap["id"]) == 32
     assert (snap["paperId"], snap["status"], snap["vaultServed"]) == (PAPER, PENDING, True)
@@ -131,6 +131,7 @@ def test_snapshot_shape(table: SiRequestTable, libs: tuple[Path, Path], clock: F
     assert row == {
         "id": "b" * 32, "name": f"{'b' * 32}.pdf", "bytes": 3,
         "verdict": "unverified", "check": None, "reason": "why", "otherId": None,
+        "reasonCode": None, "reasonParams": {},
     }
     assert snap["rows"] == [row]
     assert table.snapshot(snap["id"], Anchor.of(two))["vaultServed"] is False

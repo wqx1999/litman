@@ -13,7 +13,13 @@ from typing import TYPE_CHECKING, Any
 from ruamel.yaml.error import YAMLError
 
 from litman.core.checks._base import TRASH_SIZE_WARN, Issue, _yaml
-from litman.core.code import CODES_DIRNAME, REPO_DIRNAME, REPO_META_FILENAME
+from litman.core.code import (
+    CODES_DIRNAME,
+    REPO_DIRNAME,
+    REPO_META_FILENAME,
+    code_folder_kind,
+    left_behind_message,
+)
 from litman.core.shell import shell_arg
 from litman.core.trash import (
     TRASH_DIRNAME,
@@ -434,13 +440,11 @@ def check_pdf_viewer(
                 # Desktop: actionable gap — installing xdg-utils fixes it.
                 severity="info" if is_headless() else "warning",
                 paper_id=None,
-                message=(
-                    "no platform PDF viewer detected — "
-                    "`lit open` will exit 2 and print the path only"
-                ),
+                message="no platform PDF viewer detected",
                 hint=(
                     "install xdg-utils (Linux) or wslview (WSL), "
-                    "or set default_pdf_viewer in lit-config.yaml"
+                    "or set default_pdf_viewer in lit-config.yaml; until "
+                    "then `lit open` exits 2 and prints the path only"
                 ),
             )
         )
@@ -452,13 +456,13 @@ def check_pdf_viewer(
                 paper_id=None,
                 message=(
                     "xdg-open is installed but no graphical display is "
-                    "reachable in this session — `lit open` will exit 2 "
-                    "and print the path only"
+                    "reachable in this session"
                 ),
                 hint=(
                     "set default_pdf_viewer in lit-config.yaml to a viewer "
-                    "usable without an X display, or run lit open from a "
-                    "session with DISPLAY/WAYLAND_DISPLAY set"
+                    "usable without an X display, or run `lit open` from a "
+                    "session with DISPLAY/WAYLAND_DISPLAY set; until then it "
+                    "exits 2 and prints the path only"
                 ),
             )
         )
@@ -923,6 +927,14 @@ def check_code_clone_integrity(
       but has no ``repo-meta.yaml``. Whatever atomic clone+link op
       created the directory failed to land the metadata file, so the repo
       is unrecoverable and unreferenceable.
+    * **left-behind checkout** (``warning``) — ``codes/<name>/`` holds only a
+      ``repo/`` checkout: the repo was removed from the library (two-way sync
+      brings a removal made on another machine) and the checkout stayed.
+      Nothing is lost, and only the user can say whether to keep it.
+
+    An empty ``codes/<name>/`` is no issue: two-way sync brings one to every
+    machine while another still keeps a left-behind checkout in it, and takes
+    it away once that one is dealt with.
 
     Defensive: silently skips when ``codes/`` does not exist (vault may
     legitimately have no clones) and skips non-directory children of
@@ -1006,6 +1018,21 @@ def check_code_clone_integrity(
 
     # Broken clone dirs: codes/<name>/ without repo-meta.yaml. Vault-level.
     for repo_name in sorted(disk_dirs_no_meta):
+        kind = code_folder_kind(codes_dir / repo_name)
+        if kind == "empty":
+            continue
+        if kind == "left-behind":
+            what, way_out = left_behind_message(repo_name)
+            out.append(
+                Issue(
+                    category="code_clone_integrity",
+                    severity="warning",
+                    paper_id=None,
+                    message=what,
+                    hint=way_out,
+                )
+            )
+            continue
         out.append(
             Issue(
                 category="code_clone_integrity",

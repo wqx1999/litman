@@ -239,7 +239,7 @@ def test_setup_first_vault_custom_name(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """First-vault branch: user can rename the vault from the default
-    ``literature_vault`` to something domain-specific (e.g. ``pepforge_lib``)
+    ``literature_vault`` to something domain-specific (e.g. ``seahorse_lib``)
     by typing at the name prompt instead of pressing Enter."""
     _force_tty(monkeypatch)
     _no_rclone(monkeypatch)
@@ -251,14 +251,14 @@ def test_setup_first_vault_custom_name(
     # completion no / agent choice: Enter / skill skip / vault yes /
     # typed name / parent.
     result = runner.invoke(
-        cli, ["setup"], input=f"n\n\nn\ny\npepforge_lib\n{parent}\n"
+        cli, ["setup"], input=f"n\n\nn\ny\nseahorse_lib\n{parent}\n"
     )
     assert result.exit_code == 0, result.output
 
     reg = load_registry()
     assert len(reg.vaults) == 1
-    assert reg.vaults[0].name == "pepforge_lib"
-    assert (parent / "pepforge_lib" / "lit-config.yaml").is_file()
+    assert reg.vaults[0].name == "seahorse_lib"
+    assert (parent / "seahorse_lib" / "lit-config.yaml").is_file()
     assert not (parent / "literature_vault").exists()
 
 

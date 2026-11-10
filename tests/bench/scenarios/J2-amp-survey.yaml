@@ -8,7 +8,7 @@ needs_network: true
 invariants: [2, 7, 10, 13]
 routing_label: [lit-library, lit-reading]
 seed: seed-empty
-skip_reason: "needs_network — 综述长链按 build 契约归入 needs_network 跳过集（与 E1/J1/J1-corrupt 同列）。订正那个假前提：2026-07-16 于计算节点 node460 实测 github.com HTTP 200、`git clone --depth 1` 成功、api.anthropic.com 可达 —— “沙箱无网”本就不成立。真实跳过原因是**范围**：本轮只做尺子对账，不解封，留下一批。（解封时注意：#9/#10 的 golden 带真 DOI，而 lit-library SKILL.md 规定“读到 DOI 就中止 LLM 抽取路径、改走 `lit add <pdf> --doi <doi>`”→ CrossRef 实网调用，故第 1 步对三篇里的两篇确实要联网；另两条与网无关的阻塞：分步喂的多轮链与单轮冷启动方法学不合、断言多为 prose〔checker 标 manual〕。)"
+skip_reason: "needs_network — 综述长链按 build 契约归入 needs_network 跳过集（与 E1/J1/J1-corrupt 同列）。订正那个假前提：2026-07-16 于计算节点实测 github.com HTTP 200、`git clone --depth 1` 成功、api.anthropic.com 可达 —— “沙箱无网”本就不成立。真实跳过原因是**范围**：本轮只做尺子对账，不解封，留下一批。（解封时注意：#9/#10 的 golden 带真 DOI，而 lit-library SKILL.md 规定“读到 DOI 就中止 LLM 抽取路径、改走 `lit add <pdf> --doi <doi>`”→ CrossRef 实网调用，故第 1 步对三篇里的两篇确实要联网；另两条与网无关的阻塞：分步喂的多轮链与单轮冷启动方法学不合、断言多为 prose〔checker 标 manual〕。)"
 precondition: |
   隔离库已 init。
 intent: |

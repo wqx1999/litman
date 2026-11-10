@@ -27,13 +27,16 @@ from litman.commands._options import format_option, library_option, vault_option
 from litman.commands._path_lines import path_lines, print_unwrapped
 from litman.commands._usage import reject_second_positional
 from litman.core.code import (
+    CLONE_URL_PREFIXES,
     CODES_DIRNAME,
+    DEFAULT_CLONE_DEPTH,
     REPO_DIRNAME,
     REPO_META_FILENAME,
     bind_is_decided,
     bind_paper_to_repo,
     bump_repo_updated_at,
     clone_repo,
+    code_folder_kind,
     delete_repo,
     derive_repo_name,
     git_pull,
@@ -41,7 +44,10 @@ from litman.core.code import (
     is_valid_repo_name,
     list_repos,
     make_repo_meta,
+    read_head,
     read_repo_meta,
+    record_repo_heads,
+    remove_empty_subfolders,
     restore_missing_repos,
     unbind_paper_from_repo,
     unbind_repo_from_all_papers,
@@ -56,18 +62,12 @@ from litman.core.paper_lookup import complete_paper_id, resolve_paper_input
 from litman.core.project_link import code_links_not_refreshed
 from litman.core.shell import shell_arg
 from litman.core.undecodable import printable
-from litman.exceptions import CodeError, PaperNotFoundError
+from litman.exceptions import CodeError, LitmanError, PaperNotFoundError
 
 console = Console()
 
 
-_URL_PREFIXES: tuple[str, ...] = (
-    "http://",
-    "https://",
-    "git@",
-    "ssh://",
-    "file://",
-)
+_URL_PREFIXES: tuple[str, ...] = CLONE_URL_PREFIXES
 
 
 def _is_url(arg: str) -> bool:
@@ -255,7 +255,10 @@ def code_add_cmd(
         )
 
     repo_root = vault / CODES_DIRNAME / repo_name
-    if repo_root.exists():
+    # An empty one is what two-way sync leaves on this machine while another
+    # still holds the checkout of a repo of that name removed from the library.
+    reuse_empty = repo_root.is_dir() and code_folder_kind(repo_root) == "empty"
+    if repo_root.exists() and not reuse_empty:
         raise CodeError(
             f"Repo folder already exists: {repo_root}. "
             "Pick a different --name or remove the existing folder first."
@@ -274,10 +277,22 @@ def code_add_cmd(
             )
 
     try:
-        repo_root.mkdir(parents=True)
+        if reuse_empty:
+            remove_empty_subfolders(repo_root)
+        else:
+            repo_root.mkdir(parents=True)
         if use_url:
-            clone_repo(clone_url, repo_root / REPO_DIRNAME, depth=cast(int, depth))
-            meta = make_repo_meta(name=repo_name, upstream=clone_url)
+            clone_repo(
+                clone_url,
+                repo_root / REPO_DIRNAME,
+                depth=cast(int, depth),
+                progress=console.is_terminal,
+            )
+            meta = make_repo_meta(
+                name=repo_name,
+                upstream=clone_url,
+                head=read_head(repo_root / REPO_DIRNAME),
+            )
         else:
             assert src_path is not None  # mypy/pyright narrowing
             meta = import_local_repo(src_path, repo_root / REPO_DIRNAME)
@@ -655,7 +670,9 @@ def code_update_cmd(
     """Run git pull --ff-only inside codes/<repo-name>/repo/.
 
     With --unshallow, first promote a shallow clone to full history.
-    Bumps the repo's updated-at audit timestamp if anything changed.
+    Records the commit and branch it is on in repo-meta.yaml, which two-way
+    lit sync brings your other machines to, and bumps the repo's updated-at
+    audit timestamp if anything changed.
     """
     vault = find_vault(resolve_library_or_vault(library, vault_name))
     repo_root = vault / CODES_DIRNAME / repo_name
@@ -665,8 +682,22 @@ def code_update_cmd(
             "Run `lit code list` to see available repos."
         )
 
-    status = git_pull(repo_root / REPO_DIRNAME, unshallow=unshallow)
-    if status["changed"] or status["unshallowed"]:
+    try:
+        depth = load_config(vault).default_clone_depth
+    except (LitmanError, OSError):
+        depth = DEFAULT_CLONE_DEPTH
+    status = git_pull(
+        repo_root / REPO_DIRNAME,
+        unshallow=unshallow,
+        depth=depth,
+        progress=console.is_terminal,
+    )
+    recorded = (
+        record_repo_heads(vault, {repo_name: status["head"]}, op_id=f"code-update-{repo_name}")
+        if status["head"] is not None
+        else []
+    )
+    if (status["changed"] or status["unshallowed"]) and not recorded:
         bump_repo_updated_at(vault, repo_name)
 
     if status["changed"]:
@@ -843,7 +874,9 @@ def code_restore_all_cmd(
     vault = find_vault(resolve_library_or_vault(library, vault_name))
     if depth is None:
         depth = load_config(vault).default_clone_depth
-    report = restore_missing_repos(vault, depth=depth, dry_run=dry_run)
+    report = restore_missing_repos(
+        vault, depth=depth, dry_run=dry_run, progress=console.is_terminal
+    )
 
     if not report.items and not report.orphan_refs:
         console.print(

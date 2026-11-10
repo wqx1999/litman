@@ -20,7 +20,7 @@ import pytest
 
 import litman
 from litman.core import replace as replace_mod
-from litman.core.replace import rename_path, replace_file
+from litman.core.replace import remove_file, rename_path, replace_file
 
 _ROOT = Path(litman.__file__).parent
 # Where os.replace and os.rename may be called: nothing else may go round the wait.
@@ -381,3 +381,55 @@ def test_the_move_scan_tells_them_apart(source: str, found: int) -> None:
 )
 def test_the_scan_tells_them_apart(source: str, found: int) -> None:
     assert len(_bare_replaces(source)) == found
+
+
+@pytest.mark.parametrize(
+    "winerror", [5, 32], ids=["access-denied", "sharing-violation"]
+)
+def test_a_file_held_for_a_moment_is_removed_in_the_end(
+    monkeypatch: pytest.MonkeyPatch, clock: _Clock, tmp_path: Path, winerror: int
+) -> None:
+    _on(monkeypatch, "win32")
+    target = tmp_path / "listing.lst"
+    target.write_text("x", encoding="utf-8")
+    real = os.unlink
+    calls: list[Any] = []
+
+    def unlink(path: Any, *args: Any, **kwargs: Any) -> None:
+        calls.append(path)
+        if len(calls) <= 2:
+            raise _held(winerror)
+        real(path, *args, **kwargs)
+
+    monkeypatch.setattr(replace_mod.os, "unlink", unlink)
+
+    remove_file(target)
+
+    assert len(calls) == 3
+    assert not target.exists()
+    assert clock.sleeps == [0.01, 0.02]
+
+
+def test_a_removal_is_not_retried_off_windows(
+    monkeypatch: pytest.MonkeyPatch, clock: _Clock, tmp_path: Path
+) -> None:
+    _on(monkeypatch, "linux")
+    calls: list[Any] = []
+
+    def unlink(path: Any, *args: Any, **kwargs: Any) -> None:
+        calls.append(path)
+        raise _held(32)
+
+    monkeypatch.setattr(replace_mod.os, "unlink", unlink)
+
+    with pytest.raises(PermissionError):
+        remove_file(tmp_path / "listing.lst")
+
+    assert len(calls) == 1
+    assert clock.sleeps == []
+
+
+def test_a_file_already_gone_is_fine(tmp_path: Path) -> None:
+    remove_file(tmp_path / "never-there.lst")
+
+    assert not (tmp_path / "never-there.lst").exists()

@@ -34,7 +34,9 @@ def vault(tmp_path: Path) -> Path:
 
 def test_show_existing_paper_prints_metadata_and_paths(vault: Path) -> None:
     runner = CliRunner()
-    result = runner.invoke(cli, ["show", "2024_X_Foo", "--library", str(vault)])
+    result = runner.invoke(
+        cli, ["show", "2024_X_Foo", "--format", "table", "--library", str(vault)]
+    )
     assert result.exit_code == 0
     assert "2024_X_Foo" in result.output
     assert "Foo paper" in result.output
@@ -55,7 +57,9 @@ def test_show_missing_paper_raises_paper_not_found(vault: Path) -> None:
 def test_show_warns_about_missing_pdf(vault: Path) -> None:
     (vault / "papers" / "2024_X_Foo" / "paper.pdf").unlink()
     runner = CliRunner()
-    result = runner.invoke(cli, ["show", "2024_X_Foo", "--library", str(vault)])
+    result = runner.invoke(
+        cli, ["show", "2024_X_Foo", "--format", "table", "--library", str(vault)]
+    )
     assert result.exit_code == 0
     assert "missing!" in result.output
 
@@ -63,7 +67,9 @@ def test_show_warns_about_missing_pdf(vault: Path) -> None:
 def test_show_warns_about_missing_notes(vault: Path) -> None:
     (vault / "papers" / "2024_X_Foo" / "notes.md").unlink()
     runner = CliRunner()
-    result = runner.invoke(cli, ["show", "2024_X_Foo", "--library", str(vault)])
+    result = runner.invoke(
+        cli, ["show", "2024_X_Foo", "--format", "table", "--library", str(vault)]
+    )
     assert result.exit_code == 0
     assert "missing!" in result.output
 
@@ -188,16 +194,27 @@ def test_show_json_tolerates_missing_fields(vault: Path) -> None:
     )
     assert result.exit_code == 0, result.output
     meta = json.loads(result.output)
+    meta.pop("_paths")
     assert meta == {"id": "2024_X_Foo", "year": 2024, "title": "Foo"}
 
 
-def test_show_table_is_default(vault: Path) -> None:
-    """Default (no --format) renders the Panel view, not JSON."""
+def test_show_default_format_follows_the_terminal(
+    vault: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """No --format: JSON when stdout is not a terminal (an agent's shell, a
+    pipe), the Panel view when a person is at one."""
+    import litman.commands._options as options_mod
+
     runner = CliRunner()
-    result = runner.invoke(cli, ["show", "2024_X_Foo", "--library", str(vault)])
-    assert result.exit_code == 0, result.output
-    assert "PDF:" in result.output
-    assert "Notes:" in result.output
+    piped = runner.invoke(cli, ["show", "2024_X_Foo", "--library", str(vault)])
+    assert piped.exit_code == 0, piped.output
+    assert json.loads(piped.stdout)["id"] == "2024_X_Foo"
+
+    monkeypatch.setattr(options_mod, "is_interactive", lambda _stream: True)
+    at_terminal = runner.invoke(cli, ["show", "2024_X_Foo", "--library", str(vault)])
+    assert at_terminal.exit_code == 0, at_terminal.output
+    assert "PDF:" in at_terminal.output
+    assert "Notes:" in at_terminal.output
 
 
 def test_show_ambiguous_substring_lists_candidates(vault: Path) -> None:
@@ -215,3 +232,104 @@ def test_show_ambiguous_substring_lists_candidates(vault: Path) -> None:
     assert "Ambiguous" in msg
     assert "2024_X_Foo" in msg
     assert "2025_X_Foobar" in msg
+
+
+# ---------------------------------------------------------------------------
+# --format json carries the paths; the table does not fold them
+# ---------------------------------------------------------------------------
+
+
+def _show_json(vault: Path, paper_id: str = "2024_X_Foo") -> dict:
+    result = CliRunner().invoke(
+        cli, ["show", paper_id, "--format", "json", "--library", str(vault)]
+    )
+    assert result.exit_code == 0, result.output
+    return json.loads(result.stdout)
+
+
+def test_show_json_carries_the_paths_an_agent_opens_next(vault: Path) -> None:
+    paper_dir = vault / "papers" / "2024_X_Foo"
+    (paper_dir / "discussion.md").write_text("# log\n", encoding="utf-8")
+    si_dir = paper_dir / "supplementary"
+    si_dir.mkdir()
+    (si_dir / "si-01.pdf").write_bytes(b"%PDF-1.4 si\n")
+    (paper_dir / "metadata.yaml").write_text(
+        "id: 2024_X_Foo\nyear: 2024\ntitle: Foo paper\n"
+        "supplementary:\n"
+        "  - file: si-01.pdf\n    original: s1.pdf\n"
+        "  - file: si-02.xlsx\n    original: s2.xlsx\n"
+        "code-clones:\n  - here\n  - gone\n",
+        encoding="utf-8",
+    )
+    (vault / "codes" / "here").mkdir(parents=True)
+    (vault / "codes" / "here" / "repo-meta.yaml").write_text("name: here\n", encoding="utf-8")
+
+    paths = _show_json(vault)["_paths"]
+    assert paths["folder"] == str(paper_dir)
+    assert paths["pdf"] == str(paper_dir / "paper.pdf")
+    assert paths["notes"] == str(paper_dir / "notes.md")
+    assert paths["discussion"] == str(paper_dir / "discussion.md")
+    assert paths["si"] == [str(si_dir / "si-01.pdf"), str(si_dir / "si-02.xlsx")]
+    assert paths["code"] == [str(vault / "codes" / "here"), str(vault / "codes" / "gone")]
+    # Exactly what is not on disk, the table's (missing!).
+    assert paths["missing"] == [str(si_dir / "si-02.xlsx"), str(vault / "codes" / "gone")]
+
+
+def test_show_json_paths_name_a_missing_pdf_and_discussion(vault: Path) -> None:
+    paper_dir = vault / "papers" / "2024_X_Foo"
+    (paper_dir / "paper.pdf").unlink()
+    paths = _show_json(vault)["_paths"]
+    assert paths["missing"] == [
+        str(paper_dir / "paper.pdf"),
+        str(paper_dir / "discussion.md"),
+    ]
+    assert paths["si"] == []
+    assert paths["code"] == []
+
+
+def test_show_paths_are_not_folded_on_an_80_column_console(
+    vault: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A non-TTY console (an agent's) is 80 columns wide: each path must stay on
+    one line so it can be used as is."""
+    from rich.console import Console
+
+    import litman.commands.show as show_mod
+
+    deep = vault / "papers" / "2024_X_Foo"
+    (deep / "metadata.yaml").write_text(
+        "id: 2024_X_Foo\nyear: 2024\ntitle: Foo\ncode-clones:\n"
+        "  - a-code-folder-name-long-enough-to-overflow-eighty-columns\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(show_mod, "console", Console(width=80))
+    result = CliRunner().invoke(
+        cli, ["show", "2024_X_Foo", "--format", "table", "--library", str(vault)]
+    )
+    assert result.exit_code == 0, result.output
+    lines = result.output.splitlines()
+    for label, path in (
+        ("PDF:", deep / "paper.pdf"),
+        ("Notes:", deep / "notes.md"),
+        ("Code:", vault / "codes" / "a-code-folder-name-long-enough-to-overflow-eighty-columns"),
+    ):
+        assert len(f"{label} {path}") > 80
+        assert any(
+            line.startswith(label) and str(path) in line for line in lines
+        ), label
+
+
+def test_show_ambiguous_substring_lists_at_most_ten_ids(vault: Path) -> None:
+    for i in range(12):
+        pid = f"2025_Y_Foo{i:02d}"
+        (vault / "papers" / pid).mkdir(parents=True)
+        (vault / "papers" / pid / "metadata.yaml").write_text(
+            f"id: {pid}\nyear: 2025\ntitle: T\n", encoding="utf-8"
+        )
+    result = CliRunner().invoke(cli, ["show", "foo", "--library", str(vault)])
+    msg = str(result.exception)
+    assert "matched 13 papers" in msg
+    assert "2024_X_Foo" in msg and "2025_Y_Foo08" in msg
+    assert "2025_Y_Foo09" not in msg
+    assert "and 3 more" in msg
+

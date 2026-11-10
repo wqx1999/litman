@@ -1,5 +1,6 @@
 import { useEffect } from 'react'
 import { createPortal } from 'react-dom'
+import { withCode } from './codeSpans'
 
 export type ToastVariant = 'info' | 'success' | 'error' | 'warning'
 
@@ -111,7 +112,8 @@ export default function Toast({
         ) : (
           <span className={`h-1.5 w-1.5 shrink-0 rounded-full ${DOT[variant]}`} />
         )}
-        {message}
+        {/* One flex item, so a code span does not split the text. */}
+        <span>{withCode(message, 'dark')}</span>
       </div>
     </div>,
     document.body,

@@ -196,7 +196,8 @@ def check_taxonomy_singletons(
                     ),
                     hint=(
                         f"see the counts with `lit taxonomy list {dict_name}`, "
-                        "then ask your agent to tidy the vocabulary"
+                        "then fold the rare values into broader ones with "
+                        "`lit taxonomy merge`"
                     ),
                 )
             )

@@ -83,6 +83,7 @@ from litman.exceptions import (
     PaperNotFoundError,
     SupplementaryError,
 )
+from litman.server.errors import ApiError, api_error, log_entry, log_warnings
 from litman.server.routes_ingest import _UPLOAD_DIRNAME, sweep_uploads
 from litman.server.si_requests import (
     ConfirmPlan,
@@ -120,6 +121,12 @@ _NO_SPACE_REMOVE = (
 _UNKNOWN = (
     "This SI request is unknown or has expired. Start it again with `lit add --si` or Add SI."
 )
+# The page's lines for a file that did not reach the window, and for a Done
+# that added nothing.
+_UPLOAD_FAILED = "si-upload-failed"
+_ADD_FAILED = "si-add-failed"
+# This machine could not show a recorded SI file; the page downloads it.
+_CANNOT_OPEN = "cannot-open"
 _PDF_MAGIC = b"%PDF-"
 
 
@@ -140,16 +147,17 @@ def _create_stash(stash: Path) -> BinaryIO:
     return open(stash, "xb")
 
 
-def _save_failure(exc: OSError) -> HTTPException:
+def _save_failure(exc: OSError) -> ApiError:
     """A failed write into the upload stash, as the page should hear it."""
     if exc.errno == errno.ENOSPC:
-        return HTTPException(status_code=507, detail=_NO_SPACE)
-    return HTTPException(
-        status_code=500,
-        detail=(
+        return api_error(507, _NO_SPACE, _UPLOAD_FAILED)
+    return api_error(
+        500,
+        (
             f"Could not save the file in the library ({exc.__class__.__name__}). "
             "Check that its disk is writable, then drop it again."
         ),
+        _UPLOAD_FAILED,
     )
 
 
@@ -167,18 +175,16 @@ def _served(request: Request) -> Anchor | None:
     return Anchor.of(vault) if vault is not None else None
 
 
-def _error(exc: RequestError) -> JSONResponse:
+def _error(exc: RequestError) -> ApiError:
+    """The answer to a request the table refused, to raise."""
     if isinstance(exc, RequestConflict):
-        return JSONResponse(
-            status_code=409, content={"detail": str(exc), "request": exc.request}
-        )
-    status = 404 if isinstance(exc, UnknownRequest) else 400
-    return JSONResponse(status_code=status, content={"detail": str(exc)})
+        return api_error(409, exc, extra={"request": exc.request})
+    return api_error(404 if isinstance(exc, UnknownRequest) else 400, exc)
 
 
 def _require_id(value: str) -> None:
     if not _ID_RE.match(value):
-        raise HTTPException(status_code=404, detail=_UNKNOWN)
+        raise api_error(404, _UNKNOWN, "si-request-gone")
 
 
 def _discard(path: Path) -> None:
@@ -258,7 +264,7 @@ def _open_request(
         meta = find_paper(vault, paper_id)
         problem = si_write_problem(vault, paper_id)
     except PaperNotFoundError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
+        raise api_error(404, exc, id=paper_id) from exc
     if problem:
         raise HTTPException(status_code=409, detail=problem)
     title = str(meta.get("title") or "").strip() or paper_id
@@ -327,7 +333,7 @@ def get_si_request(
     try:
         snapshot = _table(request).snapshot(rid, _served(request), collect=collect)
     except RequestError as exc:
-        return _error(exc)
+        raise _error(exc) from exc
     return {"request": snapshot}
 
 
@@ -339,9 +345,10 @@ def get_si_request(
 def _dropped_name(request: Request) -> str:
     """The file's own name, from ``X-Litman-Filename`` (UTF-8, %-encoded)."""
     raw = request.headers.get("x-litman-filename")
-    unusable = HTTPException(
-        status_code=400,
-        detail="That file name can't be used. Rename the file, then drop it again.",
+    unusable = api_error(
+        400,
+        "That file name can't be used. Rename the file, then drop it again.",
+        _UPLOAD_FAILED,
     )
     if raw is None:
         raise HTTPException(
@@ -399,12 +406,11 @@ async def _receive(request: Request, stash: Path, declared: int) -> int:
                 handle.close()
             _discard(stash)
         if isinstance(exc, ClientDisconnect):
-            raise HTTPException(
-                status_code=400,
-                detail="The upload was interrupted. Drop the file again.",
+            raise api_error(
+                400, "The upload was interrupted. Drop the file again.", _UPLOAD_FAILED
             ) from exc
         if isinstance(exc, _NoSpace):
-            raise HTTPException(status_code=507, detail=_NO_SPACE) from exc
+            raise api_error(507, _NO_SPACE, _UPLOAD_FAILED) from exc
         if isinstance(exc, OSError):
             raise _save_failure(exc) from exc
         raise
@@ -430,11 +436,13 @@ async def post_si_file(request: Request, rid: str) -> dict[str, Any] | JSONRespo
     try:
         vault, paper_id = table.upload_target(rid, served)
     except RequestError as exc:
-        return _error(exc)
+        raise _error(exc) from exc
     if not await run_in_threadpool(_paper_exists, vault, paper_id):
-        raise HTTPException(
-            status_code=404,
-            detail=f"{paper_id} is no longer in the library. Cancel this SI window.",
+        raise api_error(
+            404,
+            f"{paper_id} is no longer in the library. Cancel this SI window.",
+            "paper-not-found",
+            id=paper_id,
         )
 
     declared_text = request.headers.get("content-length", "")
@@ -445,7 +453,7 @@ async def post_si_file(request: Request, rid: str) -> dict[str, Any] | JSONRespo
     except OSError as exc:
         raise _save_failure(exc) from exc
     if free < 2 * declared + _FREE_MARGIN:
-        raise HTTPException(status_code=507, detail=_NO_SPACE)
+        raise api_error(507, _NO_SPACE, _UPLOAD_FAILED)
 
     fid = new_id()
     stash = vault / _UPLOAD_DIRNAME / f"si-{rid}-{fid}{si_extension(name)}"
@@ -454,7 +462,7 @@ async def post_si_file(request: Request, rid: str) -> dict[str, Any] | JSONRespo
         verdict = await run_in_threadpool(verify_candidate, vault, paper_id, stash, name)
     except PaperNotFoundError as exc:
         _discard(stash)
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
+        raise api_error(404, exc, id=paper_id) from exc
     except BaseException:
         _discard(stash)
         raise
@@ -468,15 +476,26 @@ async def post_si_file(request: Request, rid: str) -> dict[str, Any] | JSONRespo
         reason=verdict.reason,
         other_id=verdict.other_id,
         sha256=verdict.sha256,
+        reason_code=verdict.code,
+        reason_params=dict(verdict.params),
     )
     try:
         row_json, snapshot = table.add_row(rid, served, row)
     except RequestError as exc:
         await run_in_threadpool(_discard, stash)
-        return _error(exc)
+        raise _error(exc) from exc
     if row.verdict == "rejected":
         # A refused file can never be added: nothing to keep it for.
         await run_in_threadpool(_discard, stash)
+    if row.verdict != "ok":
+        # The window says why in a word; the log keeps which file and why.
+        log_entry(
+            request,
+            kind="si-check",
+            text=f"{row.name}: {row.reason}",
+            code=row.reason_code or None,
+            params={"paper": paper_id, "file": row.name, **row.reason_params},
+        )
     return {"row": row_json, "request": snapshot}
 
 
@@ -489,7 +508,7 @@ def delete_si_row(request: Request, rid: str, fid: str) -> dict[str, Any] | JSON
     try:
         row, snapshot = _table(request).remove_row(rid, fid, _served(request))
     except RequestError as exc:
-        return _error(exc)
+        raise _error(exc) from exc
     if row is not None:
         _discard(row.stash)
     return {"removed": row is not None, "request": snapshot}
@@ -521,6 +540,8 @@ def _reverify(plan: ConfirmPlan) -> dict[str, SiRow]:
                 reason=verdict.reason,
                 other_id=verdict.other_id,
                 sha256=verdict.sha256,
+                reason_code=verdict.code,
+                reason_params=dict(verdict.params),
             )
     return changed
 
@@ -538,13 +559,14 @@ def _added_entries(result: Any) -> list[dict[str, Any]]:
     ]
 
 
-def _conflict(detail: str, snapshot: dict[str, Any]) -> JSONResponse:
-    return JSONResponse(status_code=409, content={"detail": detail, "request": snapshot})
+def _conflict(detail: str, snapshot: dict[str, Any]) -> ApiError:
+    """A Done that added nothing, with the request as it now stands, to raise."""
+    return api_error(409, detail, _ADD_FAILED, extra={"request": snapshot})
 
 
 async def _carry_out(
-    table: SiRequestTable, plan: ConfirmPlan, served: Anchor | None
-) -> dict[str, Any] | JSONResponse:
+    request: Request, table: SiRequestTable, plan: ConfirmPlan, served: Anchor | None
+) -> dict[str, Any]:
     rid = plan.request_id
     settled = False
     try:
@@ -552,7 +574,7 @@ async def _carry_out(
         if missing:
             snapshot = table.abort_confirm(rid, served, drop=missing)
             settled = True
-            return _conflict(
+            raise _conflict(
                 f"{len(missing)} dropped file(s) were cleaned up before Done. "
                 "Drop them again, then press Done.",
                 snapshot,
@@ -577,34 +599,35 @@ async def _carry_out(
             snapshot = table.abort_confirm(rid, served, refreshed=changed)
             settled = True
             if changed:
-                return _conflict(
+                raise _conflict(
                     f"The check of {len(changed)} file(s) changed since they "
                     "were dropped. Review them, then press Done again.",
                     snapshot,
-                )
-            return _conflict(str(exc), snapshot)
-        except FileExistsError:
+                ) from exc
+            raise _conflict(str(exc), snapshot) from exc
+        except FileExistsError as exc:
             snapshot = table.abort_confirm(rid, served)
             settled = True
-            return _conflict(
+            raise _conflict(
                 "Another change to this paper is being written. Press Done again.",
                 snapshot,
-            )
+            ) from exc
         except PaperNotFoundError as exc:
             table.abort_confirm(rid, served)
             settled = True
-            raise HTTPException(status_code=404, detail=str(exc)) from exc
+            raise api_error(404, exc, id=plan.paper_id) from exc
         except OSError as exc:
             table.abort_confirm(rid, served)
             settled = True
             if exc.errno == errno.ENOSPC:
-                raise HTTPException(status_code=507, detail=_NO_SPACE_DONE) from exc
-            raise HTTPException(
-                status_code=500,
-                detail=(
+                raise api_error(507, _NO_SPACE_DONE, _ADD_FAILED) from exc
+            raise api_error(
+                500,
+                (
                     f"Could not add the SI files ({exc.__class__.__name__}). "
                     "Check that the library's disk is writable, then press Done again."
                 ),
+                _ADD_FAILED,
             ) from exc
         snapshot = table.finish_confirm(
             rid,
@@ -612,6 +635,7 @@ async def _carry_out(
             _added_entries(result),
             result.warnings,
             sha256s={record["file"]: record["sha256"] for record in result.records},
+            warning_codes=result.warning_codes,
         )
         settled = True
     finally:
@@ -619,6 +643,8 @@ async def _carry_out(
             table.abort_confirm(rid, served)
     for row in plan.dropped:
         await run_in_threadpool(_discard, row.stash)
+    # The page counts them; the log keeps what they say.
+    log_warnings(request, result.warnings)
     return {"request": snapshot}
 
 
@@ -645,10 +671,10 @@ async def post_si_confirm(request: Request, rid: str) -> dict[str, Any] | JSONRe
     try:
         plan = table.begin_confirm(rid, served, add_anyway)
     except RequestError as exc:
-        return _error(exc)
+        raise _error(exc) from exc
     if not isinstance(plan, ConfirmPlan):
         return {"request": plan}  # added already: a repeated Done
-    return await _carry_out(table, plan, served)
+    return await _carry_out(request, table, plan, served)
 
 
 @router.post("/si/requests/{rid}/cancel", response_model=None)
@@ -659,7 +685,7 @@ def post_si_cancel(request: Request, rid: str) -> dict[str, Any] | JSONResponse:
     try:
         stashes, snapshot = _table(request).cancel(rid, _served(request))
     except RequestError as exc:
-        return _error(exc)
+        raise _error(exc) from exc
     for stash in stashes:
         _discard(stash)
     return {"request": snapshot}
@@ -693,8 +719,10 @@ def get_si_file(request: Request, paper_id: str, file: str) -> FileResponse:
         )
     try:
         path, record = recorded_si_file(request.app.state.vault, paper_id, file)
-    except (PaperNotFoundError, SupplementaryError) as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except PaperNotFoundError as exc:
+        raise api_error(404, exc, id=paper_id) from exc
+    except SupplementaryError as exc:
+        raise api_error(404, exc) from exc
     inline = file.endswith(".pdf") and _is_pdf(path)
     return FileResponse(
         path,
@@ -739,27 +767,35 @@ def post_si_file_open(request: Request, paper_id: str, file: str) -> dict[str, A
     vault: Path = request.app.state.vault
     try:
         path, _record = recorded_si_file(vault, paper_id, file)
-    except (PaperNotFoundError, SupplementaryError) as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except PaperNotFoundError as exc:
+        raise api_error(404, exc, id=paper_id) from exc
+    except SupplementaryError as exc:
+        raise api_error(404, exc) from exc
     host = host_id()
     if is_runnable_si(file):
-        raise HTTPException(
-            status_code=403,
-            detail=f"{file} could be run, not viewed — download it instead",
+        raise api_error(
+            403,
+            f"{file} could be run, not viewed — download it instead",
+            _CANNOT_OPEN,
+            file=file,
         )
     if viewer.open_files_mode() == "none":
-        raise HTTPException(
-            status_code=409,
-            detail=f"{host} has no desktop to open {file} on — download it instead",
+        raise api_error(
+            409,
+            f"{host} has no desktop to open {file} on — download it instead",
+            _CANNOT_OPEN,
+            file=file,
         )
     configured: str | None = None
     if file.endswith(".pdf"):
         try:
             configured = load_config(vault).default_pdf_viewer
         except ConfigError as exc:
-            raise HTTPException(
-                status_code=500,
-                detail=config_problem(exc, "fix it, or download the file instead"),
+            raise api_error(
+                500,
+                config_problem(exc, "fix it, or download the file instead"),
+                _CANNOT_OPEN,
+                file=file,
             ) from exc
     try:
         viewer.launch_file(path, configured)
@@ -769,7 +805,7 @@ def post_si_file_open(request: Request, paper_id: str, file: str) -> dict[str, A
             if exc.reason == "no-app"
             else f"{host} could not start {exc.command} to open {file} — download it instead"
         )
-        raise HTTPException(status_code=409, detail=detail) from exc
+        raise api_error(409, detail, _CANNOT_OPEN, file=file) from exc
     return {"opened": True, "file": file, "host": host}
 
 
@@ -783,14 +819,16 @@ def _recorded_or_404(vault: Path, paper_id: str, file: str) -> None:
     try:
         meta = find_paper(vault, paper_id)
     except PaperNotFoundError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
+        raise api_error(404, exc, id=paper_id) from exc
     if file not in {record["file"] for record in list_supplementary(meta)}:
-        raise HTTPException(
-            status_code=404,
-            detail=(
+        raise api_error(
+            404,
+            (
                 f"{paper_id} has no SI file {file!r}. "
                 f"`lit show {shell_arg(paper_id)}` lists them."
             ),
+            "si-missing",
+            file=file,
         )
 
 
@@ -808,9 +846,9 @@ def get_si_rm_preview(request: Request, paper_id: str, file: str) -> dict[str, A
     try:
         preview = preview_si_removal(vault, paper_id, [file])
     except PaperNotFoundError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
+        raise api_error(404, exc, id=paper_id) from exc
     except SupplementaryError as exc:
-        raise HTTPException(status_code=409, detail=str(exc)) from exc
+        raise api_error(409, exc) from exc
     return {
         "file": file,
         "cited": [
@@ -830,7 +868,7 @@ def delete_si_file(request: Request, paper_id: str, file: str) -> dict[str, Any]
     try:
         result = remove_supplementary(vault, paper_id, [file])
     except SupplementaryError as exc:
-        raise HTTPException(status_code=409, detail=str(exc)) from exc
+        raise api_error(409, exc) from exc
     except FileExistsError as exc:
         raise HTTPException(
             status_code=409,
@@ -847,4 +885,5 @@ def delete_si_file(request: Request, paper_id: str, file: str) -> dict[str, Any]
                 "changed. Check that the library's disk is writable, then try again."
             ),
         ) from exc
+    log_warnings(request, result.warnings)
     return {"file": file, "warnings": result.warnings}

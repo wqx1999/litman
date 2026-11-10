@@ -68,7 +68,7 @@ def test_a_skills_commands_quote_their_arguments(path: Path) -> None:
 
 
 def test_the_scan_found_the_commands_it_is_there_for() -> None:
-    assert len(_FILES) == 6
+    assert len(_FILES) == 7
     found = [c for p in _FILES for c in _commands(p.read_text(encoding="utf-8"))]
     assert "lit show '<id>' --format json" in found
     assert "lit rename '<old-id>' '<new-id>'" in found

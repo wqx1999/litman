@@ -105,19 +105,19 @@ def test_link_prints_its_paths_and_tips_outside_the_panel(
 ) -> None:
     vault = create_vault(long_root)
     _add_paper(long_root, vault, make_text_pdf)
-    project = long_root / "projects" / "pepforge"
+    project = long_root / "projects" / "seahorse"
     project.mkdir(parents=True)
     runner = CliRunner()
     added = _ok(runner.invoke(
         cli,
-        ["project", "add", "pepforge", "--path", str(project),
+        ["project", "add", "seahorse", "--path", str(project),
          "--library", str(vault)],
     ))
     _assert_whole_and_outside(added.output, str(project))
 
     result = _ok(runner.invoke(
         cli,
-        ["link", "2024_Zeta_Paths", "--project", "pepforge",
+        ["link", "2024_Zeta_Paths", "--project", "seahorse",
          "--library", str(vault)],
     ))
 
@@ -127,7 +127,7 @@ def test_link_prints_its_paths_and_tips_outside_the_panel(
     _assert_whole_and_outside(result.output, str(reflib / "REFERENCES.md"))
     _assert_whole_and_outside(
         result.output,
-        '`lit modify "2024_Zeta_Paths" --set priority-pepforge=A`',
+        '`lit modify "2024_Zeta_Paths" --set priority-seahorse=A`',
     )
 
 

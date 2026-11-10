@@ -7,11 +7,32 @@ level and prints a friendly stderr message. Anything not a subclass of
 
 from __future__ import annotations
 
+from collections.abc import Mapping
+from types import MappingProxyType
+
 from ruamel.yaml.error import YAMLError
 
 
 class LitmanError(Exception):
-    """Base class for all litman-specific errors."""
+    """Base class for all litman-specific errors.
+
+    ``code`` names the failure for the GUI, which shows a short line picked
+    by it instead of the message; ``params`` fill that line: names, ids,
+    paths inside the library, never an absolute path. With no code the GUI
+    shows the line of the action that failed. :func:`coded` sets them where
+    the error is raised; a class whose every instance means one thing sets
+    them on the class.
+    """
+
+    code: str | None = None
+    params: Mapping[str, str] = MappingProxyType({})
+
+
+def coded[E: LitmanError](error: E, code: str, **params: str) -> E:
+    """``error`` with its GUI ``code`` and ``params`` set, for ``raise coded(...)``."""
+    error.code = code
+    error.params = MappingProxyType(dict(params))
+    return error
 
 
 class LibraryNotFoundError(LitmanError):
@@ -21,9 +42,13 @@ class LibraryNotFoundError(LitmanError):
 class ParentNotFoundError(LitmanError):
     """`lit init` parent directory does not exist or is not a directory."""
 
+    code = "parent-missing"
+
 
 class VaultExistsError(LitmanError):
     """`lit init` target vault path already exists and is non-empty."""
+
+    code = "target-exists"
 
 
 class UndecodablePathError(LitmanError):
@@ -54,6 +79,8 @@ class DuplicateDOIError(AddError):
 class PaperNotFoundError(LitmanError):
     """No paper with the given id exists in the vault."""
 
+    code = "paper-not-found"
+
 
 class CorruptMetadataError(LitmanError):
     """A metadata.yaml / repo-meta.yaml / sidecar exists but cannot be read
@@ -69,7 +96,12 @@ class CorruptMetadataError(LitmanError):
     on a paper the user never touched.
 
     Distinct from ``ConfigError`` (which is about ``lit-config.yaml``).
+
+    Its GUI code is ``file-unreadable``; the server adds the file's path
+    inside the library, which only it knows.
     """
+
+    code = "file-unreadable"
 
     def __init__(self, path: object, cause: Exception | None = None) -> None:
         self.path = path
@@ -177,6 +209,9 @@ class UnreadableTaxonomyError(LitmanError):
     request, and a damaged file is not one.
     """
 
+    code = "file-unreadable"
+    params = MappingProxyType({"path": "TAXONOMY.md"})
+
     def __init__(self, path: object, reason: str, *, not_utf8: bool) -> None:
         self.path = path
         self.reason = reason
@@ -236,11 +271,106 @@ class ConfigError(LitmanError):
     of the wrong type, or violates a field constraint.
     """
 
+    code = "file-unreadable"
+    params = MappingProxyType({"path": "lit-config.yaml"})
+
 
 class SyncError(LitmanError):
     """`lit sync` rejected an op: rclone not installed, remote misconfigured,
     sync not yet set up in lit-config.yaml, or rclone returned a non-zero
     exit status (network down, auth failure, transfer error, etc.).
+
+    ``rclone_tail`` is rclone's last log lines when they end the message, ``""``
+    otherwise: ``lit sync`` leaves them out of an error it recognises, as the
+    record ``lit sync status`` shows keeps them.
+    """
+
+    rclone_tail: str = ""
+
+    def without_rclone_tail(self) -> str:
+        """The message without rclone's last lines: litman's own words."""
+        text = str(self)
+        if self.rclone_tail and text.endswith("\n" + self.rclone_tail):
+            return text[: -len(self.rclone_tail) - 1]
+        return text
+
+
+class SyncChoiceRequiredError(SyncError):
+    """Two-way sync cannot go on until the user picks which side wins.
+
+    Nothing has been synced when it is raised: on a first sync where both this
+    machine and the cloud already hold a library, after the sync filters
+    changed, or when rclone can no longer continue from its last sync records.
+    The way out is ``lit sync --first-from cloud|local``, which only the user
+    may choose.
+    """
+
+
+class SyncStoppedError(SyncError):
+    """rclone stopped a two-way sync on one of its safety checks.
+
+    More than half of the files were deleted on one side, or every file
+    changed on both. Only the user can tell whether that was meant, so the
+    GUI's auto sync stops until they decide; ``lit sync --force`` goes on.
+    """
+
+
+class SyncAuthError(SyncError):
+    """The cloud refused the sign-in rclone holds for it, so nothing was synced.
+
+    An OAuth token that expired or was revoked, or a password the server (a
+    WebDAV one, say) no longer accepts. ``sign_in`` says how the user signs in
+    again: ``"browser"`` (``rclone config reconnect``), ``"password"`` (typed
+    into ``rclone config``), or ``None`` when rclone could not tell.
+    """
+
+    def __init__(self, message: str, sign_in: str | None = None) -> None:
+        super().__init__(message)
+        self.sign_in = sign_in
+
+
+class SyncBusyError(SyncError):
+    """Another sync of the same library holds its lock, so this one did not start.
+
+    Nothing was synced. ``lit sync`` exits 23 with it; the GUI's auto sync
+    tries again a little later.
+    """
+
+
+class SyncNotSetUpError(SyncError):
+    """The library no longer syncs with the folder this sync was started for.
+
+    A sync that read the configuration, then waited for the sync lock while
+    ``lit sync disconnect`` removed ``sync:`` or ``lit sync setup`` pointed it
+    elsewhere. Checked once the lock is held, before anything is touched:
+    nothing was synced, and the run is not recorded.
+    """
+
+
+class SyncAccessError(SyncError):
+    """litman could not write, or remove, a record of a library's sync.
+
+    The records are in litman's data folder, outside the library, which a
+    sandbox that lets a program write only in its workspace refuses. When
+    the sync lock cannot be made, nothing was changed; ``lit sync
+    disconnect`` raises it too for a record it could not remove.
+    """
+
+
+class SyncLockError(SyncError):
+    """A sync lock could not be taken because the file system refused locks altogether.
+
+    Not another holder: the folder that keeps litman's sync records allows no
+    file locks (some network file systems), so no sync can run from this
+    machine until that folder is on a disk that does.
+    """
+
+
+class BisyncLockedError(SyncError):
+    """rclone's own lock of this library's sync records is still in place.
+
+    Left by a sync that was cut off, or held by one that runs outside litman's
+    own lock. It expires on its own (``--max-lock``).
     """
 
 

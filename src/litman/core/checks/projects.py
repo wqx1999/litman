@@ -112,8 +112,8 @@ def check_project_config_consistency(
                     "lit-config.yaml's projects: map"
                 ),
                 hint=(
-                    f'`lit project add {shell_arg(name)} --path "<path>"` to register '
-                    "its path, or remove it from TAXONOMY.md via "
+                    f'`lit project set-path {shell_arg(name)} "<path>"` to give it '
+                    "a folder on this machine, or remove it from TAXONOMY.md via "
                     f"`lit project rm {shell_arg(name)}`"
                 ),
             )

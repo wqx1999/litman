@@ -1,0 +1,565 @@
+"""Code repos follow the library by version across machines (two-way ``lit sync``).
+
+Machines A and B sync one library through a local folder standing in for the
+cloud, and a bare git repository is the upstream of every code repo. A
+checkout never travels as files: each machine brings its own to the commit
+``repo-meta.yaml`` records, and says what it could not do. Commits are
+compared by id, never file bytes (git converts line endings on Windows), in
+the short temporary folder of the bisync tests: rclone names its record
+files after both synced paths.
+"""
+
+from __future__ import annotations
+
+import itertools
+import shutil
+import tempfile
+import time
+from collections.abc import Iterator
+from datetime import UTC, datetime, timedelta
+from pathlib import Path
+from types import SimpleNamespace
+
+import pytest
+from rich.console import Console
+from ruamel.yaml import YAML
+
+from litman.commands import sync as sync_cmd
+from litman.core import code as code_mod
+from litman.core import locking
+from litman.core import sync as core_sync
+from litman.core.checks.maintenance import check_code_clone_integrity
+from litman.core.code import code_folder_kind, read_head
+from litman.core.document import list_papers
+from tests._git_clone import git
+from tests._git_upstream import Upstream, make_bare_upstream
+from tests.commands.test_sync_bisync import (
+    _edit_metadata,
+    _lit,
+    _machine,
+    _sync,
+    _tree,
+    _write_paper,
+    needs_rclone,
+)
+
+needs_git = pytest.mark.skipif(
+    shutil.which("git") is None, reason="git is not installed; CI has it."
+)
+pytestmark = [needs_rclone, needs_git]
+
+
+# The three fixtures of tests/commands/test_sync_bisync.py these tests share.
+
+
+@pytest.fixture
+def tmp_path() -> Iterator[Path]:
+    """A short temporary folder, in place of pytest's own (see the bisync tests)."""
+    path = Path(tempfile.mkdtemp(prefix="lt-")).resolve()
+    yield path
+    locking.rmtree(path, ignore_errors=True)
+
+
+@pytest.fixture
+def cloud(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """The cloud folder; ``fake-cloud:<it>/lib`` is the library on the remote."""
+    conf = tmp_path / "rclone.conf"
+    conf.write_text("[fake-cloud]\ntype = local\nnounc = false\n", encoding="utf-8")
+    monkeypatch.setenv("RCLONE_CONFIG", str(conf))
+    storage = tmp_path / "cloud"
+    storage.mkdir()
+    return storage
+
+
+@pytest.fixture(autouse=True)
+def _wide_consoles(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Let panels print unwrapped, so phrases stay whole."""
+    monkeypatch.setattr(sync_cmd, "console", Console(width=400))
+
+_LEFT_BEHIND = (
+    "codes/tool/repo/ stays on this machine: tool was removed from the library. "
+    "Move that folder out of the library, or delete it."
+)
+
+
+@pytest.fixture
+def upstream(tmp_path: Path) -> Upstream:
+    return make_bare_upstream(tmp_path / "upstream")
+
+
+def _head(vault: Path, name: str = "tool") -> tuple[str, str | None] | None:
+    return read_head(vault / "codes" / name / "repo")
+
+
+def _recorded(vault: Path, name: str = "tool") -> tuple[object, object]:
+    text = (vault / "codes" / name / "repo-meta.yaml").read_text(encoding="utf-8")
+    meta = YAML(typ="safe").load(text)
+    return meta.get("commit"), meta.get("branch")
+
+
+def _with_repo(tmp_path: Path, cloud: Path, upstream: Upstream) -> Path:
+    """Machine A with a paper and the repo ``tool`` (at the upstream's tip), synced up."""
+    a = _machine(tmp_path, cloud, "a")
+    _write_paper(a, "p1")
+    added = _lit("code", "add", upstream.url, "--name", "tool", vault=a)
+    assert added.exit_code == 0, added.output
+    assert _sync(a).exit_code == 0
+    return a
+
+
+def _two_machines_with_a_repo(
+    tmp_path: Path, cloud: Path, upstream: Upstream
+) -> tuple[Path, Path]:
+    """A as in :func:`_with_repo`, and B synced down from the cloud, repo fetched."""
+    a = _with_repo(tmp_path, cloud, upstream)
+    b = _machine(tmp_path, cloud, "b")
+    first = _sync(b)
+    assert first.exit_code == 0, first.output
+    assert _head(b) == (upstream.commits[-1], "main")
+    return a, b
+
+
+def test_a_missing_checkout_is_fetched_at_the_recorded_commit_and_still_updates(
+    tmp_path: Path, cloud: Path, upstream: Upstream
+) -> None:
+    a = _with_repo(tmp_path, cloud, upstream)
+    c3 = upstream.commits[2]
+    c4 = upstream.commit("c4")
+    b = _machine(tmp_path, cloud, "b")
+
+    result = _sync(b)
+
+    assert result.exit_code == 0, result.output
+    assert f"tool: fetched at {c3[:7]} (on main)" in result.output
+    assert _head(b) == (c3, "main")
+    assert _recorded(b) == _recorded(a) == (c3, "main")
+    updated = _lit("code", "update", "tool", vault=b)
+    assert updated.exit_code == 0, updated.output
+    assert _head(b) == (c4, "main")
+
+
+def test_a_repo_meta_with_no_commit_gets_the_commit_of_the_first_machine_to_sync(
+    tmp_path: Path, cloud: Path, upstream: Upstream
+) -> None:
+    """A repo-meta.yaml with no commit (written before there was one) gets
+    A's checkout's in A's sync: B fetches that commit, not the newer tip."""
+    a = _machine(tmp_path, cloud, "a")
+    assert _lit("code", "add", upstream.url, "--name", "tool", vault=a).exit_code == 0
+    meta = a / "codes" / "tool" / "repo-meta.yaml"
+    meta.write_bytes(b"name: tool\nupstream: " + upstream.url.encode() + b"\npapers: []\n")
+    c3 = upstream.commits[2]
+    upstream.commit("c4")
+
+    assert _sync(a).exit_code == 0
+    b = _machine(tmp_path, cloud, "b")
+    result = _sync(b)
+
+    assert _recorded(a) == (c3, "main")
+    assert result.exit_code == 0, result.output
+    assert _head(b) == (c3, "main")
+
+
+def _old_repo_meta(vault: Path, upstream: Upstream) -> None:
+    """``codes/tool/repo-meta.yaml`` as written before commits were recorded."""
+    folder = vault / "codes" / "tool"
+    folder.mkdir(parents=True)
+    (folder / "repo-meta.yaml").write_bytes(
+        b"name: tool\nupstream: " + upstream.url.encode() + b"\npapers: []\n"
+    )
+
+
+def test_repo_metas_with_no_commit_get_one_commit_and_no_conflict(
+    tmp_path: Path, cloud: Path, upstream: Upstream, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Neither machine has the checkout and repo-meta.yaml names no commit.
+    The first machine to sync records the commit it fetched, in that same
+    sync; the other fetches that one. Recorded by each machine for itself,
+    the two copies of repo-meta.yaml would meet as a conflict: the machines
+    sync at different times, so the copies differ in `updated-at` at least."""
+    minutes = itertools.count()
+    start = datetime(2026, 1, 1, tzinfo=UTC)
+    monkeypatch.setattr(
+        code_mod,
+        "now_iso",
+        lambda: (start + timedelta(minutes=next(minutes))).isoformat(timespec="seconds"),
+    )
+    a = _machine(tmp_path, cloud, "a")
+    _write_paper(a, "p1")
+    _old_repo_meta(a, upstream)
+    b = _machine(tmp_path, cloud, "b")
+    c3 = upstream.commits[2]
+
+    runs = [_sync(a), _sync(b), _sync(a), _sync(b)]
+
+    for run in runs:
+        assert run.exit_code == 0, run.output
+        assert "conflict" not in run.output
+    assert (
+        f"tool: fetched at {c3[:7]} (on main) — recorded for your other machines to follow"
+    ) in runs[0].output
+    assert "Came down: nothing" in runs[0].output
+    assert f"tool: fetched at {c3[:7]} (on main)" in runs[1].output
+    assert "recorded for your other machines" not in runs[1].output
+    assert _recorded(a) == _recorded(b) == (c3, "main")
+    assert _head(a) == _head(b) == (c3, "main")
+    assert _tree(a) == _tree(b) == _tree(cloud / "lib")
+
+
+def test_old_checkouts_at_different_commits_follow_the_first_machine_to_sync(
+    tmp_path: Path, cloud: Path, upstream: Upstream
+) -> None:
+    """Each machine had its own checkout before commits were recorded, at
+    different commits, and no record of where they were. The first to sync
+    records its commit; the other moves there, with no conflict."""
+    a = _machine(tmp_path, cloud, "a")
+    _write_paper(a, "p1")
+    _old_repo_meta(a, upstream)
+    away = upstream.bare.rename(upstream.bare.with_name("away.git"))
+    assert _sync(a).exit_code == sync_cmd.EXIT_SYNC_REPOS_DIFFER
+    b = _machine(tmp_path, cloud, "b")
+    assert _sync(b).exit_code == sync_cmd.EXIT_SYNC_REPOS_DIFFER
+    away.rename(upstream.bare)
+    c2, c3 = upstream.commits[1:]
+    repo_a, repo_b = (v / "codes" / "tool" / "repo" for v in (a, b))
+    git("clone", "-q", "--depth", "1", upstream.url, str(repo_a), cwd=tmp_path)
+    git("clone", "-q", upstream.url, str(repo_b), cwd=tmp_path)
+    git("checkout", "-q", c2, cwd=repo_b)
+    # As before commits were recorded: no machine knows where its checkouts were.
+    records = list(core_sync.sync_data_dir().glob("bisync/*/repo-heads.json"))
+    assert len(records) == 2
+    for record in records:
+        record.unlink()
+
+    runs = [_sync(a), _sync(b), _sync(a)]
+
+    for run in runs:
+        assert run.exit_code == 0, run.output
+        assert "conflict" not in run.output
+    assert (
+        f"tool: at {c3[:7]} (on main) — recorded for your other machines to follow"
+    ) in runs[0].output
+    assert "Came down: nothing" in runs[0].output
+    assert f"tool: moved to {c3[:7]} (on main)" in runs[1].output
+    assert _recorded(a) == _recorded(b) == (c3, "main")
+    assert _head(a) == _head(b) == (c3, "main")
+    assert _tree(a) == _tree(b) == _tree(cloud / "lib")
+
+
+def test_a_checkout_behind_is_moved_to_the_commit_another_machine_recorded(
+    tmp_path: Path, cloud: Path, upstream: Upstream
+) -> None:
+    a, b = _two_machines_with_a_repo(tmp_path, cloud, upstream)
+    c4 = upstream.commit("c4")
+    assert _lit("code", "update", "tool", vault=a).exit_code == 0
+    assert _sync(a).exit_code == 0
+
+    result = _sync(b)
+
+    assert result.exit_code == 0, result.output
+    assert f"tool: moved to {c4[:7]} (on main)" in result.output
+    assert _head(b) == (c4, "main")
+    assert _recorded(b) == (c4, "main")
+
+
+def test_a_checkout_with_changes_stays_and_one_with_only_new_files_moves(
+    tmp_path: Path, cloud: Path, upstream: Upstream
+) -> None:
+    a, b = _two_machines_with_a_repo(tmp_path, cloud, upstream)
+    c3 = upstream.commits[2]
+    c4 = upstream.commit("c4")
+    assert _lit("code", "update", "tool", vault=a).exit_code == 0
+    assert _sync(a).exit_code == 0
+    repo = b / "codes" / "tool" / "repo"
+    (repo / "code.py").write_bytes(b"print('mine')\n")
+
+    kept = _sync(b)
+
+    assert kept.exit_code == sync_cmd.EXIT_SYNC_REPOS_DIFFER == 22, kept.output
+    assert (
+        f"tool: it has changes here, so it stays at {c3[:7]}; the library records "
+        f"{c4[:7]}. Commit and push them, or undo them; the next `lit sync` moves it."
+    ) in kept.output
+    assert _head(b) == (c3, "main")
+    assert (repo / "code.py").read_bytes() == b"print('mine')\n"
+    assert _recorded(b) == (c4, "main")
+
+    git("checkout", "--", "code.py", cwd=repo)
+    (repo / "results.csv").write_bytes(b"1,2\n")
+    moved = _sync(b)
+
+    assert moved.exit_code == 0, moved.output
+    assert _head(b) == (c4, "main")
+    assert "Uncommitted changes in tool are not synced." in moved.output
+    assert (repo / "results.csv").read_bytes() == b"1,2\n"
+
+
+def test_a_repo_imported_from_a_folder_is_reported_not_fetched(
+    tmp_path: Path, cloud: Path
+) -> None:
+    a = _machine(tmp_path, cloud, "a")
+    source = tmp_path / "mycode"
+    source.mkdir()
+    (source / "run.py").write_bytes(b"print(1)\n")
+    assert _lit("code", "add", str(source), "--name", "mine", vault=a).exit_code == 0
+    assert _sync(a).exit_code == 0
+    b = _machine(tmp_path, cloud, "b")
+
+    result = _sync(b)
+
+    assert result.exit_code == sync_cmd.EXIT_SYNC_REPOS_DIFFER, result.output
+    assert (
+        "mine: it was imported from a folder on another machine. "
+        "Copy that folder to codes/mine/repo here."
+    ) in result.output
+    assert (b / "codes" / "mine" / "repo-meta.yaml").is_file()
+    assert not (b / "codes" / "mine" / "repo").exists()
+
+
+def test_an_unreachable_upstream_is_reported_and_the_library_still_syncs(
+    tmp_path: Path, cloud: Path, upstream: Upstream
+) -> None:
+    _with_repo(tmp_path, cloud, upstream)
+    c3 = upstream.commits[2]
+    away = upstream.bare.rename(upstream.bare.with_name("away.git"))
+    b = _machine(tmp_path, cloud, "b")
+
+    offline = _sync(b)
+
+    assert offline.exit_code == sync_cmd.EXIT_SYNC_REPOS_DIFFER, offline.output
+    assert (b / "papers" / "p1" / "metadata.yaml").is_file()
+    assert f"tool: not fetched: git could not fetch commit {c3[:7]}: fatal:" in offline.output
+    assert "The next `lit sync` tries again." in offline.output
+    assert not (b / "codes" / "tool" / "repo").exists()
+
+    away.rename(upstream.bare)
+    again = _sync(b)
+
+    assert again.exit_code == 0, again.output
+    assert _head(b) == (c3, "main")
+
+
+def test_a_checkout_that_could_not_follow_does_not_take_the_others_back(
+    tmp_path: Path, cloud: Path, upstream: Upstream
+) -> None:
+    """B is still at the old commit after a fetch that failed; its next sync
+    must not take that for a move of the user's and record it."""
+    a, b = _two_machines_with_a_repo(tmp_path, cloud, upstream)
+    c3 = upstream.commits[2]
+    c4 = upstream.commit("c4")
+    assert _lit("code", "update", "tool", vault=a).exit_code == 0
+    assert _sync(a).exit_code == 0
+    away = upstream.bare.rename(upstream.bare.with_name("away.git"))
+    assert _sync(b).exit_code == sync_cmd.EXIT_SYNC_REPOS_DIFFER
+    assert _head(b) == (c3, "main")
+    away.rename(upstream.bare)
+
+    back = _sync(b)
+    last = _sync(a)
+
+    assert back.exit_code == 0, back.output
+    assert last.exit_code == 0, last.output
+    assert _head(a) == _head(b) == (c4, "main")
+    assert _recorded(a) == _recorded(b) == (c4, "main")
+
+
+def test_a_pull_made_by_hand_reaches_the_other_machine(
+    tmp_path: Path, cloud: Path, upstream: Upstream
+) -> None:
+    a, b = _two_machines_with_a_repo(tmp_path, cloud, upstream)
+    c4 = upstream.commit("c4")
+    git("pull", "-q", "--ff-only", cwd=a / "codes" / "tool" / "repo")
+
+    assert _sync(a).exit_code == 0
+    result = _sync(b)
+
+    assert _recorded(a) == (c4, "main")
+    assert _head(a) == (c4, "main")
+    assert result.exit_code == 0, result.output
+    assert _head(b) == (c4, "main")
+
+
+def test_a_commit_no_remote_has_is_named_on_both_machines(
+    tmp_path: Path, cloud: Path, upstream: Upstream
+) -> None:
+    a, b = _two_machines_with_a_repo(tmp_path, cloud, upstream)
+    c3 = upstream.commits[2]
+    repo_a = a / "codes" / "tool" / "repo"
+    (repo_a / "mine.py").write_bytes(b"print('mine')\n")
+    git("add", "mine.py", cwd=repo_a)
+    git("commit", "-q", "-m", "mine", cwd=repo_a)
+    mine = git("rev-parse", "HEAD", cwd=repo_a).strip()
+
+    from_a = _sync(a)
+    on_b = _sync(b)
+
+    assert from_a.exit_code == 0, from_a.output
+    assert (
+        "Commits in tool that no remote has are not synced: "
+        "push them so your other machines can fetch them."
+    ) in from_a.output
+    assert _recorded(a) == (mine, "main")
+    assert on_b.exit_code == sync_cmd.EXIT_SYNC_REPOS_DIFFER, on_b.output
+    assert f"tool: not moved to {mine[:7]}: git could not fetch commit {mine[:7]}" in on_b.output
+    assert (
+        f"Push {mine[:7]} from the machine that made it; the next `lit sync` fetches it."
+    ) in on_b.output
+    assert _head(b) == (c3, "main")
+
+
+def _commit(repo: Path, *names: str) -> None:
+    """One commit per name, adding that file: commits no remote has."""
+    for name in names:
+        (repo / name).write_bytes(f"print({name!r})\n".encode())
+        git("add", name, cwd=repo)
+        git("commit", "-q", "-m", name, cwd=repo)
+
+
+def test_changes_only_here_are_recorded_by_a_terminal_run_and_a_gui_run(
+    tmp_path: Path, cloud: Path, upstream: Upstream
+) -> None:
+    """An uncommitted change and two commits no remote has: named in the record
+    and in `lit sync status` (with `--local` too), counted in the GUI's status.
+    Information only: the exit code and `What to do:` do not change."""
+    from litman.server.sync_scheduler import SyncScheduler
+
+    a = _with_repo(tmp_path, cloud, upstream)
+    # The reverse first: with nothing of the user's, no such part.
+    quiet = _sync(a, "status", "--local")
+    assert quiet.exit_code == 0, quiet.output
+    assert "only on this machine" not in quiet.output
+    repo = a / "codes" / "tool" / "repo"
+    _commit(repo, "one.py", "two.py")
+    (repo / "code.py").write_bytes(b"print('edited')\n")
+    work = (core_sync.RunRepoWork("tool", uncommitted=True, unpushed=2),)
+
+    synced = _sync(a)
+
+    assert synced.exit_code == 0, synced.output
+    run = core_sync.read_sync_state(a).last_run
+    assert run is not None
+    assert (run.trigger, run.result, run.repos_with_work, run.repos_with_work_total) == (
+        "terminal", "ok", work, 1,
+    )
+    for args in (("status",), ("status", "--local")):
+        shown = _sync(a, *args)
+        assert shown.exit_code == 0, shown.output
+        assert "Code repos with changes only on this machine:" in shown.output
+        assert "• tool: uncommitted changes. Commit and push them, or undo them." in shown.output
+        assert (
+            "• tool: 2 commits no remote has. Push them so your other machines can fetch them."
+        ) in shown.output
+        assert "What to do" not in shown.output
+
+    # The GUI's auto sync: the same record, and its status counts the repo.
+    scheduler = SyncScheduler(SimpleNamespace(vault=a.resolve()))
+    scheduler.step()
+
+    status = scheduler.status()
+    assert (status["state"], status["reposWithWork"], status["notice"]) == ("ok", 1, None)
+    run = core_sync.read_sync_state(a).last_run
+    assert run is not None
+    assert (run.trigger, run.result, run.repos_with_work) == ("auto", "ok", work)
+
+
+def test_a_checkout_that_did_not_follow_is_not_counted_again_for_its_new_files(
+    tmp_path: Path, cloud: Path, upstream: Upstream
+) -> None:
+    """Untracked files alone do not keep a checkout from moving; when the move
+    fails, it is both not synced and with changes only here. The record names it
+    both ways; the GUI's line counts it once, as not synced, next to a repo with
+    a change of its own."""
+    from litman.server.sync_scheduler import SyncScheduler
+
+    a, b = _two_machines_with_a_repo(tmp_path, cloud, upstream)
+    other = make_bare_upstream(tmp_path / "other-up", n_commits=1)
+    assert _lit("code", "add", other.url, "--name", "other", vault=a).exit_code == 0
+    _commit(a / "codes" / "tool" / "repo", "mine.py")
+    assert _sync(a).exit_code == 0
+    fetched = _sync(b)
+    assert fetched.exit_code == sync_cmd.EXIT_SYNC_REPOS_DIFFER, fetched.output
+    assert _head(b, "other") == (other.commits[-1], "main")
+    (b / "codes" / "tool" / "repo" / "results.csv").write_bytes(b"1,2\n")
+    (b / "codes" / "other" / "repo" / "code.py").write_bytes(b"print('mine')\n")
+    scheduler = SyncScheduler(SimpleNamespace(vault=b.resolve()))
+
+    scheduler.step()
+
+    status = scheduler.status()
+    assert status["state"] == "ok"
+    assert [r["name"] for r in status["notice"]["reposNotRestored"]] == ["tool"]
+    assert status["reposWithWork"] == 1  # other; tool is counted as not synced
+    run = core_sync.read_sync_state(b).last_run
+    assert run is not None
+    assert [r.name for r in run.repos] == ["tool"]
+    assert run.repos_with_work == (
+        core_sync.RunRepoWork("other", uncommitted=True),
+        core_sync.RunRepoWork("tool", uncommitted=True),
+    )
+
+
+def test_a_detached_checkout_is_followed_detached(
+    tmp_path: Path, cloud: Path, upstream: Upstream
+) -> None:
+    a, b = _two_machines_with_a_repo(tmp_path, cloud, upstream)
+    c2 = upstream.commits[1]
+    repo_a = a / "codes" / "tool" / "repo"
+    git("fetch", "-q", "--depth", "1", "origin", c2, cwd=repo_a)
+    git("checkout", "-q", "--detach", c2, cwd=repo_a)
+
+    from_a = _sync(a)
+    result = _sync(b)
+
+    assert from_a.exit_code == 0, from_a.output
+    assert "not synced" not in from_a.output
+    assert _recorded(a) == (c2, None)
+    assert result.exit_code == 0, result.output
+    assert f"tool: moved to {c2[:7]} (detached)" in result.output
+    assert _head(b) == (c2, None)
+
+
+def test_a_checkout_left_by_a_repo_removed_elsewhere_is_reported_on_every_sync(
+    tmp_path: Path, cloud: Path, upstream: Upstream
+) -> None:
+    a, b = _two_machines_with_a_repo(tmp_path, cloud, upstream)
+    removed = _lit("code", "rm", "tool", "-y", vault=a)
+    assert removed.exit_code == 0, removed.output
+    assert _sync(a).exit_code == 0
+
+    first = _sync(b)
+    again = _sync(b)
+
+    for result in (first, again):
+        assert result.exit_code == sync_cmd.EXIT_SYNC_REPOS_DIFFER, result.output
+        assert _LEFT_BEHIND in result.output
+    assert _head(b) == (upstream.commits[-1], "main")
+    assert not (b / "codes" / "tool" / "repo-meta.yaml").exists()
+
+    # B's checkout keeps an empty codes/tool/ in the cloud, which comes to A:
+    # nothing to fix there, and a repo of that name can be added again.
+    on_a = _sync(a)
+
+    assert on_a.exit_code == 0, on_a.output
+    assert code_folder_kind(a / "codes" / "tool") == "empty"
+    assert check_code_clone_integrity(a, list_papers(a)) == []
+    readded = _lit("code", "add", upstream.url, "--name", "tool", vault=a)
+    assert readded.exit_code == 0, readded.output
+
+
+def test_conflicts_and_a_repo_that_did_not_follow_exit_21_and_both_are_listed(
+    tmp_path: Path, cloud: Path, upstream: Upstream
+) -> None:
+    a, b = _two_machines_with_a_repo(tmp_path, cloud, upstream)
+    now = time.time()
+    _edit_metadata(a, "p1", "edited-on-a", now - 200)
+    _edit_metadata(b, "p1", "edited-on-b", now - 100)
+    upstream.commit("c4")
+    assert _lit("code", "update", "tool", vault=a).exit_code == 0
+    assert _sync(a).exit_code == 0
+    (b / "codes" / "tool" / "repo" / "code.py").write_bytes(b"print('mine')\n")
+
+    result = _sync(b)
+
+    assert result.exit_code == sync_cmd.EXIT_SYNC_CONFLICTS, result.output
+    assert "1 conflict" in result.output
+    assert "p1 · metadata.yaml" in result.output
+    assert "tool: it has changes here, so it stays at" in result.output

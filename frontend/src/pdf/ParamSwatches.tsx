@@ -4,26 +4,33 @@
 // selected annotation). Purely presentational — every piece of state and the
 // pdf.js param dispatch live in PdfView; this component only renders + calls back.
 
+import { useT, type Messages } from '../i18n'
+
 export type ParamType = 'highlight' | 'freetext' | 'ink'
+
+interface Swatch {
+  name: keyof Messages['reader']['paramSwatches']['color']
+  hex: string
+}
 
 // Built-in colour bars (a few fixed swatches, no full colour picker — per the
 // user's request). Highlight uses pdf.js's translucent palette; text / ink use
 // opaque ink colours. The highlight hex values MUST stay in sync with
 // HIGHLIGHT_COLORS in PdfView.tsx (the pdf.js highlight-palette config) so a
 // swatch resolves to a known highlight name.
-const HL_SWATCHES = [
-  { name: 'Yellow', hex: '#FFFF98' },
-  { name: 'Green', hex: '#53FFBC' },
-  { name: 'Blue', hex: '#80EBFF' },
-  { name: 'Pink', hex: '#FFCBE6' },
-  { name: 'Red', hex: '#FF4F5F' },
+const HL_SWATCHES: Swatch[] = [
+  { name: 'yellow', hex: '#FFFF98' },
+  { name: 'green', hex: '#53FFBC' },
+  { name: 'blue', hex: '#80EBFF' },
+  { name: 'pink', hex: '#FFCBE6' },
+  { name: 'red', hex: '#FF4F5F' },
 ]
-const PEN_SWATCHES = [
-  { name: 'Black', hex: '#1A1A1A' },
-  { name: 'Red', hex: '#E03131' },
-  { name: 'Blue', hex: '#1971C2' },
-  { name: 'Green', hex: '#2F9E44' },
-  { name: 'Orange', hex: '#E8590C' },
+const PEN_SWATCHES: Swatch[] = [
+  { name: 'black', hex: '#1A1A1A' },
+  { name: 'red', hex: '#E03131' },
+  { name: 'blue', hex: '#1971C2' },
+  { name: 'green', hex: '#2F9E44' },
+  { name: 'orange', hex: '#E8590C' },
 ]
 // FreeText font sizes (FREETEXT_SIZE param) — `ui` sizes the preview glyph.
 const TEXT_SIZES = [
@@ -58,6 +65,7 @@ export default function ParamSwatches({
   inkWidth,
   onInkWidth,
 }: Props) {
+  const tx = useT().reader.paramSwatches
   const swatches = type === 'highlight' ? HL_SWATCHES : PEN_SWATCHES
   return (
     <div className="flex items-center gap-1.5">
@@ -67,8 +75,8 @@ export default function ParamSwatches({
           <button
             key={c.hex}
             onClick={() => onColor(c.hex)}
-            title={c.name}
-            aria-label={c.name}
+            title={tx.color[c.name]}
+            aria-label={tx.color[c.name]}
             aria-pressed={active}
             className={
               'h-5 w-5 rounded-full transition ' +
@@ -88,7 +96,7 @@ export default function ParamSwatches({
               key={s.value}
               onClick={() => onTextSize(s.value)}
               aria-pressed={textSize === s.value}
-              title={`Font size ${s.value}`}
+              title={tx.fontSize(s.value)}
               className={
                 'flex h-6 w-6 items-center justify-center rounded-md font-semibold leading-none transition-colors ' +
                 (textSize === s.value
@@ -110,7 +118,7 @@ export default function ParamSwatches({
               key={w.value}
               onClick={() => onInkWidth(w.value)}
               aria-pressed={inkWidth === w.value}
-              title={`Thickness ${w.value}`}
+              title={tx.thickness(w.value)}
               className={
                 'flex h-6 w-7 items-center justify-center rounded-md transition-colors ' +
                 (inkWidth === w.value

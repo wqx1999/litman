@@ -9,6 +9,7 @@ import {
 import { marked } from 'marked'
 import DOMPurify from 'dompurify'
 import {
+  ABSENT_BASE,
   fetchDiscussion,
   fetchNotes,
   fetchTrashDiscussion,
@@ -16,6 +17,8 @@ import {
   putDiscussion,
   putNotes,
 } from '../api'
+import { getT, useT } from '../i18n'
+import type { MdFile } from '../types'
 
 /** The edit session for one md tab, owned by App (keyed per tab) so it survives
  * this view's unmount on tab switch. Absent (undefined) = not editing. */
@@ -24,6 +27,16 @@ export interface MdDraft {
   /** The on-disk text when the edit began — App diffs against it for dirtiness
    * (the close prompt + page-unload guard), mirroring PdfHandle.isDirty(). */
   savedText: string
+  /** The file's version when the edit began (or when the untouched session
+   * last followed the file), sent with the save: a file that changed meanwhile
+   * (a sync, an agent) is kept in the backup before the save replaces it.
+   * Null when the file did not exist. */
+  base: string | null
+}
+
+/** A trashed doc has no version: it is never saved. */
+function unversioned(text: string | null): MdFile | null {
+  return text === null ? null : { text, version: null }
 }
 
 interface Props {
@@ -48,19 +61,31 @@ interface Props {
    * editing. Controlled: a present value puts the view in edit mode. */
   draftEntry?: MdDraft
   /** Bumped by the host on a resync-from-disk so this view re-reads its file
-   * (e.g. a CLI/agent rewrote notes.md). Skipped while editing — the draft is
-   * the source of truth then. */
+   * (e.g. a sync pulled it, a CLI/agent rewrote it). Skipped while the draft
+   * has been typed in — the draft is the source of truth then. */
   reloadToken?: number
-  /** Begin editing: App records {draft: seed, savedText: seed}. */
-  onBeginEdit: (tabKey: string, seed: string) => void
+  /** Begin editing: App records {draft: seed, savedText: seed, base}. */
+  onBeginEdit: (tabKey: string, seed: string, base: string | null) => void
+  /** The file was read and holds `text` at version `base`. App re-seeds this
+   * tab's edit session from it if nobody has typed in the session yet, so an
+   * untouched textarea follows a sync instead of showing what the disk no
+   * longer has; a session with typing in it is left alone. */
+  onFileRead: (tabKey: string, text: string, base: string | null) => void
   /** A keystroke in the textarea: App updates the lifted draft. */
   onDraftChange: (tabKey: string, draft: string) => void
-  /** A successful save: the edit session ends; App drops the entry. */
+  /** Leave the session with nothing to save (an untouched draft). */
   onEndEdit: (tabKey: string) => void
+  /** A save of `sent` went through, the file now at version `base`. App ends
+   * the session if the draft is still `sent`; typing done while the save was
+   * on its way stays, as a session that starts from the saved text. */
+  onSaveSettled: (tabKey: string, sent: string, base: string | null) => void
   /** A successful save bumped this paper's notes/discussion mtime. App advances
    * its doc-mtime baseline so the next resync diff does NOT mislabel the user's
    * own GUI edit as an external "notes updated" change (D2). */
   onSaved?: (paperId: string, doc: 'notes' | 'discussion') => void
+  /** A save went over a file that had changed since it was read: the save
+   * won, and the copy it replaced is at `backup`. The host tells the user. */
+  onSaveReplaced?: (paperId: string, file: string, backup: string) => void
 }
 
 // Per-tab scroll position for the rendered markdown, kept for the session so a
@@ -130,19 +155,27 @@ export default function MdView({
   draftEntry,
   reloadToken = 0,
   onBeginEdit,
+  onFileRead,
   onDraftChange,
   onEndEdit,
+  onSaveSettled,
   onSaved,
+  onSaveReplaced,
 }: Props) {
+  const tx = useT().reader.mdView
+  // The file's own name, which no language changes.
+  const file = `${doc}.md`
   // The current on-disk text (null = file absent / not loaded yet). The render
   // html is derived from it; edit mode seeds its textarea from it.
   const [text, setText] = useState<string | null>(null)
+  // The version `text` was read at; an edit starts from it.
+  const [version, setVersion] = useState<string | null>(null)
   const [loaded, setLoaded] = useState(false)
-  // Load failed with a described server error (e.g. the file on disk is not
-  // UTF-8). Kept separate from `missing`: the file EXISTS, so the tab must
-  // explain instead of offering "start writing" (whose save would overwrite
-  // the original).
-  const [loadError, setLoadError] = useState<string | null>(null)
+  // The server could not read the file (e.g. it is not UTF-8 on disk). Kept
+  // separate from `missing`: the file EXISTS, so the tab must say so instead
+  // of offering "start writing" (whose save would overwrite the original).
+  // The server's reason is not shown here; health-check reports it.
+  const [loadError, setLoadError] = useState(false)
   const [saving, setSaving] = useState(false)
   // Previewing the draft: the edit session is still open, but the rendered view
   // is showing instead of the textarea. Only meaningful while editing — see
@@ -187,72 +220,89 @@ export default function MdView({
   // never opens, a drag selects nothing) and the search marks are wiped.
   const innerHtml = useMemo(() => ({ __html: html }), [html])
 
+  // Hand a fresh read to App, which re-seeds this tab's session only if it is
+  // still untouched — decided inside App's state update, so a keystroke that
+  // got there first wins. A file that is gone reads as ABSENT_BASE, as in
+  // enterEdit.
+  // Held in a ref: the load effect below runs per paper, not per render.
+  const followFile = useRef<(fresh: MdFile | null) => void>(() => {})
+  followFile.current = (fresh: MdFile | null) =>
+    onFileRead(tabKey, fresh?.text ?? '', fresh === null ? ABSENT_BASE : fresh.version)
+
   useEffect(() => {
     let cancelled = false
     setLoaded(false)
-    setLoadError(null)
+    setLoadError(false)
     // Read-only (trash) tabs address the file by the trash entry_name, which the
     // host passes as `paperId`; live tabs use the per-paper read endpoints.
     const load = readOnly
-      ? doc === 'notes'
-        ? fetchTrashNotes
-        : fetchTrashDiscussion
+      ? (id: string) =>
+          (doc === 'notes' ? fetchTrashNotes : fetchTrashDiscussion)(id).then(unversioned)
       : doc === 'notes'
         ? fetchNotes
         : fetchDiscussion
     load(paperId)
-      .then((loadedText) => {
+      .then((loadedFile) => {
         if (cancelled) return
-        setText(loadedText)
+        setText(loadedFile?.text ?? null)
+        setVersion(loadedFile?.version ?? null)
         setLoaded(true)
+        // A tab left mid-session in the back is not mounted, so the reload
+        // below never ran for it: the session catches up here, on the way back.
+        if (!readOnly) followFile.current(loadedFile)
       })
-      .catch((err: unknown) => {
+      .catch(() => {
         if (cancelled) return
         // Deliberately NOT setLoaded(true): `loaded` gates enterEdit, and
         // editing a file the server could not read would overwrite it with a
         // blank draft on save. Unreadable ⇒ not editable until fixed on disk.
-        setLoadError(err instanceof Error ? err.message : String(err))
+        setLoadError(true)
       })
     return () => {
       cancelled = true
     }
   }, [paperId, doc, readOnly])
 
-  // Re-read the file when the host bumps reloadToken (a resync-from-disk: the CLI
-  // or an agent rewrote this doc). The MOUNT run is skipped (firstReloadRef) — the
-  // load effect above already fetched then — so a tab opened while reloadToken is
-  // already > 0 (a focus resync happened earlier) does NOT double-fetch + double-
-  // parse. Subsequent bumps refetch. Skipped while editing (the App-owned draft is
-  // the source of truth) and in read-only/trash mode (a trashed file is immutable).
-  // Only `text` is touched, never the draft, so an in-progress GUI edit is safe.
+  // Re-read the file when the host bumps reloadToken (a resync-from-disk: a sync
+  // pulled this doc, or the CLI or an agent rewrote it). The MOUNT run is skipped
+  // (firstReloadRef) — the load effect above already fetched then — so a tab
+  // opened while reloadToken is already > 0 (a focus resync happened earlier)
+  // does NOT double-fetch + double-parse. Subsequent bumps refetch. Skipped in
+  // read-only/trash mode (a trashed file is immutable) and while the draft has
+  // been typed in (it is the source of truth then; the save's version check
+  // keeps what it replaces). An edit session nobody has typed in yet follows
+  // the file: double-clicking is not editing, and a stale textarea would hide
+  // the other machine's change until the tab is reopened.
   const firstReloadRef = useRef(true)
   useEffect(() => {
     if (firstReloadRef.current) {
       firstReloadRef.current = false
       return
     }
-    if (editing || readOnly) return
+    if (readOnly || (editing && draft !== savedText)) return
     let cancelled = false
     const load = doc === 'notes' ? fetchNotes : fetchDiscussion
     load(paperId)
       .then((fresh) => {
         if (cancelled) return
-        setText(fresh)
+        setText(fresh?.text ?? null)
+        setVersion(fresh?.version ?? null)
         // A resync can also RECOVER a previously unreadable file (the user
         // fixed it on disk): clear the error and unlock the tab.
         setLoaded(true)
-        setLoadError(null)
+        setLoadError(false)
+        followFile.current(fresh)
       })
-      .catch((err: unknown) => {
+      .catch(() => {
         if (cancelled) return
-        setLoadError(err instanceof Error ? err.message : String(err))
+        setLoadError(true)
       })
     return () => {
       cancelled = true
     }
-    // Only reloadToken drives this refetch; paperId/doc/editing/readOnly are read
-    // for the current value but must not themselves re-trigger it (the mount
-    // effect owns paperId/doc loads; entering edit must not reload).
+    // Only reloadToken drives this refetch; paperId/doc/editing/readOnly/draft are
+    // read for the current value but must not themselves re-trigger it (the mount
+    // effect owns paperId/doc loads; entering edit or typing must not reload).
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [reloadToken])
 
@@ -356,15 +406,21 @@ export default function MdView({
     // Wait for the fetch to settle (loaded) so an existing file seeds the
     // textarea from its real content, not a transient null.
     if (!loaded) return
-    onBeginEdit(tabKey, text ?? '')
-  }, [readOnly, editing, loaded, text, onBeginEdit, tabKey])
+    // A file that does not exist yet starts from ABSENT_BASE: one a sync
+    // brings meanwhile is then kept in the backup when the save replaces it.
+    onBeginEdit(tabKey, text ?? '', text === null ? ABSENT_BASE : version)
+  }, [readOnly, editing, loaded, text, version, onBeginEdit, tabKey])
 
   const save = useCallback(async () => {
     if (saving) return
     setSaving(true)
     const put = doc === 'notes' ? putNotes : putDiscussion
+    // What this save sends. The textarea stays open while it is on its way
+    // (a sync can hold it for a while), so the draft may move on meanwhile.
+    const sent = draft
     try {
-      await put(paperId, draft)
+      const saved = await put(paperId, sent, draftEntry?.base ?? null)
+      if (saved.replaced) onSaveReplaced?.(paperId, file, saved.replaced.backup)
       // Suppress this GUI write from the next resync diff (D2): advance App's
       // doc-mtime baseline so the bumped file mtime is not read as an external
       // edit. Done before the reload so a slow reload can't race a resync.
@@ -374,16 +430,30 @@ export default function MdView({
       // from re-stripping it).
       const reload = doc === 'notes' ? fetchNotes : fetchDiscussion
       const fresh = await reload(paperId)
-      setText(fresh ?? draft)
+      setText(fresh?.text ?? sent)
+      setVersion(fresh?.version ?? saved.version)
       // End the (App-owned) edit session — drops the draft so the tab is no
-      // longer dirty and switch-back shows the rendered view.
-      onEndEdit(tabKey)
+      // longer dirty and switch-back shows the rendered view — unless typing
+      // went on during the save: that stays, based on what was saved.
+      onSaveSettled(tabKey, sent, saved.version)
     } catch {
-      onNotify?.(`Couldn't save ${doc}.md — your edit is kept; try again.`)
+      onNotify?.(getT().reader.mdView.saveFailed(`${doc}.md`))
     } finally {
       setSaving(false)
     }
-  }, [doc, draft, paperId, saving, onNotify, onEndEdit, onSaved, tabKey])
+  }, [
+    doc,
+    draft,
+    draftEntry?.base,
+    file,
+    paperId,
+    saving,
+    onNotify,
+    onSaveSettled,
+    onSaved,
+    onSaveReplaced,
+    tabKey,
+  ])
 
   // Leave the textarea WITHOUT ending the edit session: the draft is kept and
   // rendered, so this is a preview, not a discard. Nothing in the editor throws
@@ -463,9 +533,9 @@ export default function MdView({
 
   const header =
     doc === 'notes' ? (
-      <span className="text-stone-700">📝 Notes</span>
+      <span className="text-stone-700">{tx.header.notes}</span>
     ) : (
-      <span className="text-stone-700">💬 Discussion</span>
+      <span className="text-stone-700">{tx.header.discussion}</span>
     )
 
   return (
@@ -491,7 +561,7 @@ export default function MdView({
               // unchanged; note it was the LIGHT side that was short, not the
               // dark variant added for it.
               <span className="font-mono text-xs font-normal text-amber-700 dark:text-amber-400">
-                Unsaved draft — previewing
+                {tx.previewingDraft}
               </span>
             )}
             <button
@@ -499,27 +569,27 @@ export default function MdView({
               disabled={saving}
               className="rounded-lg px-2.5 py-1 text-xs font-normal text-stone-600 transition-colors hover:bg-stone-200 disabled:opacity-40"
             >
-              {previewingDraft ? 'Edit' : 'Preview'}
+              {previewingDraft ? tx.edit : tx.preview}
             </button>
             <button
               onClick={() => void save()}
               disabled={saving}
               className="rounded-lg bg-accent-500 px-2.5 py-1 text-xs font-medium text-white transition-colors hover:bg-accent-600 disabled:opacity-60"
             >
-              {saving ? 'Saving…' : 'Save'}
+              {saving ? tx.saving : tx.save}
             </button>
           </div>
         ) : readOnly ? (
           <span className="font-mono text-xs font-normal text-stone-400">
-            read-only (trash)
+            {tx.readOnly}
           </span>
         ) : (
           <span className="font-mono text-xs font-normal text-stone-400">
             {loadError
-              ? 'unavailable'
+              ? tx.unavailable
               : missing
-                ? 'double-click to start writing'
-                : 'double-click to edit'}
+                ? tx.hintStart
+                : tx.hintEdit}
           </span>
         )}
       </div>
@@ -546,12 +616,10 @@ export default function MdView({
         // overwrite the original.
         <div className="flex-1 overflow-auto p-8 text-sm leading-relaxed text-stone-500">
           <p className="font-medium text-stone-600">
-            Couldn't load {doc}.md
+            {tx.loadFailed(file)}
           </p>
-          <p className="mt-2 max-w-prose">{loadError}</p>
           <p className="mt-2 max-w-prose text-stone-400">
-            Fix the file on disk, then reopen this tab — litman never
-            overwrites it.
+            {tx.loadFailedFix}
           </p>
         </div>
       ) : missing && !previewingDraft ? (
@@ -561,9 +629,7 @@ export default function MdView({
           }`}
           onDoubleClick={enterEdit}
         >
-          {readOnly
-            ? `No ${doc}.md for this trashed paper.`
-            : `No ${doc}.md for this paper yet — double-click to start writing.`}
+          {readOnly ? tx.missingTrashed(file) : tx.missing(file)}
         </div>
       ) : (
         <div

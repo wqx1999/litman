@@ -11,8 +11,10 @@ Pure Layer-2 business logic: no CLI rendering, no LLM. The match is a fixed
 case-insensitive substring (invariant #5: weak / no LLM still works), not a
 vector or semantic search. ``paper.pdf`` full text, ``.trash/``, and the
 ``views/`` symlink hubs are out of scope — the search corpus is exactly the
-two authored markdown files per paper, minus their HTML comments (the seeded
-format reminders are scaffolding, not something the user wrote).
+two authored markdown files per paper, minus what litman wrote into them:
+the HTML comments (the seeded format reminders), the level-1 heading on the
+first line (litman keeps it at the paper's title or id, so any query in the
+title or id would hit every such paper), and notes.md's placeholder line.
 """
 
 from __future__ import annotations
@@ -21,7 +23,7 @@ import re
 from pathlib import Path
 from typing import Any
 
-from litman.core.notes import enumerate_markdown_files
+from litman.core.notes import NOTES_PLACEHOLDER, enumerate_markdown_files
 
 # HTML comments are scaffolding, not authored content. Both scaffolds seed one
 # (notes.md the wikilink reminder, discussion.md the append-format reminder), so
@@ -54,6 +56,21 @@ def _mask_html_comments(text: str) -> str:
         )
 
     return _HTML_COMMENT_RE.sub(_blank, text)
+
+
+def _is_scaffold_line(lineno: int, line: str, file_stem: str) -> bool:
+    """Whether a line is one litman wrote rather than the user.
+
+    Line 1 when it is a level-1 heading: ``lit add`` seeds ``# <title>``
+    (notes.md) and ``# Discussion log for <id>`` (discussion.md), and
+    ``lit modify`` / ``lit rename`` rewrite it to follow the title or id
+    (``core/notes.retitle_heading``). And notes.md's placeholder line.
+    """
+    if lineno == 1:
+        first = line.lstrip("\ufeff")
+        if first == "#" or first.startswith(("# ", "#\t")):
+            return True
+    return file_stem == "notes" and line.strip() == NOTES_PLACEHOLDER
 
 
 def search_notes(
@@ -115,6 +132,8 @@ def search_notes(
         for lineno, (raw_line, masked_line) in enumerate(
             zip(raw_lines, masked_lines, strict=False), start=1
         ):
+            if _is_scaffold_line(lineno, raw_line, file_stem):
+                continue
             haystack = masked_line.lower() if case_insensitive else masked_line
             if needle in haystack:
                 hits.append(

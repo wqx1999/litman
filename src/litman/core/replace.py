@@ -22,6 +22,10 @@ from litman.core.locking import rmtree
 
 # ERROR_ACCESS_DENIED, ERROR_SHARING_VIOLATION.
 _HELD_BY_ANOTHER_PROGRAM = frozenset({5, 32})
+# ERROR_SHARING_VIOLATION, ERROR_LOCK_VIOLATION: only a program holding the
+# file gives these.
+_ONLY_WHEN_HELD = frozenset({32, 33})
+_ACCESS_DENIED = 5
 _BUDGET_SECONDS = 2.0
 _FIRST_WAIT_SECONDS = 0.01
 _LONGEST_WAIT_SECONDS = 0.2
@@ -45,6 +49,23 @@ def refused_by_windows(err: OSError) -> bool:
         _platform() == "win32"
         and getattr(err, "winerror", None) in _HELD_BY_ANOTHER_PROGRAM
     )
+
+
+def held_by_another_program(err: OSError, *, unlocked: bool) -> bool:
+    """Can this refusal be put down to another program holding the file?
+
+    Codes 32 and 33 say so outright. Code 5 is also what a read-only file, a
+    permission or a sandbox gives, so it counts only for the replace itself
+    (an error that names both files) onto a file whose read-only bit litman
+    cleared just before (``unlocked``): what is left to refuse it then is
+    almost always a program that has it open, a PDF viewer, say.
+    """
+    if _platform() != "win32" or not isinstance(err, PermissionError):
+        return False
+    code = getattr(err, "winerror", None)
+    if code in _ONLY_WHEN_HELD:
+        return True
+    return code == _ACCESS_DENIED and unlocked and err.filename2 is not None
 
 
 def refusal_message(err: OSError) -> str:
@@ -90,6 +111,18 @@ def replace_file(src: _Path, dst: _Path) -> None:
     first, as it always had to.
     """
     _ride_out(os.replace, src, dst)
+
+
+def remove_file(path: _Path) -> None:
+    """``os.unlink(path)``, riding out a program holding the file; a missing one is fine."""
+
+    def unlink(target: _Path, _unused: _Path) -> None:
+        try:
+            os.unlink(target)
+        except FileNotFoundError:
+            pass
+
+    _ride_out(unlink, path, path)
 
 
 def rename_path(src: _Path, dst: _Path) -> None:

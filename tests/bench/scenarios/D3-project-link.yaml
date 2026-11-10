@@ -8,14 +8,14 @@ invariants: []
 routing_label: lit-library
 seed: seed-2papers-peptide
 precondition: |
-  库含 #4。项目 PepCodec 未注册。agent 的当前工作目录（executor 的 neutral cwd，永远
+  库含 #4。项目 BlueBell 未注册。agent 的当前工作目录（executor 的 neutral cwd，永远
   存在且可写）即用作项目目录——intent 已言明，故 `lit project add --path` 有现成目录可指。
 intent: |
-  "我想新建一个文献项目叫 PepCodec，就用我当前所在的这个工作目录作为它的项目目录，
+  "我想新建一个文献项目叫 BlueBell，就用我当前所在的这个工作目录作为它的项目目录，
   然后把 PeptideBERT 归进去。"
 expected_end_state:
-  - "taxonomy_has: projects :: pepcodec"
-  - "yaml_list_has: papers/<peptidebert>/metadata.yaml :: projects has pepcodec"
+  - "taxonomy_has: projects :: bluebell"
+  - "yaml_list_has: papers/<peptidebert>/metadata.yaml :: projects has bluebell"
   - "ran: project add"
   - "ran: link"
   - "health: clean"
@@ -27,11 +27,11 @@ notes: |
   (1) `lit project add --path` 是 **[required]** 且目录必须**已存在**、litman **无默认
   项目位置**，但 intent 不给路径 → agent 只能反问"路径在哪"（这其实是正确行为，卡
   under-specified），单轮 claude -p 没人答 → 没跑 add/link（cc_haiku_260604_0 r0 即此）；
-  (2) seed-2papers 从未建过 precondition 声称的 `projects/PepCodec/` 目录。
+  (2) seed-2papers 从未建过 precondition 声称的 `projects/BlueBell/` 目录。
 
   修法不靠 seed/executor plumbing：intent 言明"用当前工作目录作项目目录"——executor 的
   neutral cwd 永远存在、可写、且 checker 阶段仍在（run_vault.parent/cwd），agent 即可
-  `lit project add PepCodec --path "$(pwd)"` + `lit link`。能否用 cwd 是**模型能力**问题
+  `lit project add BlueBell --path "$(pwd)"` + `lit link`。能否用 cwd 是**模型能力**问题
   （信息已自包含），非 harness 缺口。
 
   原 symlink/REFERENCES 两条 prose 已删——`health: clean` 跑真实 `run_all_checks`，其中
@@ -40,14 +40,14 @@ notes: |
   断言（agent 把 projects 字段塞上却没真 link，member_ids 有而 link_ids 无 → error）。
 
   **大小写由 checker 归一化，不靠断言字面。** agent 的 project token 大小写是**掷硬币**
-  （cc_haiku r0 敲 `pepcodec`、260604_2 r0 敲 `PepCodec`，同 prompt 同 skill 两种都出）。
+  （cc_haiku r0 敲 `bluebell`、260604_2 r0 敲 `BlueBell`，同 prompt 同 skill 两种都出）。
   litman 自己对 4 个 TAXONOMY key（projects/topics/methods/data）**存储大小写保留**
   （`commands/taxonomy.py:237`、`commands/project.py:171` 仅 `strip()`）但**匹配大小写不
-  敏感**（`core/query.py:104` `token.lower() in entry.lower()`）——`PepCodec` 与 `pepcodec`
+  敏感**（`core/query.py:104` `token.lower() in entry.lower()`）——`BlueBell` 与 `bluebell`
   在 litman 里是**同一个项目**。故 `taxonomy_has` / `yaml_list_has` 的成员比较已改为按 litman
   自身的 `_norm`（casefold）等价判定（`harness/checker.py` `_check_taxonomy` /
-  `_check_yaml_list`），断言字面用小写 `pepcodec` 还是 CamelCase 都不影响通过。这把卡从"测
+  `_check_yaml_list`），断言字面用小写 `bluebell` 还是 CamelCase 都不影响通过。这把卡从"测
   agent 大小写约定遵从"（噪音）还原为"测 agent 能否把论文绑进项目"（能力）。J1/D4 仍写
-  CamelCase `PepCodec`，行为一致、无需改。（附带 litman 隐患：`project add` 去重
-  `project.py:191` 大小写敏感，理论上 `PepCodec`+`pepcodec` 可并存为两项目——记入 later
+  CamelCase `BlueBell`，行为一致、无需改。（附带 litman 隐患：`project add` 去重
+  `project.py:191` 大小写敏感，理论上 `BlueBell`+`bluebell` 可并存为两项目——记入 later
   proposal，与本卡无关；本卡的 case-insensitive 不掩盖该隐患，二者关注点不同。）

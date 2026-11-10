@@ -36,6 +36,7 @@ _FILES = (
 _HELPER_FILES = (
     "src/litman/skills/lit-library/add-errors.md",
     "src/litman/skills/lit-library/legacy-repair.md",
+    "src/litman/skills/lit-library/sync.md",
     "src/litman/skills/lit-reading/health-check.md",
     "src/litman/skills/lit-reading/si.md",
 )

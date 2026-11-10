@@ -39,6 +39,43 @@ jobs:
       - name: Install
         run: pip install -e ".[dev]"
 
+      # The two-way sync tests run a real rclone bisync against local folders,
+      # and skip themselves when rclone is missing. Pinned, and checked against
+      # rclone's published SHA256SUMS, so a new rclone release cannot change a
+      # verdict on its own; the floor litman requires is lower (1.74.2).
+      - name: Install rclone 1.75.2 (the two-way sync tests run it)
+        shell: bash
+        env:
+          RCLONE_VERSION: '1.75.2'
+        run: |
+          case "$RUNNER_OS-$RUNNER_ARCH" in
+            Linux-X64)   asset=linux-amd64;   sum=349ac8fba6ff65d6247043f1750cdcb518ec5d500ef91463a10d37c0ccdf3702;;
+            macOS-ARM64) asset=osx-arm64;     sum=610ab7d48615135dfc60b763858b11a426a0d3d1160c1bb76fb0ae6011b02edd;;
+            macOS-X64)   asset=osx-amd64;     sum=574e1f31cf1c464e5fb0325cb66fcbdeaf1efa1802bd9b17f13c256fd74b6561;;
+            Windows-X64) asset=windows-amd64; sum=8a9db2bad1dc79a65b3348fd857069598e2aab7cf4d118b77b1df23055aff818;;
+            *) echo "::error::No rclone build is pinned for $RUNNER_OS-$RUNNER_ARCH."; exit 1;;
+          esac
+          name="rclone-v${RCLONE_VERSION}-${asset}"
+          curl -fsSL --retry 3 -o "$RUNNER_TEMP/$name.zip" \
+            "https://downloads.rclone.org/v${RCLONE_VERSION}/$name.zip"
+          python - "$RUNNER_TEMP/$name.zip" "$sum" "$RUNNER_TEMP" <<'PY'
+          import hashlib
+          import sys
+          import zipfile
+
+          zip_path, want, dest = sys.argv[1:4]
+          with open(zip_path, "rb") as f:
+              got = hashlib.sha256(f.read()).hexdigest()
+          if got != want:
+              sys.exit(f"rclone download sha256 {got} does not match the pinned {want}")
+          zipfile.ZipFile(zip_path).extractall(dest)
+          PY
+          chmod +x "$RUNNER_TEMP/$name/rclone" 2>/dev/null || true
+          echo "$RUNNER_TEMP/$name" >> "$GITHUB_PATH"
+
+      - name: rclone version
+        run: rclone version
+
       # tests/bench drives the benchmark harness against real papers, and
       # .gitignore keeps those PDFs out of the repo on copyright grounds. A
       # fresh checkout therefore cannot have them, so the bench suite fails

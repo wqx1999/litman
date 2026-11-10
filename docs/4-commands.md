@@ -27,8 +27,14 @@ same help as `lit <cmd> --help`.
 
 A few commands do **not** take `--library` / `--vault`, because they create a
 vault, target the registry, or touch no vault at all: `init`, `setup`,
-`install-completion`, `install-skill`, `uninstall`, `self-update`, `pdf-text`,
-`help`, and every `lit vault` subcommand.
+`install-completion`, `install-skill`, `uninstall`, `self-update`, `gui-log`,
+`pdf-text`, `help`, and every `lit vault` subcommand.
+
+**Output of the read commands.** `lit list`, `lit show`, `lit gui-log` and every
+`list` subcommand (`vault`, `project`, `code`, `taxonomy`, `trash`) print a table
+when you type them at a terminal and JSON anywhere else — an agent's shell, a pipe,
+a file. `--format table` or `--format json` picks one explicitly. `lit search`
+and `lit related` print JSON unless given `--format table`.
 
 **Vault discovery chain.** When a command needs a vault and you give no explicit
 override, `lit` resolves one in this order (first hit wins):
@@ -94,7 +100,7 @@ directory.
 
 ```
 lit init <parent_dir>
-lit init <parent_dir> --name pepforge_lib
+lit init <parent_dir> --name my_library
 lit init <parent_dir> --no-register
 ```
 
@@ -188,8 +194,8 @@ Reverse of `lit setup`: remove the bundled skills (from every agent skills
 directory litman knows), the desktop shortcut, the shell-completion block, the
 vault registry (the list of vault names/paths), the machine-level agent
 preferences, the other files litman keeps beside the registry (Web UI pins, the
-update-check cache, the self-update log, and the records a stopped `lit gui`
-leaves), and the browser profile the `lit gui --window` app window runs against
+update-check cache, the self-update log, the GUI log, and the records a stopped
+`lit gui` leaves), and the browser profile the `lit gui --window` app window runs against
 (a sandboxed browser keeps that profile somewhere its sandbox allows, so both
 locations are swept). A file of your own there is left, and so is its folder.
 It does not remove the `lit` CLI
@@ -335,13 +341,19 @@ lit list --topic transformer --format json
 | `--unread` | Only papers with an empty `read-date`. |
 | `--sort [id\|recent]` | Order. `id` (default) ascending, matches `INDEX.json`. `recent` = most-recently-engaged first. |
 | `--limit <N>` | Keep only the first N after filtering + sorting. |
-| `--format [table\|json]` | Output format. `json` emits the same per-paper projection as `INDEX.json`. |
+| `--format [table\|json]` | Output format. `json` emits the same per-paper projection as `INDEX.json`. Default: `table` at a terminal, `json` elsewhere. |
 
 With `--sort recent` the table view shows the top 10 by default; raise it with
 `--limit`, or use `--format json` for the full ranked list. The default sort
 caps an interactive table too — a terminal shows the first 30 as
-`Papers (showing 30 of N)` — while piped and `--format json` output are never
-capped.
+`Papers (showing 30 of N)` — while a table that is piped (`--format table`) and
+JSON are never capped.
+
+A `--topic` / `--method` / `--project` / `--data` value that no paper carries
+and `TAXONOMY.md` does not register can only match nothing. A note on stderr
+says so and names the registered values spelled like it — or, when none is, the
+whole dict — each with its paper count. stdout carries the result alone, so
+`--format json` still prints `[]`.
 
 ### `lit show`
 
@@ -361,7 +373,7 @@ lit show --paper-doi 10.1038/...
 | Flag | What it does |
 |---|---|
 | `--paper-doi <doi>` | Look the paper up by DOI instead of id. Mutually exclusive with the positional id. |
-| `--format [table\|json]` | `table` (default) renders metadata + file paths; `json` emits the **full** metadata dict (every field, not the `INDEX.json` projection). |
+| `--format [table\|json]` | `table` (the default at a terminal) renders metadata + file paths; `json` emits the **full** metadata dict (every field, not the `INDEX.json` projection) plus `_paths`: the absolute paths of the paper folder, PDF, notes, discussion, SI files and code clones, with `missing` listing those not on disk. |
 
 Each SI file gets an `SI:` line with its path, original name and size, marked
 `(missing!)` when the file is gone:
@@ -374,8 +386,10 @@ SI:    /home/you/research/literature_vault/papers/2025_Geylan_PepINVENT/suppleme
 
 Case-insensitive substring search over your `notes.md` / `discussion.md` only —
 not the PDF full text or SI files, not trashed papers, not the `views/` links,
-and not the `<!-- -->` comments litman seeds into those two files. Each hit is
-one matched line. Defaults to JSON output (`{id, file, line, snippet}`).
+and not what litman writes into those two files: the `<!-- -->` comments, the
+heading on the first line (it follows the paper's title or id), and the notes
+placeholder line. Each hit is one matched line. Defaults to JSON output
+(`{id, file, line, snippet}`).
 
 ```
 lit search <query>
@@ -387,7 +401,7 @@ lit search <query> --format table --limit 20
 |---|---|
 | `--in <notes,discussion>` | Which files to search (comma-separated). Default: both. |
 | `--format [json\|table]` | `json` (default, agent-facing) or a human-readable `table`. |
-| `--limit <N>` | Keep only the first N hits. Default: unbounded. |
+| `--limit <N>` | Keep only the first N hits. Default: 20; a note on stderr gives the total when more matched. |
 
 ### `lit related`
 
@@ -634,9 +648,12 @@ for what each field means.
 
 Link a paper to a project: add the `projects` tag, write a folder link under
 `<project>/litman_reflib/<id>/`, and regenerate
-`<project>/litman_reflib/REFERENCES.md`. The
-project must be registered in `lit-config.yaml` (via `lit project add`) and its
-directory must exist on disk **before** linking.
+`<project>/litman_reflib/REFERENCES.md`. The project must be registered
+(`lit project add`), and a folder registered for it on this machine must exist.
+A project listed in `TAXONOMY.md` with no folder on this machine, as one added
+on another computer arrives through `lit sync`, links too: only the paper's tag
+changes here, a note says so, and a computer that has the folder adds the link
+at its next `lit sync`.
 
 If a real folder already sits where a link belongs — a project directory copied
 from another machine turns every link into one — it is settled on the way: a
@@ -656,7 +673,7 @@ lit link --rebuild-all
 | Flag | What it does |
 |---|---|
 | `--paper-doi <doi>` | Look the paper up by DOI. Mutually exclusive with the positional id and `--rebuild-all`. |
-| `--project <name>` | Project name (must be registered in `lit-config.yaml`). |
+| `--project <name>` | Project name (one `lit project list` shows). |
 | `--relevance <text>` | Set the `relevance-<project>` field in one shot. Otherwise left untouched. |
 | `--priority <A\|B\|C>` | Grade the paper for this project (`priority-<project>`) in one shot. Otherwise the link is left ungraded. |
 | `--rebuild-all` | Cross-machine recovery: rebuild every project's links + `REFERENCES.md` from each paper's `projects` field. Skips `<id>` / `--project`. |
@@ -666,6 +683,7 @@ lit link --rebuild-all
 Reverse a link: drop the `projects` tag, the folder link, the `REFERENCES.md` entry,
 the `priority-<project>` grade, and (by default) the `relevance-<project>` field. Code links under the project
 are removed only if no other linked paper there still references the same repo.
+For a project with no folder on this machine only the tag and the two fields go.
 
 ```
 lit unlink <id> --project <name>
@@ -726,13 +744,13 @@ lit code restore-all [--dry-run]
 
 | Subcommand | What it does |
 |---|---|
-| `add <source>` | Clone (URL source) or copy/move (local-path source) into `codes/<name>/repo/`, seeding `repo-meta.yaml` and `notes.md`. |
+| `add <source>` | Clone (URL source) or copy/move (local-path source) into `codes/<name>/repo/`, seeding `repo-meta.yaml` (with the checkout's `commit` and `branch`) and `notes.md`. An empty `codes/<name>/` folder is taken as free. |
 | `link <repo-name> --paper <id>` | Bind an already-present repo to a paper (idempotent if already bound). |
 | `unlink <repo-name> --paper <id>` | Unbind a repo from a paper without deleting the clone. Drops only the named paper's edge; tolerant of an already-deleted clone. |
 | `list` | List repos and their paper bindings. `--format json` emits each repo's `repo-meta.yaml`, so the bindings come out as ids rather than a summary cell. |
-| `update <repo-name>` | `git pull --ff-only` inside the repo. |
+| `update <repo-name>` | `git pull --ff-only` inside the repo, then record its `commit` and `branch` in `repo-meta.yaml`. A shallow clone that `lit sync` moved to an older commit, and that holds no changes of yours, is moved to its branch's tip instead. |
 | `rm <repo-name>` | Permanently delete `codes/<repo-name>/`. Hard delete (re-clonable from the recorded upstream). |
-| `restore-all` | Re-clone every repo whose `repo/` checkout is missing (cross-machine recovery, or a restored paper's repo), and link it into its papers' projects. A `local:<path>` repo is copied from that folder again. |
+| `restore-all` | Re-clone every repo whose `repo/` checkout is missing (cross-machine recovery, or a restored paper's repo), at the `commit` its `repo-meta.yaml` records, and link it into its papers' projects. A `local:<path>` repo is copied from that folder again. |
 
 Per-subcommand flags:
 
@@ -748,6 +766,10 @@ Per-subcommand flags:
   without it, `rm` refuses when any paper still references the repo), `-y` / `--yes`.
 - `restore-all`: `--depth N`, `--dry-run`. Exit code 1 if any clone failed or any
   orphan reference was found (CI / cron-gateable).
+
+At a terminal, `add`, `update` and `restore-all` show git's progress. git never
+asks for a user name or password (it fails instead), and a download that stays
+under 1 KB/s for a minute is given up.
 
 ### `lit taxonomy`
 
@@ -843,7 +865,7 @@ file that number holds now, and — in a dated section of `discussion.md` — on
 name, written before the file now holding that number was added. Each finding
 says what to change. These are warnings: `lit health-check` exits 1 until the
 line is changed, but they do not hold up `lit sync push`, while the SI errors
-above do, like any other error.
+above do, like any other error. Two-way `lit sync` checks neither.
 
 ```
 lit health-check
@@ -902,28 +924,138 @@ lit trash empty [--dry-run] [-y]
 
 ### `lit sync`
 
-rclone-backed one-way cloud sync. `push` mirrors the vault to your remote;
-`pull` reverses it for cross-machine restore. The vault's per-machine sync-state
-file and the transient `.litman-staging/` directory are always excluded.
+Sync the library with a cloud folder through [rclone](https://rclone.org/). With
+no subcommand, `lit sync` syncs both ways, for one library used on several
+machines. The subcommands are one-way: `push` mirrors the vault to your remote
+as a backup, and `pull` restores it from there. The vault's per-machine
+sync-state file and the transient `.litman-staging/` directory are always
+excluded.
 
 ```
+lit sync [--first-from cloud|local] [--force]
 lit sync setup [--remote NAME] [--path PATH]
 lit sync push [--dry-run] [-y] [-f] [--exclude-repos]
 lit sync pull [--dry-run] [--exclude-repos]
-lit sync status
+lit sync status [--local]
+lit sync disconnect
 ```
+
+**Two-way sync** runs `rclone bisync` and needs rclone 1.74.2 or newer. What
+changed on this machine goes up, and what changed on your other machines comes
+down. It syncs with a folder inside the remote (the `--path` of
+`lit sync setup`), never with the remote's top level.
+
+- **Conflicts.** When both sides changed the same file since the last sync, the
+  newer copy is kept and the older one is moved out of the library into the
+  backup. The summary names each file, whose copy was kept and both copies'
+  times. When the file is `TAXONOMY.md`, the values only the older copy had
+  are added back to the kept one, so no tag on a paper is left unregistered.
+- **Deleted on one machine, changed on the other.** A paper or code folder
+  deleted (or renamed) on one machine while the other changed some of its files
+  is deleted everywhere: the changed files go to the backup, and the summary
+  names the folder and the files. A paper still in the trash comes back with
+  `lit trash restore`. A code folder's `repo/` checkout is never touched.
+- **Backups.** Every file a sync replaces or deletes is kept, one folder per
+  sync, named by its time. On this machine they are under `sync-backup/` in
+  litman's data folder: `~/.local/share/litman/` on Linux
+  (`$XDG_DATA_HOME/litman/` when that is set),
+  `~/Library/Application Support/litman/` on macOS,
+  `%LOCALAPPDATA%\litman\litman\` on Windows. In the cloud they are in the
+  folder next to the synced one, `<path>-litman-backup/`. The older copy of a
+  conflict, and the changed files of a folder deleted on another machine, go to
+  a `conflicts/<time>/` folder beside them: `<file>.sync-conflict1` was this
+  machine's copy, `<file>.sync-conflict2` the cloud's. When a note or PDF saved
+  in the GUI replaces a file that changed after it was opened, the replaced
+  copy goes to a `conflicts/<time>-save/` folder.
+- **First sync on a machine.** If the cloud folder is empty, this library is
+  copied up. If this library is new (no papers, nothing under `codes/`), the
+  cloud's library is copied down, and the local files it replaces go to the
+  backup. If both hold a library, nothing changes and the command exits `20`.
+  If this library's path and the cloud path together are too long for
+  rclone's records, nothing is synced and the command exits `1`, saying
+  which one to shorten.
+- **Never synced:** `INDEX.json` and `views/` (rebuilt after every sync),
+  `lit-config.yaml` and `codes/*/repo/` checkouts. Each machine keeps its own
+  project folders: a project added on another machine arrives without a folder
+  here, and the summary prints the `lit project set-path` that gives it one.
+- **Code repos follow by version.** Before each sync, the commit and branch of a
+  checkout you moved on this machine (`lit code update`, or a pull, commit or
+  checkout of your own) are written to its `repo-meta.yaml`. After it, a missing
+  checkout is fetched from the repo's upstream at the commit `repo-meta.yaml`
+  records, and one at another commit is moved there. A `repo-meta.yaml` that
+  records no commit yet gets the commit of the first machine that syncs it, and
+  the other machines follow that one. A checkout with changes of
+  yours (a changed tracked file, or a commit no remote has) is left where it is;
+  untracked files alone do not stop the move. The summary lists what moved, what
+  did not and why, and the checkouts whose uncommitted changes stay on this
+  machine. A repo imported from a folder (`local:`) is not fetched: copy that
+  folder over. A repo that cannot be fetched (offline, say) never stops the
+  sync; the next `lit sync` tries again.
+- **A code repo removed on another machine** leaves its checkout here
+  untouched, and every sync reminds you to move that folder out of the library
+  or delete it. Until then the other machines get an empty `codes/<name>/`
+  folder, which `lit health-check` does not report.
+- **After every sync** the read-only lock on `metadata.yaml`, `paper.pdf`, SI
+  files and `TAXONOMY.md` is put back, and `INDEX.json`, `views/` and the
+  project links are rebuilt.
+- **Safety stop.** rclone stops a sync that would delete more than half of the
+  files on one side, before anything is deleted. If the deletions are intended,
+  run `lit sync --force`.
+- **One sync at a time.** When another sync of this library is running (the
+  GUI's auto sync, or `lit sync` in another terminal), `lit sync` waits up to
+  90 seconds for it to end, then exits `23` without syncing. `push` and `pull`
+  wait the same way.
+- **Records outside the library.** Besides the backups, each machine keeps its
+  sync records and locks in litman's data folder. When that folder refuses
+  writing (a sandbox that lets an agent write only in its workspace, say),
+  `lit sync`, `push`, `pull` and `disconnect` stop with one line that names
+  it: allow writing to that folder, then run the command again.
+- **What it shows.** In a terminal, one line of how much rclone has copied,
+  gone once it is done; nothing of it in a pipe or for an agent. rclone's own
+  log lines are not shown: `lit sync status` lists them under the last run.
+  `push` and `pull` show the same line.
+- **Auto sync.** While `lit gui` runs, it syncs a library that has had its
+  first `lit sync` on this machine by itself (see `lit gui` below). A two-way
+  sync keeps a small `.litman-sync-stamp.json` in the cloud folder, which tells
+  the other machines that one has synced; it is not part of the library.
+- **When a sync stops.** Every two-way run, from a terminal or the GUI, is
+  recorded on this machine, and `lit sync status` shows the last one in full.
+  While that run failed or waits for `--first-from`, every other `lit` command
+  ends with one line, such as "Cloud sync stopped at 15:01 (sign-in refused).
+  Run `lit sync status` for why and what to do." The line goes away once a sync
+  goes through, from a terminal or the GUI.
+
+| Flag | What it does |
+|---|---|
+| `--first-from cloud\|local` | Compare both sides afresh, with that side winning every difference. The other side's differing files go to the backup; files found on one side only are kept and copied across. Needed when a first sync finds a library on both sides, or after the set of never-synced files changed. |
+| `--force` | Go on past rclone's safety stop (more than half of the files deleted on one side, or every file changed). Replaced and deleted files still go to the backup. |
+
+| Exit code | Meaning |
+|---|---|
+| `0` | Synced. |
+| `1` | Failed. A failure litman knows (an expired sign-in, rclone's safety stop) is said in litman's words, and `lit sync status` has rclone's lines; any other ends with rclone's last lines. What was not synced is picked up by the next `lit sync`. |
+| `20` | Nothing was synced: pick the side that wins with `--first-from cloud` or `--first-from local`. |
+| `21` | Synced, with conflicts: the newer copy of each file was kept and the older one is in the backup, or a folder deleted on one machine won over changes made to it on the other. |
+| `22` | Synced, but a code repo here does not match the library: its checkout is missing, at another commit, or left behind by a repo removed on another machine. The summary says why and what to do. |
+| `23` | Nothing was synced: another sync of this library was still running after 90 seconds. Run `lit sync` again once it is done. Also from `push` and `pull`. |
+
+A sync with conflicts that also left a code repo behind exits `21`, and its
+summary lists both. A checkout at the recorded commit with uncommitted changes
+is only listed; it does not change the exit code.
 
 | Subcommand | What it does |
 |---|---|
-| `setup` | Hand the TTY to `rclone config`, then record the chosen remote + path in `lit-config.yaml`. `--remote <name>` skips the interactive step (point litman at an existing remote); `--path <path>` sets the mirror path. |
-| `push` | Upload the vault (`rclone sync` — deletes orphans on the remote). |
-| `pull` | Download the remote into the vault. **One-way with deletion** — local files absent on the remote are removed. |
-| `status` | Show last-push / last-pull timestamps and local vs. remote file counts. No network mutation. |
+| `setup` | Hand the TTY to `rclone config`, then record the chosen remote + path in `lit-config.yaml`. `--remote <name>` skips the interactive step (point litman at an existing remote); `--path <path>` sets the mirror path. Off a terminal, both are required. |
+| `push` | Upload the vault (`rclone sync` — deletes orphans on the remote). Refused once the library syncs two-way, on this machine or another: run `lit sync` instead. |
+| `pull` | Download the remote into the vault. **One-way with deletion** — local files absent on the remote are removed. Refused once the library syncs two-way (run `lit sync`; on a new machine, `lit sync --first-from cloud`), and when the remote holds no `lit-config.yaml`. |
+| `status` | Show last-push / last-pull timestamps and local vs. remote file counts. No network mutation. For a library that syncs two-way, it counts what two-way sync carries and shows the last sync. Below that, this machine's last two-way run, from a terminal or the GUI: how it ended, each conflict with its backup, the code repos left behind, or the full error with what to do, and the lines rclone logged. After it, the code repos that run found with changes only on this machine (uncommitted changes, or commits no remote has), each with what to do. Then the folders of conflict backups made on this machine in the last 7 days, besides the last run's: each one's time, whether a sync or a save in the GUI made it, its path and its first files. Both parts show even when the cloud cannot be reached. `--local` reads only this machine's records, with no rclone call: the mode (two-way, one-way push / pull, or not synced from this machine yet), the last run and the conflict backups. |
+| `disconnect` | Stop syncing this library on this computer: remove the `sync:` block from `lit-config.yaml` and this machine's sync records, so a later `lit sync setup` starts with a first sync. The library, the backups on this machine, the cloud folders, the rclone remote and the cloud account's access stay; it lists each with the command that removes it. Waits for a sync in progress like `lit sync`, and needs no rclone or network. When something cannot be removed, it stops and names it; this computer stays set up to sync until `lit sync disconnect` goes through. |
 
 `push` runs a full health-check first as an integrity gate: any error-severity
 finding aborts the push, so a corrupted local state never overwrites the cloud
 backup. `-f` / `--force` bypasses the gate; `-y` / `--yes` only skips the
-first-push size confirmation and does **not** bypass the gate. Both `push` and
+first-push size confirmation and does **not** bypass the gate. Two-way
+`lit sync` has no such gate: it carries every file as it is. Both `push` and
 `pull` accept `--dry-run` and the paired `--exclude-repos` / `--include-repos`
 (apply `codes_ignore_patterns` so `codes/*/repo/` checkouts are skipped; re-clone
 them later with `lit code restore-all`).
@@ -939,7 +1071,7 @@ supported update path. One of `--project` / `--all` is required.
 lit export --project <name>
 lit export --all
 lit export --project <name> -o path/to/refs.bib
-lit export --all --topic transformer --author wang
+lit export --all --topic transformer --author smith
 lit export --project <name> --format ris
 ```
 
@@ -1064,11 +1196,64 @@ with **add anyway** ticked, and `✕` never does; a file over 100 MB waits for a
 click on **Upload**. **Done** adds them all at once, and **Cancel** (or Esc)
 adds nothing.
 
+**Cloud sync.** Once a library has had its first `lit sync` on this machine, the
+window keeps it synced while it runs: when it starts, about a minute after a
+change, when another machine has synced (it looks every two minutes or so), and
+once more as it closes. It is the same sync as `lit sync`, with the same
+backups. The cloud button right of the library selector shows how it stands;
+click it for a one-line status and **Sync now**, and, after conflicts or a code
+repo that did not sync, **View activity log**, which names each file and its
+backup. A sync that needs you (an expired sign-in, rclone's safety stop, a side
+to pick) stops the auto sync until a sync goes through, from **Sync now** or a
+terminal; `lit sync status` says why and what to do. Saving a note or a PDF
+that a sync (or an agent) changed after you opened it keeps your version and
+backs up the one it replaced (see `lit sync`).
+
+**When something fails.** The window says what failed in one short line, in
+your language. The whole message, with what to do about it, goes to the GUI log:
+`lit gui-log` prints it.
+
+| Dot | The popover says, for example | Note |
+|---|---|---|
+| none | Cloud sync is not set up. | The library has no `sync:`; `lit sync setup` adds one. |
+| green | Last synced 3 min ago. | Followed by "1 code repo not synced." when one did not follow. |
+| blue, pulsing | Syncing… | "Another sync is in progress (started 10:07)." while another sync of this library, `lit sync` in a terminal say, holds it. |
+| amber | Last synced just now, with 1 conflict. | The newer copy was kept; the activity log names the backup. |
+| red | Too many changes on one side. Confirmation required. | Auto sync stopped. Also "gdrive credentials expired. Sign in again.", "Choose which side wins: this machine or the cloud." and "Sync failed. Auto sync stopped." |
+| hollow | Sync unavailable. Retrying at 11:35. | The cloud could not be reached; it tries again by itself. "This machine has not completed its first sync." before the first `lit sync` here. |
+| grey | Not synced since launch. | Before the first sync since the window opened. |
+
 The Web UI drives a growing subset of the commands on this page through the same
 code paths — this page (the CLI) stays the complete surface. The web server
 (fastapi + uvicorn) ships as a core dependency; a corrupted install missing it
 prints a reinstall hint (`uv tool install --force litman` or `pipx install
 --force litman`).
+
+### `lit gui-log`
+
+Print what the litman window could not do, newest first. The window shows a
+failure as one short line; each entry here holds the rest: when, in which
+library, the request, the code behind the window's line, and the full message
+with what to do. It also holds what the window flagged without failing: an SI
+file it could not confirm or refused, project folders a delete could not clean
+up, an automatic update that failed. An unexpected server error carries its
+traceback (in `--format json`).
+
+```
+lit gui-log
+lit gui-log --days 30
+lit gui-log --format json
+```
+
+| Flag | What it does |
+|---|---|
+| `--days <n>` | How many days back to look. Default 7. When the log has entries but none that recent, it says when the newest is from. |
+| `--limit <n>` | Show at most this many entries. Default 20. |
+| `--format table\|json` | `json` prints the log's own entries. Default: `table` at a terminal, `json` anywhere else. |
+
+The log is `gui-log.jsonl` beside the registry, one per machine. Past 1 MB it
+moves to `gui-log.1.jsonl` and a new one starts, so the two hold about 2 MB at
+most. `lit uninstall` removes both.
 
 ### `lit agent`
 

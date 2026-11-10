@@ -206,6 +206,71 @@ def ensure_truth_locked(vault: Path) -> int:
     return n
 
 
+def ensure_truth_unlocked(vault: Path) -> int:
+    """Vault-wide unlock sweep, the inverse of :func:`ensure_truth_locked`.
+
+    Clears the read-only lock on every TRUTH file :func:`ensure_truth_locked`
+    would lock, and returns how many it changed. For a tool that rewrites
+    TRUTH files from outside litman's write path: two-way sync hands the vault
+    to ``rclone bisync``, which on Windows cannot replace or delete a read-only
+    file. The caller re-locks with :func:`ensure_truth_locked` in a
+    ``finally``.
+
+    Stat only, like :func:`ensure_truth_locked`: it never opens a file.
+    """
+    vault_resolved = vault.resolve()
+    n = 0
+
+    taxonomy = vault_resolved / _ROOT_TRUTH_NAME
+    if taxonomy.exists() and not os.access(taxonomy, os.W_OK):
+        unlock_truth_file(taxonomy)
+        n += 1
+
+    papers_root = vault_resolved / "papers"
+    try:
+        entries = list(os.scandir(papers_root))
+    except FileNotFoundError:
+        entries = []
+
+    for entry in entries:
+        if not entry.is_dir():
+            continue
+        for name in _PAPER_TRUTH_NAMES:
+            target = Path(entry.path) / name
+            if target.exists() and not os.access(target, os.W_OK):
+                unlock_truth_file(target)
+                n += 1
+        n += _unlock_si_files(Path(entry.path) / SI_DIRNAME)
+
+    return n
+
+
+def _unlock_si_files(si_dir: Path) -> int:
+    """Unlock every read-only SI file in one paper's ``supplementary/``.
+
+    The same selection as :func:`_lock_si_files`: nothing reached through a
+    link, no hidden file or file-manager dropping.
+    """
+    try:
+        if si_dir.is_symlink() or si_dir.is_junction():
+            return 0
+        si_entries = list(os.scandir(si_dir))
+    except OSError:
+        return 0
+    n = 0
+    for si_entry in si_entries:
+        if (
+            si_entry.is_symlink()
+            or not si_entry.is_file()
+            or not is_si_candidate_name(si_entry.name)
+        ):
+            continue
+        if not os.access(si_entry.path, os.W_OK):
+            unlock_truth_file(Path(si_entry.path))
+            n += 1
+    return n
+
+
 def _lock_si_files(si_dir: Path) -> int:
     """Lock every writable SI file in one paper's ``supplementary/``.
 

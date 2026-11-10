@@ -30,7 +30,7 @@ def fake_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     ``~/.config/litman/vaults.yaml``.
 
     Autouse because ``lit init`` now registers vaults — without isolation,
-    even the plain CLI tests would scribble over wangq's real registry.
+    even the plain CLI tests would scribble over the developer's real registry.
     Mirrors the ``fake_home`` fixture in test_vault.py / test_vault_registry.py.
     """
     home = tmp_path / "home"

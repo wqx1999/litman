@@ -169,7 +169,7 @@ def test_win32_terminal_runs_npm_cmd_shim_through_cmd(
         "litman.core.terminal.shutil.which",
         lambda name: "C:\\wt.exe" if name == "wt" else None,
     )
-    codex = r"C:\Users\Wang\AppData\Roaming\npm\codex.CMD"
+    codex = r"C:\Users\alice\AppData\Roaming\npm\codex.CMD"
     assert spawn_terminal([codex], tmp_path) is True
     argv, _cwd = popen_calls[0]
     assert argv == ["C:\\wt.exe", "-d", str(tmp_path), "cmd", "/K", codex]

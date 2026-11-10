@@ -9,11 +9,14 @@ import {
   type IngestPreview,
   type IngestUploadResult,
 } from '../api'
+import { getT, useT } from '../i18n'
+import { errorLine, type CodeLines } from '../apiErrors'
+import { rich } from '../i18n/rich'
 import AuthorRows from './AuthorRows'
 import { useEscapeLayer } from './escapeStack'
 import { modalBackdropProps } from './modalShell'
 import PaperIdField from './PaperIdField'
-import { isYearShape, YEAR_HINT } from './year'
+import { isYearShape, yearHint } from './year'
 
 /** Confirm dialog for the drag-in ingest: DOI (sniffed, editable) → CrossRef
  * preview → Add, with a hand-entry path for the papers CrossRef lacks.
@@ -52,16 +55,17 @@ import { isYearShape, YEAR_HINT } from './year'
 /** CrossRef's own vocabulary plus `patent`, which CrossRef has no type for.
  * These are the values `lit export` maps to bibtex entry types
  * (exporters/bibtex.py `_VENUE_TYPE_TO_ENTRY`); anything else exports as
- * `@misc`, so the list is closed rather than free text. */
+ * `@misc`, so the list is closed rather than free text. Labels are UI text
+ * (`browse.addPaper.venueType`). */
 const VENUE_TYPES = [
-  ['journal-article', 'Journal article'],
-  ['proceedings-article', 'Conference paper'],
-  ['preprint', 'Preprint'],
-  ['patent', 'Patent'],
-  ['book', 'Book'],
-  ['book-chapter', 'Book chapter'],
-  ['dissertation', 'Thesis'],
-  ['report', 'Report'],
+  'journal-article',
+  'proceedings-article',
+  'preprint',
+  'patent',
+  'book',
+  'book-chapter',
+  'dissertation',
+  'report',
 ] as const
 export default function AddPaper({
   upload,
@@ -76,6 +80,8 @@ export default function AddPaper({
   onAdded: (id: string) => void
   onOpenExisting: (id: string) => void
 }) {
+  const T = useT()
+  const t = T.browse.addPaper
   const [doi, setDoi] = useState(upload.doi ?? '')
   const [preview, setPreview] = useState<IngestPreview | null>(null)
   const [error, setError] = useState<string | null>(null)
@@ -110,7 +116,7 @@ export default function AddPaper({
     setIdOverride(null)
     fetchIngestPreview(trimmed)
       .then(setPreview)
-      .catch((e) => setError(e instanceof Error ? e.message : String(e)))
+      .catch((e) => setError(errorLine(e, null, getT().errors.addPaper)))
       .finally(() => setBusy(null))
   }, [])
 
@@ -179,17 +185,22 @@ export default function AddPaper({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [manual, manualReady, mTitle, mYear, mAuthorList.join('\u0000')])
 
+  // Why there is no id, in the form's words (the server names it by code);
+  // the server's own sentence only when it sent no code.
+  const idLine = (code: string | null | undefined, raw: string | null | undefined) =>
+    (code ? (T.errors.addPaper as CodeLines)[code]?.({}) : undefined) ?? raw ?? null
+
   // What the two paths agree on: a derived id, or the reason there is none.
   const idState = manual
     ? {
         proposedId: derived?.id ?? null,
-        error: derived?.error ?? null,
+        error: idLine(derived?.errorCode, derived?.error),
         suggestion: derived?.suggestion ?? null,
         segments: derived?.segments ?? null,
       }
     : {
         proposedId: preview?.proposedId ?? null,
-        error: preview?.idError ?? null,
+        error: idLine(preview?.idErrorCode, preview?.idError),
         suggestion: preview?.idSuggestion ?? null,
         segments: preview?.idSegments ?? null,
       }
@@ -230,7 +241,7 @@ export default function AddPaper({
     request
       .then((r) => onAdded(r.id))
       .catch((e) => {
-        setError(e instanceof Error ? e.message : String(e))
+        setError(errorLine(e, null, getT().errors.addPaper))
         setBusy(null)
       })
   }
@@ -248,9 +259,9 @@ export default function AddPaper({
   useEscapeLayer(true, dismiss)
 
   const authorLine = (authors: string[]): string => {
-    if (authors.length === 0) return '(no authors)'
+    if (authors.length === 0) return t.noAuthors
     if (authors.length <= 3) return authors.join(' · ')
-    return `${authors[0]} et al. (${authors.length} authors)`
+    return t.manyAuthors(authors[0], authors.length)
   }
 
   return createPortal(
@@ -261,11 +272,11 @@ export default function AddPaper({
       <div
         onClick={(e) => e.stopPropagation()}
         role="dialog"
-        aria-label="Add paper"
+        aria-label={t.title}
         className="max-h-[85vh] w-[28rem] max-w-[94vw] animate-grow-in overflow-y-auto rounded-2xl bg-white p-6 shadow-xl ring-1 ring-stone-200"
       >
         <div className="text-[11px] font-semibold uppercase tracking-wider text-accent-600">
-          Add paper
+          {t.title}
         </div>
         <h2
           className="mt-0.5 truncate text-sm font-semibold text-stone-900"
@@ -293,7 +304,7 @@ export default function AddPaper({
                 lookup(doi)
               }
             }}
-            placeholder="DOI (e.g. 10.1093/nar/gkab813)"
+            placeholder={t.doiPlaceholder}
             spellCheck={false}
             className="min-w-0 flex-1 rounded-lg bg-stone-50 px-2.5 py-1.5 font-mono text-xs text-stone-900 ring-1 ring-stone-200 transition duration-200 ease-fluid placeholder:text-stone-400 focus:outline-none focus:ring-accent-500"
           />
@@ -303,12 +314,12 @@ export default function AddPaper({
             disabled={busy !== null || !doi.trim() || preview !== null}
             className="rounded-lg px-2.5 py-1.5 text-xs font-medium text-accent-600 ring-1 ring-stone-200 transition duration-200 ease-fluid hover:bg-stone-50 disabled:opacity-40 disabled:hover:bg-transparent"
           >
-            Look up
+            {t.lookUp}
           </button>
         </div>
 
         {busy === 'lookup' && (
-          <p className="mt-3 text-xs leading-5 text-stone-400">Looking up…</p>
+          <p className="mt-3 text-xs leading-5 text-stone-400">{t.lookingUp}</p>
         )}
 
         {error && (
@@ -328,7 +339,7 @@ export default function AddPaper({
             onClick={openManual}
             className="mt-3 text-xs font-medium text-accent-600 transition-colors hover:underline"
           >
-            No DOI, or CrossRef doesn't have it? Enter the details yourself →
+            {t.enterManually}
           </button>
         )}
 
@@ -344,12 +355,12 @@ export default function AddPaper({
                 disabled={busy === 'add'}
                 className="text-[11px] font-medium text-stone-400 transition-colors hover:text-accent-600 disabled:opacity-40"
               >
-                ← Look up a DOI instead
+                {t.backToDoi}
               </button>
             </div>
             <label className="block">
               <span className="mb-0.5 block text-[11px] font-semibold uppercase tracking-wider text-stone-600">
-                Title <span className="text-red-500">*</span>
+                {t.titleLabel} <span className="text-red-500">*</span>
               </span>
               <input
                 type="text"
@@ -364,13 +375,13 @@ export default function AddPaper({
             <div className="grid grid-cols-3 gap-2.5">
               <label className="block">
                 <span className="mb-0.5 block text-[11px] font-semibold uppercase tracking-wider text-stone-600">
-                  Year <span className="text-red-500">*</span>
+                  {t.yearLabel} <span className="text-red-500">*</span>
                   {/* Same reasoning as the Paper ID charset: the rule has to
                       be readable before the first keystroke. Add going grey is
                       the only other signal this field has, and a disabled
                       button that will not say why is the thing being fixed. */}
                   <span className="ml-1.5 font-normal normal-case tracking-normal text-stone-400">
-                    {YEAR_HINT}
+                    {yearHint()}
                   </span>
                 </span>
                 <input
@@ -384,7 +395,7 @@ export default function AddPaper({
               </label>
               <label className="col-span-2 block">
                 <span className="mb-0.5 block text-[11px] font-semibold uppercase tracking-wider text-stone-600">
-                  Journal / venue
+                  {t.journalLabel}
                 </span>
                 <input
                   type="text"
@@ -406,14 +417,14 @@ export default function AddPaper({
                   value={mDoi}
                   onChange={(e) => setMDoi(e.target.value)}
                   spellCheck={false}
-                  placeholder="if it has one"
+                  placeholder={t.manualDoiPlaceholder}
                   disabled={busy === 'add'}
                   className="w-full rounded-md border border-stone-300 bg-white px-2 py-1 font-mono text-xs text-stone-800 placeholder:font-sans placeholder:text-stone-400 focus:border-accent-500 focus:outline-none disabled:opacity-50"
                 />
               </label>
               <label className="block">
                 <span className="mb-0.5 block text-[11px] font-semibold uppercase tracking-wider text-stone-600">
-                  Type
+                  {t.typeLabel}
                 </span>
                 <select
                   value={mVenue}
@@ -421,9 +432,9 @@ export default function AddPaper({
                   disabled={busy === 'add'}
                   className="w-full rounded-md border border-stone-300 bg-white px-2 py-1 text-sm text-stone-800 focus:border-accent-500 focus:outline-none disabled:opacity-50"
                 >
-                  {VENUE_TYPES.map(([value, label]) => (
+                  {VENUE_TYPES.map((value) => (
                     <option key={value} value={value}>
-                      {label}
+                      {t.venueType[value]}
                     </option>
                   ))}
                 </select>
@@ -449,7 +460,7 @@ export default function AddPaper({
         {preview && (
           <div className="mt-3 rounded-lg bg-stone-50 p-3 ring-1 ring-stone-200">
             <div className="text-sm font-medium leading-5 text-stone-900">
-              {preview.title || '(no title)'}
+              {preview.title || t.noTitle}
             </div>
             <div className="mt-1 text-xs leading-5 text-stone-500">
               {authorLine(preview.authors)}
@@ -459,14 +470,17 @@ export default function AddPaper({
             </div>
             {preview.inVault ? (
               <div className="mt-2 text-xs leading-5 text-stone-600">
-                Already in your library:{' '}
-                <button
-                  type="button"
-                  onClick={() => onOpenExisting(preview.inVault!.id)}
-                  className="font-mono font-medium text-accent-600 transition duration-200 ease-fluid hover:text-accent-700"
-                >
-                  {preview.inVault.id}
-                </button>
+                {rich(t.alreadyInLibrary, {
+                  id: (
+                    <button
+                      type="button"
+                      onClick={() => onOpenExisting(preview.inVault!.id)}
+                      className="font-mono font-medium text-accent-600 transition duration-200 ease-fluid hover:text-accent-700"
+                    >
+                      {preview.inVault.id}
+                    </button>
+                  ),
+                })}
               </div>
             ) : (
               <PaperIdField
@@ -486,7 +500,7 @@ export default function AddPaper({
               afterwards. Said here, before the click, because after it the
               same fact reads as "did the import fail?". */}
           <p className="text-[11px] leading-4 text-stone-400">
-            Your original PDF stays where it is.
+            {t.originalStays}
           </p>
           <div className="flex items-center gap-2">
             <button
@@ -495,7 +509,7 @@ export default function AddPaper({
               disabled={busy === 'add'}
               className="rounded-lg px-3 py-1.5 text-sm font-medium text-stone-500 transition duration-200 ease-fluid hover:bg-stone-100 hover:text-stone-700 disabled:opacity-40 disabled:hover:bg-transparent"
             >
-              Cancel
+              {T.common.cancel}
             </button>
             <button
               type="button"
@@ -503,7 +517,7 @@ export default function AddPaper({
               disabled={!canAdd}
               className="rounded-lg bg-accent-500 px-3 py-1.5 text-sm font-medium text-white transition duration-200 ease-fluid hover:bg-accent-600 disabled:opacity-40 disabled:hover:bg-accent-500"
             >
-              {busy === 'add' ? 'Adding…' : 'Add to library'}
+              {busy === 'add' ? t.adding : t.add}
             </button>
           </div>
         </div>

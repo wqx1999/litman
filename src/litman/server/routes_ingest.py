@@ -63,9 +63,11 @@ from litman.exceptions import (
     DuplicateDOIError,
     IDError,
     ImporterError,
+    coded,
 )
 from litman.importers.crossref import fetch_crossref, parse_crossref
 from litman.importers.llm import validate_candidate_metadata
+from litman.server.errors import api_error, log_warnings
 
 router = APIRouter(prefix="/api")
 
@@ -157,14 +159,14 @@ async def _read_capped_body(request: Request) -> bytes:
     """
     declared = request.headers.get("content-length", "")
     if declared.isdigit() and int(declared) > _MAX_UPLOAD_BYTES:
-        raise HTTPException(status_code=413, detail=_TOO_BIG)
+        raise api_error(413, _TOO_BIG, "too-large")
 
     chunks: list[bytes] = []
     total = 0
     async for chunk in request.stream():
         total += len(chunk)
         if total > _MAX_UPLOAD_BYTES:
-            raise HTTPException(status_code=413, detail=_TOO_BIG)
+            raise api_error(413, _TOO_BIG, "too-large")
         chunks.append(chunk)
     return b"".join(chunks)
 
@@ -199,12 +201,13 @@ async def post_ingest_pdf(request: Request) -> dict[str, Any]:
     # a renamed .txt or an HTML error page saved as .pdf is refused before
     # anything lands on disk.
     if _PDF_MAGIC not in body[:_PDF_SNIFF_BYTES]:
-        raise HTTPException(
-            status_code=400,
-            detail=(
+        raise api_error(
+            400,
+            (
                 "That file does not look like a PDF (missing the %PDF- "
                 "header). Drop the paper's PDF file."
             ),
+            "not-a-pdf",
         )
 
     vault: Path = request.app.state.vault
@@ -245,22 +248,29 @@ def get_ingest_preview(
     except ImporterError as exc:
         # The importer's messages already distinguish "DOI not found in
         # CrossRef" from a network failure; surface them verbatim.
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+        raise api_error(400, exc) from exc
 
     proposed_id: str | None = None
     id_error: str | None = None
+    id_error_code: str | None = None
     id_suggestion: str | None = None
     family = first_author_family(parsed.get("authors") or [])
     try:
         if parsed.get("year") is None:
-            raise IDError(
-                "The CrossRef record has no publication year, which the "
-                "paper id needs."
+            raise coded(
+                IDError(
+                    "The CrossRef record has no publication year, which the "
+                    "paper id needs."
+                ),
+                "id-no-year",
             )
         if not family:
-            raise IDError(
-                "The CrossRef record has no first-author name, which the "
-                "paper id needs."
+            raise coded(
+                IDError(
+                    "The CrossRef record has no first-author name, which the "
+                    "paper id needs."
+                ),
+                "id-no-first-author",
             )
         primary = derive_id(parsed["year"], family, parsed["title"])
         proposed_id = (
@@ -272,6 +282,7 @@ def get_ingest_preview(
         # First line only: the rest of the message talks the CLI reader through
         # `--id`, and the GUI answers that with a field instead of a sentence.
         id_error = str(exc).split("\n")[0]
+        id_error_code = exc.code
         id_suggestion = suggest_id(
             parsed.get("year"), family, parsed.get("title") or ""
         )
@@ -284,6 +295,7 @@ def get_ingest_preview(
         "journal": parsed.get("journal") or "",
         "proposedId": proposed_id,
         "idError": id_error,
+        "idErrorCode": id_error_code,
         "idSuggestion": id_suggestion,
         "idSegments": _segments_payload(
             parsed.get("year"), family, parsed.get("title") or ""
@@ -315,17 +327,15 @@ def _ingest_confirmed(
     """
     tmp_path = vault / _UPLOAD_DIRNAME / f"{handle}.pdf"
     if not tmp_path.is_file():
-        raise HTTPException(
-            status_code=400,
-            detail="Upload expired or unknown — drop the PDF again.",
+        raise api_error(
+            400, "Upload expired or unknown — drop the PDF again.", "upload-expired"
         )
     # Re-check the magic: the upload endpoint verified the bytes it received,
     # but the file has sat on disk since (defense in depth, same helper the
     # CLI uses).
     if not _looks_like_pdf(tmp_path):
-        raise HTTPException(
-            status_code=400,
-            detail="Stored upload is not a valid PDF — drop the PDF again.",
+        raise api_error(
+            400, "Stored upload is not a valid PDF — drop the PDF again.", "not-a-pdf"
         )
 
     try:
@@ -341,7 +351,7 @@ def _ingest_confirmed(
         else:
             parsed = parse_crossref(fetch_crossref(doi or ""))
     except ImporterError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+        raise api_error(400, exc) from exc
 
     # A hand-entered DOI is kept and deduped on exactly like a fetched one.
     # It is often perfectly real — Chinese journals register with CNKI rather
@@ -363,12 +373,12 @@ def _ingest_confirmed(
             resolve_collision=lambda pid, yr, fam: auto_suffix_id(vault, pid),
         )
     except DuplicateDOIError as exc:
-        raise HTTPException(status_code=409, detail=str(exc)) from exc
+        raise api_error(409, exc) from exc
     except IDError as exc:
-        raise HTTPException(status_code=422, detail=str(exc)) from exc
+        raise api_error(422, exc) from exc
     except AddError as exc:
         # Case-fold clash and friends: a conflict with existing vault state.
-        raise HTTPException(status_code=409, detail=str(exc)) from exc
+        raise api_error(409, exc) from exc
 
     return {"id": result["paper_id"], "warnings": result["warnings"]}
 
@@ -413,12 +423,13 @@ def _validated_paper_id(raw: Any) -> str | None:
         )
     paper_id = raw.strip()
     if not is_valid_id(paper_id):
-        raise HTTPException(
-            status_code=400,
-            detail=(
+        raise api_error(
+            400,
+            (
                 f"{paper_id!r} is not a usable paper id. Use letters, digits, "
                 "'.', '_' and '-' only — it becomes a folder name."
             ),
+            "id-invalid",
         )
     return paper_id
 
@@ -467,16 +478,17 @@ async def post_ingest_derive_id(request: Request) -> dict[str, Any]:
     if year is None or not family or not title:
         # Not an error the user should see: they are still typing. The form
         # renders an empty id line rather than "no year" the instant it loads.
-        return {"id": None, "error": None, "suggestion": None,
+        return {"id": None, "error": None, "errorCode": None, "suggestion": None,
                 "segments": segments}
 
     try:
         return {"id": derive_id(year, family, title), "error": None,
-                "suggestion": None, "segments": segments}
+                "errorCode": None, "suggestion": None, "segments": segments}
     except IDError as exc:
         return {
             "id": None,
             "error": str(exc).split("\n")[0],
+            "errorCode": exc.code,
             "suggestion": suggest_id(year, family, title),
             "segments": segments,
         }
@@ -529,9 +541,11 @@ async def post_ingest_confirm(request: Request) -> dict[str, Any]:
                 ),
             )
         vault: Path = request.app.state.vault
-        return await run_in_threadpool(
+        added = await run_in_threadpool(
             _ingest_confirmed, vault, handle, None, metadata, paper_id
         )
+        log_warnings(request, added["warnings"])
+        return added
 
     if not has_doi:
         raise HTTPException(
@@ -542,9 +556,11 @@ async def post_ingest_confirm(request: Request) -> dict[str, Any]:
     vault = request.app.state.vault
     # CrossRef (10 s timeout) + the vault write + the INDEX/views reconcile:
     # all blocking, none of it allowed to stall the rest of the GUI.
-    return await run_in_threadpool(
+    added = await run_in_threadpool(
         _ingest_confirmed, vault, handle, doi, None, paper_id
     )
+    log_warnings(request, added["warnings"])
+    return added
 
 
 @router.delete("/ingest/{handle}")

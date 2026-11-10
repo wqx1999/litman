@@ -2,7 +2,9 @@
 
 Rolling the clone back while recovery goes on to finish the bind left
 ``code-clones`` naming a folder with nothing in it. Before the commit, nothing
-lands, so the rollback is still right.
+lands, so the rollback is still right. So it is when the commit's first file is
+refused: nothing landed, and the bind is called off rather than left for
+recovery.
 """
 
 from __future__ import annotations
@@ -35,8 +37,11 @@ FINISHED = (
     "recovered: the last command's change is saved, no need to run it again. "
     "Run `lit refresh-views` to update the links."
 )
-# What a bind promotes first, so past its decision point and with nothing landed.
-PAST_COMMIT = "metadata.yaml"
+# What a bind promotes second, after the paper's metadata.yaml has landed: past
+# its decision point, with part of it on disk, so recovery finishes it.
+PAST_COMMIT = "INDEX.json"
+# What a bind promotes first: refused, nothing landed and the bind is called off.
+FIRST_FILE = "metadata.yaml"
 
 
 @pytest.fixture
@@ -146,6 +151,27 @@ def test_code_add_before_the_commit_rolls_back_and_can_be_run_again(
     assert not (vault / "codes" / REPO).exists()
     assert (source / "a.py").is_file()
     assert _code_clones(vault) == []
+
+    again = _add(vault, source)
+
+    assert again.exit_code == 0, again.output
+    assert "recovered:" not in again.output
+    _assert_bound_and_whole(vault, "a.py")
+
+
+def test_code_add_refused_at_its_first_file_rolls_back_and_can_be_run_again(
+    vault: Path, source: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    with monkeypatch.context() as held:
+        refused = _refuse_once(held, FIRST_FILE)
+        result = _add(vault, source, "--move")
+
+    assert refused, result.output
+    assert isinstance(result.exception, PermissionError)
+    assert not (vault / "codes" / REPO).exists()
+    assert (source / "a.py").is_file()
+    assert _code_clones(vault) == []
+    assert not any((vault / ".litman-staging").iterdir())
 
     again = _add(vault, source)
 

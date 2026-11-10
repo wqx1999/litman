@@ -457,9 +457,9 @@ def test_a_poisoned_cache_heals_itself_on_the_next_build() -> None:
     """
     vault = build_seed("seed-5papers-tagged")
     seed_root = vault.parent
-    bridge = seed_root / "projects" / "PepCodec" / "litman_reflib"
+    bridge = seed_root / "projects" / "BlueBell" / "litman_reflib"
     links = [p for p in bridge.iterdir() if p.is_symlink()]
-    assert links, "seed precondition: PepCodec has a bridge symlink to unlink"
+    assert links, "seed precondition: BlueBell has a bridge symlink to unlink"
 
     victim = links[0]
     victim.unlink()  # exactly what an escaped `lit unlink` did
@@ -499,4 +499,4 @@ def test_build_5paper_tagged_seed() -> None:
     tax = parse_taxonomy((vault / "TAXONOMY.md").read_text(encoding="utf-8"))
     assert "diffusion" in tax["topics"]
     assert "peptide" in tax["topics"]
-    assert "PepCodec" in tax["projects"]
+    assert "BlueBell" in tax["projects"]

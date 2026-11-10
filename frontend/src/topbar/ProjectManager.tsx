@@ -5,6 +5,8 @@ import type {
   ProjectEntry,
 } from '../types'
 import { projectHealth } from '../projects'
+import { getT, useT } from '../i18n'
+import { errorLine } from '../apiErrors'
 import {
   createProject,
   deleteProject,
@@ -53,6 +55,8 @@ export default function ProjectManager({
     opts?: { sticky?: boolean },
   ) => void
 }) {
+  const T = useT()
+  const t = T.browse.projectManager
   // The project awaiting delete confirmation, being renamed, or having its path
   // re-pointed; the new-project dialog toggle; and whether a write is in flight
   // (all gate the list controls).
@@ -82,21 +86,18 @@ export default function ProjectManager({
       const res = await deleteProject(name)
       const left = res.foldersLeft
       if (left.length) {
-        // The project is out of the config, so nothing looks at these folders
-        // again: this is the one chance to say so — keep it up until read.
-        const where = left.map((f) => `${f.path} (${f.reason})`).join(' · ')
-        notify(
-          `Removed project “${name}” · could not clean up ${where} — delete ` +
-            `${left.length === 1 ? 'its' : 'their'} links by hand`,
-          'warning',
-          { sticky: true },
-        )
+        // The project is out of the config, so health-check never looks at
+        // these folders again; the server logs each one with its reason. Keep
+        // the count up until read.
+        notify(getT().browse.projectManager.removedWithLeftovers(name, left.length), 'warning', {
+          sticky: true,
+        })
       } else {
-        notify(`Removed project “${name}”.`, 'success')
+        notify(getT().browse.projectManager.removed(name), 'success')
       }
       onChanged()
     } catch (err) {
-      notify(err instanceof Error ? err.message : String(err), 'error')
+      notifyProjectFailure(notify, err)
     } finally {
       setBusy(false)
       setPendingDelete(null)
@@ -107,11 +108,11 @@ export default function ProjectManager({
     setBusy(true)
     try {
       await renameProject(oldName, newName)
-      notify(`Renamed project to “${newName}”.`, 'success')
+      notify(getT().browse.projectManager.renamed(newName), 'success')
       onChanged()
       setPendingRename(null)
     } catch (err) {
-      notify(err instanceof Error ? err.message : String(err), 'error')
+      notifyProjectFailure(notify, err)
       // Keep the dialog open so the user can fix the name.
     } finally {
       setBusy(false)
@@ -122,16 +123,15 @@ export default function ProjectManager({
     setBusy(true)
     try {
       const res = await setProjectPath(name, path)
+      const tt = getT().browse.projectManager
       notify(
-        res.changed
-          ? `“${name}” now points at ${res.path}. If the folder wasn't moved with its links, rebuild views.`
-          : `“${name}” already points there.`,
+        res.changed ? tt.repointed(name, res.path) : tt.alreadyPointed(name),
         res.changed ? 'success' : 'info',
       )
       onChanged()
       setPendingSetPath(null)
     } catch (err) {
-      notify(err instanceof Error ? err.message : String(err), 'error')
+      notifyProjectFailure(notify, err)
       // Keep the dialog open so the user can fix the path.
     } finally {
       setBusy(false)
@@ -156,16 +156,16 @@ export default function ProjectManager({
         className="flex max-h-[70vh] w-[28rem] animate-grow-in focus:outline-none flex-col rounded-2xl bg-white p-5 shadow-xl ring-1 ring-stone-200"
       >
         <h2 className="text-sm font-semibold text-stone-900">
-          Projects
+          {t.title}
           {sorted.length > 0 && (
             <span className="font-normal tabular-nums text-stone-400"> · {sorted.length}</span>
           )}
-          <HelpHint text="Register, rename or re-point your projects. Removing one never deletes its folder." />
+          <HelpHint text={t.help} />
         </h2>
         <div className="mt-3 min-h-0 flex-1 overflow-y-auto rounded-lg border border-stone-200">
           {sorted.length === 0 && (
             <div className="px-3 py-4 text-center text-xs text-stone-400">
-              No projects registered.
+              {t.empty}
             </div>
           )}
           {sorted.map((p) => {
@@ -200,17 +200,17 @@ export default function ProjectManager({
                       : 'text-stone-400'
                   }`}
                 >
-                  {p.path || 'no folder set'}
+                  {p.path || t.noFolder}
                 </div>
               </div>
               <div className="flex shrink-0 items-center gap-2">
                 <span className="text-[11px] text-stone-400">
-                  {countFor(p.name)} papers
+                  {t.paperCount(countFor(p.name))}
                 </span>
                 <button
                   type="button"
-                  aria-label={`Rename project ${p.name}`}
-                  title={`Rename project “${p.name}”`}
+                  aria-label={t.renameAria(p.name)}
+                  title={t.renameTitle(p.name)}
                   disabled={blocked}
                   onClick={() => setPendingRename(p)}
                   className="grid h-6 w-6 place-items-center rounded-md text-stone-300 transition-colors hover:bg-accent-50 hover:text-accent-600 disabled:opacity-40"
@@ -219,8 +219,8 @@ export default function ProjectManager({
                 </button>
                 <button
                   type="button"
-                  aria-label={`Change path for project ${p.name}`}
-                  title={`Re-point “${p.name}” at a new folder`}
+                  aria-label={t.setPathAria(p.name)}
+                  title={t.setPathTitle(p.name)}
                   disabled={blocked}
                   onClick={() => setPendingSetPath(p)}
                   className="grid h-6 w-6 place-items-center rounded-md text-stone-300 transition-colors hover:bg-accent-50 hover:text-accent-600 disabled:opacity-40"
@@ -229,8 +229,8 @@ export default function ProjectManager({
                 </button>
                 <button
                   type="button"
-                  aria-label={`Delete project ${p.name}`}
-                  title={`Delete project “${p.name}”`}
+                  aria-label={t.deleteAria(p.name)}
+                  title={t.deleteTitle(p.name)}
                   disabled={blocked}
                   onClick={() => setPendingDelete(p.name)}
                   className="grid h-6 w-6 place-items-center rounded-md text-stone-300 transition-colors hover:bg-rose-50 hover:text-rose-500 disabled:opacity-40"
@@ -249,7 +249,7 @@ export default function ProjectManager({
             onClick={() => setShowNew(true)}
             className="rounded-lg border border-accent-200 bg-accent-50 px-3 py-1.5 text-xs font-medium text-accent-700 shadow-sm transition-colors hover:bg-accent-100 disabled:opacity-50"
           >
-            + New project
+            {t.newProject}
           </button>
           <button
             type="button"
@@ -257,7 +257,7 @@ export default function ProjectManager({
             onClick={onClose}
             className="rounded-lg px-3 py-1.5 text-xs text-stone-600 transition-colors hover:bg-stone-100 disabled:opacity-40"
           >
-            Done
+            {T.common.done}
           </button>
         </div>
       </div>
@@ -320,6 +320,8 @@ function DeleteProjectConfirm({
   onCancel: () => void
   onConfirm: () => void
 }) {
+  const T = useT()
+  const t = T.browse.projectManager
   useEscapeLayer(true, onCancel)
   return (
     <div
@@ -331,15 +333,10 @@ function DeleteProjectConfirm({
         className="w-[24rem] animate-grow-in rounded-2xl bg-white p-5 shadow-xl ring-1 ring-stone-200"
       >
         <h2 className="text-sm font-semibold text-stone-900">
-          Delete project “{name}”?
+          {t.deleteConfirmTitle(name)}
         </h2>
         <p className="mt-1.5 text-xs leading-relaxed text-stone-600">
-          This unregisters “{name}”
-          {count > 0
-            ? ` and unlinks it from ${count} paper${count === 1 ? '' : 's'}`
-            : ''}{' '}
-          and removes its reflib links + REFERENCES.md. The project folder on
-          disk is kept. This cannot be undone.
+          {t.deleteConfirmBody(name, count)}
         </p>
         <div className="mt-5 flex justify-end gap-2">
           <button
@@ -348,14 +345,14 @@ function DeleteProjectConfirm({
             disabled={busy}
             className="rounded-lg px-3 py-1.5 text-xs text-stone-600 transition-colors hover:bg-stone-100 disabled:opacity-40"
           >
-            Cancel
+            {T.common.cancel}
           </button>
           <button
             onClick={onConfirm}
             disabled={busy}
             className="rounded-lg bg-rose-500 px-3 py-1.5 text-xs font-medium text-white transition-colors hover:bg-rose-600 disabled:opacity-60"
           >
-            Delete
+            {T.common.delete}
           </button>
         </div>
       </div>
@@ -384,6 +381,8 @@ function RenameProjectDialog({
   onCancel: () => void
   onConfirm: (next: string) => void
 }) {
+  const T = useT()
+  const t = T.browse.projectManager
   const [next, setNext] = useState(project.name)
   const trimmed = next.trim()
   const collides = trimmed !== project.name && existing.includes(trimmed)
@@ -406,14 +405,10 @@ function RenameProjectDialog({
         className="w-[24rem] animate-grow-in rounded-2xl bg-white p-5 shadow-xl ring-1 ring-stone-200"
       >
         <h2 className="text-sm font-semibold text-stone-900">
-          Rename “{project.name}”?
+          {t.renameDialogTitle(project.name)}
         </h2>
         <p className="mt-1.5 text-xs leading-relaxed text-stone-500">
-          Renames it everywhere
-          {count > 0
-            ? ` — re-tags ${count} paper${count === 1 ? '' : 's'}`
-            : ''}
-          . The folder on disk and its path are unchanged.
+          {t.renameBody(count)}
         </p>
         <input
           autoFocus
@@ -429,7 +424,7 @@ function RenameProjectDialog({
         />
         {collides && (
           <p className="mt-1.5 text-[11px] text-rose-500">
-            “{trimmed}” already exists — pick another name.
+            {t.nameTaken(trimmed)}
           </p>
         )}
         <div className="mt-5 flex justify-end gap-2">
@@ -438,14 +433,14 @@ function RenameProjectDialog({
             disabled={busy}
             className="rounded-lg px-3 py-1.5 text-xs text-stone-600 transition-colors hover:bg-stone-100 disabled:opacity-40"
           >
-            Cancel
+            {T.common.cancel}
           </button>
           <button
             onClick={() => onConfirm(trimmed)}
             disabled={!canSubmit}
             className="rounded-lg bg-accent-500 px-3 py-1.5 text-xs font-medium text-white transition-colors hover:bg-accent-600 disabled:opacity-60"
           >
-            {busy ? 'Renaming…' : 'Rename'}
+            {busy ? t.renaming : t.rename}
           </button>
         </div>
       </div>
@@ -470,6 +465,8 @@ function SetProjectPathDialog({
   onCancel: () => void
   onConfirm: (path: string) => void
 }) {
+  const T = useT()
+  const t = T.browse.projectManager
   const [path, setPath] = useState(project.path ?? '')
   const trimmed = path.trim()
   const canSubmit = trimmed.length > 0 && !busy
@@ -485,15 +482,14 @@ function SetProjectPathDialog({
         className="w-[26rem] animate-grow-in rounded-2xl bg-white p-5 shadow-xl ring-1 ring-stone-200"
       >
         <h2 className="text-sm font-semibold text-stone-900">
-          Path for “{project.name}”
+          {t.setPathDialogTitle(project.name)}
         </h2>
         <p className="mt-1.5 text-xs leading-relaxed text-stone-500">
-          Points the registry at where the folder lives now. This does NOT move
-          the folder — move it yourself first, then paste the new location here.
+          {t.setPathBody}
         </p>
         <label className="mt-4 flex flex-col gap-1">
           <span className="text-[11px] font-semibold uppercase tracking-wider text-stone-600">
-            Absolute path
+            {t.absolutePath}
           </span>
           <PathField
             mode="existing-dir"
@@ -502,13 +498,13 @@ function SetProjectPathDialog({
             disabled={busy}
             autoFocus
             selectOnFocus
-            placeholder="/work/you/Project/pepforge"
+            placeholder="/home/you/projects/my-project"
             onEnter={() => {
               if (canSubmit) onConfirm(trimmed)
             }}
           />
           <span className="text-[11px] text-stone-400">
-            the folder itself, must already exist
+            {t.setPathHint}
           </span>
         </label>
         <div className="mt-5 flex justify-end gap-2">
@@ -517,14 +513,14 @@ function SetProjectPathDialog({
             disabled={busy}
             className="rounded-lg px-3 py-1.5 text-xs text-stone-600 transition-colors hover:bg-stone-100 disabled:opacity-40"
           >
-            Cancel
+            {T.common.cancel}
           </button>
           <button
             onClick={() => onConfirm(trimmed)}
             disabled={!canSubmit}
             className="rounded-lg bg-accent-500 px-3 py-1.5 text-xs font-medium text-white transition-colors hover:bg-accent-600 disabled:opacity-60"
           >
-            {busy ? 'Saving…' : 'Save path'}
+            {busy ? t.saving : t.savePath}
           </button>
         </div>
       </div>
@@ -548,6 +544,8 @@ function NewProjectDialog({
   onCreated: () => void
   notify: (msg: string, variant?: ToastVariant) => void
 }) {
+  const T = useT()
+  const t = T.browse.projectManager
   const [name, setName] = useState('')
   const [path, setPath] = useState('')
   const [busy, setBusy] = useState(false)
@@ -559,10 +557,10 @@ function NewProjectDialog({
     setBusy(true)
     try {
       await createProject(name.trim(), path.trim())
-      notify(`Linked project “${name.trim()}”.`, 'success')
+      notify(getT().browse.projectManager.linked(name.trim()), 'success')
       onCreated()
     } catch (err) {
-      notify(err instanceof Error ? err.message : String(err), 'error')
+      notifyProjectFailure(notify, err)
       setBusy(false) // keep the dialog open so the user can fix the path
     }
   }
@@ -582,39 +580,39 @@ function NewProjectDialog({
         onClick={(e) => e.stopPropagation()}
         className="w-[24rem] animate-grow-in rounded-2xl bg-white p-5 shadow-xl ring-1 ring-stone-200"
       >
-        <h2 className="text-sm font-semibold text-stone-900">New project</h2>
+        <h2 className="text-sm font-semibold text-stone-900">{t.newDialogTitle}</h2>
         <p className="mt-1.5 text-xs leading-relaxed text-stone-500">
-          Links a name to an existing folder (nothing is created).
+          {t.newDialogBody}
         </p>
         <div className="mt-4 flex flex-col gap-3">
           <label className="flex flex-col gap-1">
             <span className="text-[11px] font-semibold uppercase tracking-wider text-stone-600">
-              Name
+              {t.name}
             </span>
             <input
               autoFocus
               type="text"
               value={name}
               disabled={busy}
-              placeholder="pepforge"
+              placeholder="my-project"
               onChange={(e) => setName(e.target.value)}
               className={INPUT}
             />
           </label>
           <label className="flex flex-col gap-1">
             <span className="text-[11px] font-semibold uppercase tracking-wider text-stone-600">
-              Absolute path
+              {t.absolutePath}
             </span>
             <PathField
               mode="existing-dir"
               value={path}
               onChange={setPath}
               disabled={busy}
-              placeholder="/work/you/Project/pepforge"
+              placeholder="/home/you/projects/my-project"
               onEnter={submit}
             />
             <span className="text-[11px] text-stone-400">
-              the folder itself, must exist
+              {t.newPathHint}
             </span>
           </label>
         </div>
@@ -624,17 +622,27 @@ function NewProjectDialog({
             disabled={busy}
             className="rounded-lg px-3 py-1.5 text-xs text-stone-600 transition-colors hover:bg-stone-100 disabled:opacity-40"
           >
-            Cancel
+            {T.common.cancel}
           </button>
           <button
             onClick={submit}
             disabled={!canSubmit}
             className="rounded-lg bg-accent-500 px-3 py-1.5 text-xs font-medium text-white transition-colors hover:bg-accent-600 disabled:opacity-60"
           >
-            {busy ? 'Creating…' : 'Create'}
+            {busy ? t.creating : t.create}
           </button>
         </div>
       </div>
     </div>
   )
+}
+
+/** A project write that failed: the line for the server's code (name taken,
+ * path not usable, project gone), or the generic one. */
+function notifyProjectFailure(
+  notify: (message: string, variant?: ToastVariant) => void,
+  err: unknown,
+) {
+  const line = errorLine(err, null, getT().errors.project)
+  if (line) notify(line, 'error')
 }

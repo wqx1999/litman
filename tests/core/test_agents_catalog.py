@@ -3,7 +3,7 @@ tasks).
 
 The catalog is the code-level source of truth for which agents litman can
 launch/onboard. These tests pin the seven-agent shape and order (claude,
-zcode, agy, codex, dsh, cursor, opencode — the order wangq set), that every
+zcode, agy, codex, dsh, cursor, opencode — the chosen order), that every
 catalog entry is supported, generic (per-agent-branch-free) detection — by
 launch mode: a terminal CLI is probed on PATH, a desktop app through
 ``core.app_launch`` — which mode a button or ``lit agent`` picks for a row with
@@ -40,7 +40,7 @@ from litman.core.agents import (
 
 
 def test_catalog_has_exactly_seven_named_agents() -> None:
-    """The order wangq set (2026-10-30): Claude Code (the fallback default
+    """The chosen order: Claude Code (the fallback default
     tops the picker), ZCode, Antigravity CLI, Codex, then DeepSeek Harness
     right under Codex, Cursor, OpenCode. The GUI picker renders catalog order
     verbatim."""

@@ -100,6 +100,7 @@ def test_launch_ignores_body_command_field(
         "agent": "claude",
         "command": "claude",
         "permission_warning": None,
+        "permission_code": None,
     }
     assert spawned == [(["claude"], vault)]
 
@@ -159,6 +160,7 @@ def test_launch_copy_fallback_wraps_as_lit_agent(
         "agent": "claude",
         "command": "lit agent",
         "permission_warning": None,
+        "permission_code": None,
     }
 
 
@@ -167,7 +169,7 @@ def test_launch_windows_passes_resolved_absolute_command_to_terminal(
 ) -> None:
     monkeypatch.setattr(sys, "platform", "win32")
     monkeypatch.setattr(agents, "detect", lambda _spec: True)
-    codex = r"C:\Users\Wang\AppData\Roaming\npm\codex.CMD"
+    codex = r"C:\Users\alice\AppData\Roaming\npm\codex.CMD"
     monkeypatch.setattr(agents, "resolve_launch", lambda _spec: codex)
     spawned: list[list[str]] = []
     monkeypatch.setattr(
@@ -463,7 +465,7 @@ def test_skill_install_dsh_lands_in_the_open_standard_dir(vault: Path) -> None:
     assert resp.status_code == 200
     body = resp.json()
     assert body["agent"] == "dsh"
-    assert body["permission"] == {"mode": "manual", "rule": "", "warning": None}
+    assert body["permission"] == {"mode": "manual", "rule": "", "warning": None, "code": None}
 
     standard = skill.standard_skills_parent_dir()
     for name in list_bundled_skills():
@@ -568,6 +570,7 @@ def test_skill_install_ignores_body_target_field(
             "mode": "unchanged",
             "rule": "test-isolated",
             "warning": None,
+            "code": None,
         },
     }
     # The installer got ONLY the server-side overwrite flag — nothing from the
@@ -747,6 +750,7 @@ def test_launch_app_opens_it_at_the_server_vault(
         "agent": "zcode",
         "command": "",
         "permission_warning": None,
+        "permission_code": None,
     }
     assert opened == [("zcode", vault)]
 
@@ -790,6 +794,7 @@ def test_launch_app_without_a_display_falls_back_to_copy(
         "agent": "zcode",
         "command": command,
         "permission_warning": None,
+        "permission_code": None,
     }
 
 
@@ -895,6 +900,7 @@ def test_launch_dsh_on_windows_starts_its_exe_with_its_link(
         "agent": "dsh",
         "command": "",
         "permission_warning": None,
+        "permission_code": None,
     }
     [(argv, env)] = started
     assert argv == [str(exe), "dsh://open"]
@@ -978,6 +984,7 @@ def test_launch_with_both_installed_and_no_choice_goes_to_the_cli(
         "agent": "claude",
         "command": "claude",
         "permission_warning": None,
+        "permission_code": None,
     }
     assert started == {"terminal": [["claude"]], "app": []}
 
@@ -993,6 +1000,7 @@ def test_launch_with_the_app_saved_opens_it(
         "agent": "claude",
         "command": "",
         "permission_warning": None,
+        "permission_code": None,
     }
     assert started == {"terminal": [], "app": ["claude"]}
 
@@ -1323,6 +1331,7 @@ def test_a_row_with_one_way_launches_without_a_hint(
         "agent": "zcode",
         "command": "",
         "permission_warning": None,
+        "permission_code": None,
     }
     assert started["app"] == ["zcode"]
 

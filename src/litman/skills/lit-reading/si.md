@@ -2,7 +2,7 @@
 
 Read this before you run `lit add --si`, or before you look for an answer inside an SI file (SKILL.md B15). Step 1 (`lit show '<id>'`'s `SI:` lines), the answer format and the red lines are in SKILL.md; its Rules hold here too, and "Rule N" and "Phase 2" refer to it.
 
-2. **Not there → ask litman for it.** First tell the user in one line that you are asking litman for the SI: an SI window appears on their open litman page — Open website, download the SI there, drop the files in, press Done. Then run `lit add --si '<id>'` (full id or unique substring) as a shell call of its own (Rule 1). It waits up to about 90 s; let it run to its end. If your shell tool times out or moves it to the background, wait for it to finish and read its output — a run your tool cut off counts as exit 11. Rerunning the identical command rejoins the same window; it never opens a second one.
+2. **Not there → ask litman for it.** First tell the user in one line that you are asking litman for the SI: an SI window appears on their open litman page — Open website (打开论文网页 when the page is in Chinese), download the SI there, drop the files in, press Done (完成). Then run `lit add --si '<id>'` (full id or unique substring) as a shell call of its own (Rule 1). It waits up to about 90 s; let it run to its end. If your shell tool times out or moves it to the background, wait for it to finish and read its output — a run your tool cut off counts as exit 11. Rerunning the identical command rejoins the same window; it never opens a second one.
 
    | Exit | First stdout line(s) | What you do |
    |---|---|---|

@@ -6,31 +6,116 @@ import type {
   FixedEnums,
   HealthIssue,
   IndexPaper,
+  MdFile,
   PaperMeta,
   ProjectEntry,
   RestoreResult,
+  SaveResult,
   SearchPayload,
   SmartListView,
+  SyncStatus,
   Taxonomy,
   TrashEntry,
   VaultsPayload,
 } from './types'
+import type { LangPref } from './i18n'
 
-/** An HTTP failure, carrying the status code so callers can branch on it.
+/** An HTTP failure: the status, and what the server named it by.
  *
- * The message is what it always was (the backend's `detail` where there is one,
- * the status line otherwise), so every existing `err.message` toast is unchanged.
- * The status is what's new: App needs to tell a **410** — the served library is
- * no longer on disk — apart from every other 4xx, because that one is not a
- * failed action, it's a lost library. */
+ * `code` picks the short line the page shows (apiErrors.ts) and `params` fill
+ * it; null when the server gave none, and the failed action's own line shows.
+ * The message is the server's full `detail` (the status line when there is
+ * none). It is never rendered: the server keeps it in the GUI log, where the
+ * agent reads it with `lit gui-log`. The status tells a **410** (the served
+ * library is gone, which the red banner says) apart from a failed action. */
 export class ApiError extends Error {
   readonly status: number
+  readonly code: string | null
+  readonly params: Readonly<Record<string, string>>
 
-  constructor(message: string, status: number) {
+  constructor(
+    message: string,
+    status: number,
+    code: string | null = null,
+    params: Readonly<Record<string, string>> = {},
+  ) {
     super(message)
     this.name = 'ApiError'
     this.status = status
+    this.code = code
+    this.params = params
   }
+}
+
+/** The request never got an answer: the server is not running, or the
+ * network refused it. Not an `ApiError` (there is no status), and not a bug in
+ * the page either, which is why it has its own type. */
+export class OfflineError extends Error {
+  constructor(cause: unknown) {
+    super(cause instanceof Error ? cause.message : String(cause))
+    this.name = 'OfflineError'
+    this.cause = cause
+  }
+}
+
+/** `fetch`, with a rejection that is not an abort turned into `OfflineError`. */
+async function fetchOrOffline(input: RequestInfo | URL, init: RequestInit): Promise<Response> {
+  try {
+    return await fetch(input, init)
+  } catch (err) {
+    if (err instanceof DOMException && err.name === 'AbortError') throw err
+    throw new OfflineError(err)
+  }
+}
+
+/** An error answer's parts: `detail`, `code`, `params`, and the body itself
+ * (some routes add fields, such as the SI request a refusal is about). */
+async function readError(
+  resp: Response,
+  fallback: string,
+): Promise<{ detail: string; code: string | null; params: Record<string, string>; body: Record<string, unknown> }> {
+  let detail = fallback
+  let code: string | null = null
+  const params: Record<string, string> = {}
+  let body: Record<string, unknown> = {}
+  try {
+    const parsed: unknown = await resp.json()
+    if (parsed && typeof parsed === 'object') body = parsed as Record<string, unknown>
+    if (typeof body.detail === 'string' && body.detail) detail = body.detail
+    if (typeof body.code === 'string' && body.code) code = body.code
+    if (body.params && typeof body.params === 'object') {
+      for (const [key, value] of Object.entries(body.params as Record<string, unknown>)) {
+        if (typeof value === 'string') params[key] = value
+      }
+    }
+  } catch {
+    /* non-JSON error body — keep the fallback */
+  }
+  return { detail, code, params, body }
+}
+
+/** Log a failure the page met on its own (pdf.js, a save before a switch) to
+ * the machine's GUI log, so the short line on screen has its full text on
+ * disk, where `lit gui-log` reads it. Best effort: it never throws, and the
+ * caller never waits for it. */
+export function logPageFailure(action: string, text: string, code?: string): void {
+  fetchOrOffline('/api/gui-log', {
+    method: 'POST',
+    cache: 'no-store',
+    body: JSON.stringify(code ? { action, text, code } : { action, text }),
+    headers: { 'Content-Type': 'application/json' },
+  }).catch(() => {
+    /* nowhere left to report it */
+  })
+}
+
+/** The `ApiError` for a failed answer. */
+async function apiError(resp: Response, fallback?: string): Promise<ApiError> {
+  const { detail, code, params } = await readError(
+    resp,
+    fallback ?? `${resp.status} ${resp.statusText}`,
+  )
+  return new ApiError(detail, resp.status, code, params)
 }
 
 /** Fetch live API state without consulting Chromium's HTTP cache.
@@ -42,27 +127,79 @@ export class ApiError extends Error {
  * same cache key after an upgrade.  Request-side `cache: 'no-store'` makes the
  * first upgraded sweep go to the server and heal immediately after relocate.
  */
-function apiFetch(input: RequestInfo | URL, init: RequestInit = {}): Promise<Response> {
-  return fetch(input, { ...init, cache: 'no-store' })
+async function apiFetch(input: RequestInfo | URL, init: RequestInit = {}): Promise<Response> {
+  const method = (init.method ?? 'GET').toUpperCase()
+  const send = () => fetchOrOffline(input, { ...init, cache: 'no-store' })
+  // A read is never turned away.
+  if (method === 'GET' || method === 'HEAD') return send()
+  const made = Date.now()
+  // Writes held for a sync go first: this one waits its turn behind them, so
+  // the library takes the writes in the order they were made.
+  if (heldWrites !== null) {
+    return behindHeldWrites(async () => sendAgainWhileHeld(input, init, made, await send()))
+  }
+  const resp = await send()
+  if (!turnedAway(resp)) return resp
+  return behindHeldWrites(() => sendAgainWhileHeld(input, init, made, resp))
 }
+
+/** A write that arrived while the auto sync's rclone was running on the
+ * library, waited for it on the server, and was turned away without being
+ * applied (503 with Retry-After). */
+function turnedAway(resp: Response): boolean {
+  return resp.status === 503 && resp.headers.get('Retry-After') !== null
+}
+
+/** Send a turned-away write again, holding on to what it carries, until it
+ * goes through or SYNC_RETRY_MS have passed since it was made. */
+async function sendAgainWhileHeld(
+  input: RequestInfo | URL,
+  init: RequestInit,
+  made: number,
+  first: Response,
+): Promise<Response> {
+  let resp = first
+  while (turnedAway(resp) && Date.now() - made <= SYNC_RETRY_MS) {
+    const seconds = Number(resp.headers.get('Retry-After'))
+    await new Promise((resolve) =>
+      setTimeout(resolve, (Number.isFinite(seconds) && seconds > 0 ? seconds : 5) * 1000),
+    )
+    resp = await fetchOrOffline(input, { ...init, cache: 'no-store' })
+  }
+  return resp
+}
+
+/** The writes being sent again after a sync turned them away, chained in
+ * order; null when none is. */
+let heldWrites: Promise<unknown> | null = null
+
+function behindHeldWrites<T>(job: () => Promise<T>): Promise<T> {
+  const prev = heldWrites ?? Promise.resolve()
+  // A failed write must not cancel the ones behind it.
+  const run = prev.then(job, job)
+  heldWrites = run
+  const clear = () => {
+    if (heldWrites === run) heldWrites = null
+  }
+  run.then(clear, clear)
+  return run
+}
+
+/** How long a write turned away during a sync is retried before it fails. */
+const SYNC_RETRY_MS = 2 * 60 * 1000
+
+/** The `base` of an edit begun on a notes / discussion file that did not
+ * exist yet: one a sync brings meanwhile is kept in the backup by the save. */
+export const ABSENT_BASE = 'absent'
 
 async function getJSON<T>(url: string): Promise<T> {
   const resp = await apiFetch(url)
-  if (!resp.ok) {
-    throw new ApiError(`${url} → ${resp.status} ${resp.statusText}`, resp.status)
-  }
+  if (!resp.ok) throw await apiError(resp, `${url} → ${resp.status} ${resp.statusText}`)
   return (await resp.json()) as T
 }
 
-/** A mutating JSON request that surfaces the server's `detail` on failure.
- *
- * Unlike `getJSON` (which throws a generic status-line Error), this parses the
- * FastAPI error body's `detail` and throws `new Error(detail)` so the cockpit
- * can toast the backend's real message verbatim — e.g. a ModifyError like
- * "Refusing to write: a revisit presupposes a first read" or
- * "Invalid status 'bogus'. Allowed values: …". Falls back to the status text
- * when the body has no parseable `detail`. Returns the parsed JSON response.
- */
+/** A mutating JSON request; a failure throws `ApiError` with the server's
+ * code, params and full `detail`. Returns the parsed JSON response. */
 async function mutateJSON<T>(
   url: string,
   method: 'PUT' | 'POST' | 'DELETE',
@@ -73,35 +210,15 @@ async function mutateJSON<T>(
     body: body === undefined ? undefined : JSON.stringify(body),
     headers: body === undefined ? undefined : { 'Content-Type': 'application/json' },
   })
-  if (!resp.ok) {
-    let detail = `${resp.status} ${resp.statusText}`
-    try {
-      const parsed = (await resp.json()) as { detail?: unknown }
-      if (typeof parsed.detail === 'string' && parsed.detail) detail = parsed.detail
-    } catch {
-      /* non-JSON error body — keep the status-line fallback */
-    }
-    throw new ApiError(detail, resp.status)
-  }
+  if (!resp.ok) throw await apiError(resp)
   return (await resp.json()) as T
 }
 
-/** A GET that surfaces the server's `detail` on failure (getJSON keeps only the
- * status line). The directory picker shows a bad-path 400's human message —
- * "No such folder: /x/y" — inline in its address bar, so the status line alone
- * is not enough. Parses the FastAPI error body's `detail` like `mutateJSON`. */
+/** A GET whose failure carries the server's code and `detail` (as `getJSON`'s
+ * does too now; kept as its own name for the callers that rely on it). */
 async function getJSONDetailed<T>(url: string): Promise<T> {
   const resp = await apiFetch(url)
-  if (!resp.ok) {
-    let detail = `${resp.status} ${resp.statusText}`
-    try {
-      const parsed = (await resp.json()) as { detail?: unknown }
-      if (typeof parsed.detail === 'string' && parsed.detail) detail = parsed.detail
-    } catch {
-      /* non-JSON error body — keep the status-line fallback */
-    }
-    throw new ApiError(detail, resp.status)
-  }
+  if (!resp.ok) throw await apiError(resp)
   return (await resp.json()) as T
 }
 
@@ -124,6 +241,8 @@ export function fetchPaper(id: string): Promise<PaperMeta> {
 export interface CitePayload {
   text: string
   warnings: string[]
+  /** The same caveats by code, in the same order: what the page shows. */
+  caveats: { code: string }[]
 }
 
 export function fetchCite(id: string): Promise<CitePayload> {
@@ -149,7 +268,11 @@ export function pdfUrl(id: string): string {
  * fire-and-forget caller's `.then` chain rejects rather than silently dropping
  * a failed save.
  */
-export async function putPdfAnnotations(id: string, bytes: Uint8Array): Promise<void> {
+export async function putPdfAnnotations(
+  id: string,
+  bytes: Uint8Array,
+  base?: string | null,
+): Promise<SaveResult> {
   // Send the bytes' underlying buffer slice as the body. fetch accepts an
   // ArrayBuffer as BodyInit and sends it verbatim; slicing by byteOffset/Length
   // copies exactly the view's region (saveDocument hands back a tight view, but
@@ -158,14 +281,40 @@ export async function putPdfAnnotations(id: string, bytes: Uint8Array): Promise<
     bytes.byteOffset,
     bytes.byteOffset + bytes.byteLength,
   ) as ArrayBuffer
-  const resp = await apiFetch(`/api/paper/${encodeURIComponent(id)}/pdf-annotations`, {
-    method: 'PUT',
-    body: buffer,
-    headers: { 'Content-Type': 'application/pdf' },
-  })
+  // `base`: the paper.pdf version this document was loaded at. If the file
+  // changed since (a sync brought another machine's annotations), the save
+  // still wins and the server keeps the replaced copy in the backup.
+  const qs = base ? `?base=${encodeURIComponent(base)}` : ''
+  const resp = await apiFetch(
+    `/api/paper/${encodeURIComponent(id)}/pdf-annotations${qs}`,
+    {
+      method: 'PUT',
+      body: buffer,
+      headers: { 'Content-Type': 'application/pdf' },
+    },
+  )
   if (!resp.ok) {
-    throw new Error(`PUT pdf-annotations/${id} → ${resp.status} ${resp.statusText}`)
+    throw await apiError(resp, `PUT pdf-annotations/${id} → ${resp.status} ${resp.statusText}`)
   }
+  return saveResult(await resp.json())
+}
+
+/** The `version` and `replaced` of a save's answer (older servers send neither). */
+function saveResult(body: unknown): SaveResult {
+  const b = (body ?? {}) as { version?: unknown; replaced?: { backup?: unknown } | null }
+  const backup = b.replaced?.backup
+  return {
+    version: typeof b.version === 'string' ? b.version : null,
+    replaced: typeof backup === 'string' ? { backup } : null,
+  }
+}
+
+/** The version of paper.pdf (`mtime:size`), read before its bytes are loaded. */
+export async function fetchPdfVersion(id: string): Promise<string | null> {
+  const resp = await apiFetch(`/api/paper/${encodeURIComponent(id)}/pdf-version`)
+  if (!resp.ok) return null
+  const body = (await resp.json()) as { version?: unknown }
+  return typeof body.version === 'string' ? body.version : null
 }
 
 /** Overwrite a paper's notes.md / discussion.md with the full edited text.
@@ -181,49 +330,47 @@ async function putMdText(
   id: string,
   doc: 'notes' | 'discussion',
   text: string,
-): Promise<void> {
+  base?: string | null,
+): Promise<SaveResult> {
+  // `base`: the version the edit started from. If the file changed since (a
+  // sync, an agent), the save still wins and the server keeps the replaced
+  // copy in the backup.
   const resp = await apiFetch(`/api/paper/${encodeURIComponent(id)}/${doc}`, {
     method: 'PUT',
-    body: JSON.stringify({ text }),
+    body: JSON.stringify(base ? { text, base } : { text }),
     headers: { 'Content-Type': 'application/json' },
   })
   if (!resp.ok) {
-    throw new Error(`PUT ${doc}/${id} → ${resp.status} ${resp.statusText}`)
+    throw await apiError(resp, `PUT ${doc}/${id} → ${resp.status} ${resp.statusText}`)
   }
+  return saveResult(await resp.json())
 }
 
-export function putNotes(id: string, text: string): Promise<void> {
-  return putMdText(id, 'notes', text)
+export function putNotes(id: string, text: string, base?: string | null): Promise<SaveResult> {
+  return putMdText(id, 'notes', text, base)
 }
 
-export function putDiscussion(id: string, text: string): Promise<void> {
-  return putMdText(id, 'discussion', text)
+export function putDiscussion(
+  id: string,
+  text: string,
+  base?: string | null,
+): Promise<SaveResult> {
+  return putMdText(id, 'discussion', text, base)
 }
 
-async function fetchMdText(id: string, doc: 'notes' | 'discussion'): Promise<string | null> {
+async function fetchMdText(id: string, doc: 'notes' | 'discussion'): Promise<MdFile | null> {
   const resp = await apiFetch(`/api/paper/${encodeURIComponent(id)}/${doc}`)
   if (resp.status === 404) return null
-  if (!resp.ok) {
-    // The server describes damaged files (non-UTF-8 etc.) in `detail` —
-    // surface that to the tab instead of a bare status code.
-    let detail = `${doc}.md → HTTP ${resp.status}`
-    try {
-      const body = (await resp.json()) as { detail?: string }
-      if (body.detail) detail = body.detail
-    } catch {
-      /* body not JSON — keep the status string */
-    }
-    throw new Error(detail)
-  }
-  const body = (await resp.json()) as { text: string }
-  return body.text
+  if (!resp.ok) throw await apiError(resp, `${doc}.md → HTTP ${resp.status}`)
+  const body = (await resp.json()) as { text: string; version?: unknown }
+  return { text: body.text, version: typeof body.version === 'string' ? body.version : null }
 }
 
-export function fetchNotes(id: string): Promise<string | null> {
+export function fetchNotes(id: string): Promise<MdFile | null> {
   return fetchMdText(id, 'notes')
 }
 
-export function fetchDiscussion(id: string): Promise<string | null> {
+export function fetchDiscussion(id: string): Promise<MdFile | null> {
   return fetchMdText(id, 'discussion')
 }
 
@@ -250,10 +397,18 @@ export function fetchDocMtimes(): Promise<DocMtimes> {
 export function fetchVaultVersion(): Promise<{
   version: string
   siRequest?: SiRequestSeed | null
+  sync?: SyncStatus | null
 }> {
-  return getJSON<{ version: string; siRequest?: SiRequestSeed | null }>(
+  return getJSON<{ version: string; siRequest?: SiRequestSeed | null; sync?: SyncStatus | null }>(
     '/api/vault-version',
   )
+}
+
+/** "Sync now": the click on the status mark. Also restarts an auto sync that
+ * stopped on an error. Throws with the server's way out (409) when this
+ * library cannot be synced from the GUI yet. */
+export function postSyncNow(): Promise<{ queued: boolean; state: string }> {
+  return mutateJSON<{ queued: boolean; state: string }>('/api/sync', 'POST')
 }
 
 /** The status/type whitelists (+ allowsNone) backing the cockpit
@@ -433,6 +588,9 @@ export function fetchVersion(): Promise<VersionInfo> {
 export interface WhatsNewInfo {
   version: string
   bullets: string[]
+  /** The Chinese twin of `bullets` (whatsnew.zh.md); [] when this version has
+   * none, and a Chinese UI then shows `bullets`. */
+  bulletsZh: string[]
   changelogUrl: string
   seen: string | null
 }
@@ -446,6 +604,16 @@ export function fetchWhatsNew(): Promise<WhatsNewInfo> {
  * was never shown. Idempotent. */
 export function markWhatsNewSeen(): Promise<{ seen: string }> {
   return mutateJSON<{ seen: string }>('/api/whatsnew/seen', 'PUT')
+}
+
+/** The GUI language preference: `auto` (follow the system), `en` or `zh`.
+ * Kept in the machine-level ui-state.json for the reason fetchWhatsNew gives:
+ * the app window and a browser tab must agree. */
+export function fetchUiLang(): Promise<{ lang: string }> {
+  return getJSON<{ lang: string }>('/api/ui-lang')
+}
+export function saveUiLang(lang: LangPref): Promise<{ lang: string }> {
+  return mutateJSON<{ lang: string }>('/api/ui-lang', 'PUT', { lang })
 }
 
 /** Drag-in ingest (three steps, one shared `lit add` write path server-side).
@@ -487,6 +655,8 @@ export interface IngestPreview {
   /** Null when the CrossRef record can't yield an id; see `idError`. */
   proposedId: string | null
   idError: string | null
+  /** Why not, as a code (the line the field shows); null with `idError` null. */
+  idErrorCode: string | null
   /** A candidate to pre-fill the Paper ID field with when `proposedId` is
    * null. Null means the server had nothing worth offering — an empty field
    * is a better prompt than a bad default. */
@@ -505,8 +675,9 @@ export interface IngestPreview {
  * afterwards. */
 export interface DeriveIdResult {
   id: string | null
-  /** Why not — already reduced to one line, safe to show inline. */
+  /** Why not, in the server's words (never shown; `errorCode` picks the line). */
   error: string | null
+  errorCode: string | null
   suggestion: string | null
   segments: IdSegments
 }
@@ -530,16 +701,7 @@ export async function uploadIngestPdf(file: File): Promise<IngestUploadResult> {
     body: file,
     headers: { 'Content-Type': 'application/pdf' },
   })
-  if (!resp.ok) {
-    let detail = `${resp.status} ${resp.statusText}`
-    try {
-      const parsed = (await resp.json()) as { detail?: unknown }
-      if (typeof parsed.detail === 'string' && parsed.detail) detail = parsed.detail
-    } catch {
-      /* non-JSON error body — keep the status-line fallback */
-    }
-    throw new ApiError(detail, resp.status)
-  }
+  if (!resp.ok) throw await apiError(resp)
   return (await resp.json()) as IngestUploadResult
 }
 
@@ -620,7 +782,10 @@ export interface SiRow {
   bytes: number
   verdict: 'ok' | 'unverified' | 'rejected'
   check: 'filename' | 'title' | null
+  /** Why, in the server's words; the window shows the line `reasonCode` picks. */
   reason: string
+  reasonCode: string | null
+  reasonParams: Record<string, string>
   otherId: string | null
 }
 
@@ -645,6 +810,8 @@ export interface SiSnapshot {
   rows: SiRow[]
   added: SiAdded[]
   warnings: string[]
+  /** `warnings` by code, in order: `index-not-updated` or `source-left`. */
+  warningCodes: string[]
 }
 
 /** What the poll hands over (`/api/vault-version`): enough to open the window. */
@@ -660,8 +827,14 @@ export interface SiRequestSeed {
 export class SiApiError extends ApiError {
   readonly request: SiSnapshot | null
 
-  constructor(message: string, status: number, request: SiSnapshot | null) {
-    super(message, status)
+  constructor(
+    message: string,
+    status: number,
+    request: SiSnapshot | null,
+    code: string | null = null,
+    params: Readonly<Record<string, string>> = {},
+  ) {
+    super(message, status, code, params)
     this.name = 'SiApiError'
     this.request = request
   }
@@ -671,18 +844,13 @@ export class SiApiError extends ApiError {
 async function siFetch<T>(url: string, init: RequestInit = {}): Promise<T> {
   const resp = await apiFetch(url, init)
   if (!resp.ok) {
-    let detail = `${resp.status} ${resp.statusText}`
-    let request: SiSnapshot | null = null
-    try {
-      const parsed = (await resp.json()) as { detail?: unknown; request?: unknown }
-      if (typeof parsed.detail === 'string' && parsed.detail) detail = parsed.detail
-      if (parsed.request && typeof parsed.request === 'object') {
-        request = parsed.request as SiSnapshot
-      }
-    } catch {
-      /* non-JSON error body — keep the status-line fallback */
-    }
-    throw new SiApiError(detail, resp.status, request)
+    const { detail, code, params, body } = await readError(
+      resp,
+      `${resp.status} ${resp.statusText}`,
+    )
+    const request =
+      body.request && typeof body.request === 'object' ? (body.request as SiSnapshot) : null
+    throw new SiApiError(detail, resp.status, request, code, params)
   }
   return (await resp.json()) as T
 }
@@ -867,6 +1035,8 @@ export interface AgentLaunchResult {
   agent: string
   command: string
   permission_warning: string | null
+  /** Set when there is a warning: the page shows its line, not the warning. */
+  permission_code: string | null
 }
 
 /** Launch a configured agent in a terminal at the vault. Sends the agent NAME
@@ -951,6 +1121,8 @@ export function installAgentSkill(
     mode: string
     rule: string
     warning: string | null
+    /** Set with a warning: the page shows its line, not the warning. */
+    code: string | null
   }
 }> {
   return mutateJSON('/api/agent/skill/install', 'POST', name ? { agent: name } : {})
@@ -1162,21 +1334,18 @@ export async function addTaxonomyValue(
     headers: { 'Content-Type': 'application/json' },
   })
   if (!resp.ok) {
-    let detail = `${resp.status} ${resp.statusText}`
-    let similar: SimilarPair[] = []
-    try {
-      const parsed = (await resp.json()) as { detail?: unknown; similar?: unknown }
-      if (typeof parsed.detail === 'string' && parsed.detail) detail = parsed.detail
-      if (Array.isArray(parsed.similar) && parsed.similar.every(isSimilarPair)) {
-        similar = parsed.similar
-      }
-    } catch {
-      /* non-JSON error body — keep the status-line fallback */
-    }
+    const { detail, code, params, body } = await readError(
+      resp,
+      `${resp.status} ${resp.statusText}`,
+    )
+    const similar =
+      Array.isArray(body.similar) && body.similar.every(isSimilarPair)
+        ? (body.similar as SimilarPair[])
+        : []
     if (resp.status === 409 && similar.length > 0) {
       throw new TaxonomySimilarError(detail, similar)
     }
-    throw new ApiError(detail, resp.status)
+    throw new ApiError(detail, resp.status, code, params)
   }
   return (await resp.json()) as { ok: boolean; added: string[]; skipped: string[] }
 }
@@ -1314,7 +1483,7 @@ async function fetchTrashMdText(
 ): Promise<string | null> {
   const resp = await apiFetch(`/api/trash/${encodeURIComponent(entryName)}/${doc}`)
   if (resp.status === 404) return null
-  if (!resp.ok) throw new Error(`trash/${doc} → ${resp.status}`)
+  if (!resp.ok) throw await apiError(resp, `trash/${doc} → ${resp.status}`)
   const body = (await resp.json()) as { text: string }
   return body.text
 }

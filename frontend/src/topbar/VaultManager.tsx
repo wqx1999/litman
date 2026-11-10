@@ -7,6 +7,9 @@ import type {
 import { listDir } from '../api'
 import type { FsAnchor } from '../api'
 import { IconTrash, anchorIcon } from '../ui/icons'
+import { getT, useT } from '../i18n'
+import { errorLine } from '../apiErrors'
+import { rich } from '../i18n/rich'
 import HelpHint from '../ui/HelpHint'
 import PathField, { describeLocation } from '../ui/PathField'
 import { useEscapeLayer } from '../ui/escapeStack'
@@ -41,6 +44,8 @@ export default function VaultManager({
   onRelocateVault: (name: string, path: string) => Promise<void>
   onClose: () => void
 }) {
+  const t = useT()
+  const m = t.topbar.vaultManager
   const [pendingUnregister, setPendingUnregister] = useState<string | null>(null)
   // The missing vault whose new home the user is locating (Locate → path input).
   const [pendingLocate, setPendingLocate] = useState<VaultEntry | null>(null)
@@ -88,16 +93,16 @@ export default function VaultManager({
         className="flex max-h-[70vh] w-[30rem] animate-grow-in focus:outline-none flex-col rounded-2xl bg-white p-5 shadow-xl ring-1 ring-stone-200"
       >
         <h2 className="text-sm font-semibold text-stone-900">
-          Vaults
+          {m.title}
           {sorted.length > 0 && (
             <span className="font-normal tabular-nums text-stone-400"> · {sorted.length}</span>
           )}
-          <HelpHint text="Create or register vaults, and switch between them from the toolbar. Unregistering never deletes the folder." />
+          <HelpHint text={m.help} />
         </h2>
         <div className="mt-3 min-h-0 flex-1 overflow-y-auto rounded-lg border border-stone-200">
           {sorted.length === 0 && (
             <div className="px-3 py-4 text-center text-xs text-stone-400">
-              No vaults registered.
+              {m.empty}
             </div>
           )}
           {sorted.map((v) => (
@@ -112,15 +117,15 @@ export default function VaultManager({
                   </span>
                   {v.active && (
                     <span className="shrink-0 rounded-full bg-accent-100 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-accent-700">
-                      active
+                      {m.active}
                     </span>
                   )}
                   {!v.exists && (
                     <span
-                      title="No library at this path — the folder was moved, renamed or deleted."
+                      title={m.missingTitle}
                       className="shrink-0 rounded-full bg-rose-100 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-rose-700"
                     >
-                      missing
+                      {m.missing}
                     </span>
                   )}
                 </div>
@@ -140,22 +145,22 @@ export default function VaultManager({
                   // that user's sole escape from the 410.
                   <button
                     type="button"
-                    aria-label={`Locate vault ${v.name}`}
-                    title={`Point “${v.name}” at its new folder`}
+                    aria-label={m.locateLabel(v.name)}
+                    title={m.locateTitle(v.name)}
                     disabled={blocked}
                     onClick={() => setPendingLocate(v)}
                     className="rounded-md border border-accent-200 bg-accent-50 px-2 py-0.5 text-[11px] font-medium text-accent-700 transition-colors hover:bg-accent-100 disabled:opacity-40"
                   >
-                    Locate
+                    {m.locate}
                   </button>
                 )}
                 <button
                   type="button"
-                  aria-label={`Unregister vault ${v.name}`}
+                  aria-label={m.unregisterLabel(v.name)}
                   title={
                     v.served
-                      ? 'Switch to another vault first'
-                      : `Unregister vault “${v.name}”`
+                      ? m.unregisterServedTitle
+                      : m.unregisterTitle(v.name)
                   }
                   disabled={blocked || v.served}
                   onClick={() => setPendingUnregister(v.name)}
@@ -175,7 +180,7 @@ export default function VaultManager({
               onClick={() => setShowCreate(true)}
               className="rounded-lg bg-accent-500 px-3 py-1.5 text-xs font-medium text-white shadow-sm transition-colors hover:bg-accent-600 disabled:opacity-50"
             >
-              + New vault…
+              {m.newVault}
             </button>
             <button
               type="button"
@@ -183,7 +188,7 @@ export default function VaultManager({
               onClick={() => setShowRegister(true)}
               className="rounded-lg border border-accent-200 bg-accent-50 px-3 py-1.5 text-xs font-medium text-accent-700 shadow-sm transition-colors hover:bg-accent-100 disabled:opacity-50"
             >
-              + Register existing…
+              {m.registerExisting}
             </button>
           </div>
           <button
@@ -192,7 +197,7 @@ export default function VaultManager({
             onClick={onClose}
             className="rounded-lg px-3 py-1.5 text-xs text-stone-600 transition-colors hover:bg-stone-100 disabled:opacity-40"
           >
-            Done
+            {t.common.done}
           </button>
         </div>
       </div>
@@ -227,6 +232,7 @@ export default function VaultManager({
       )}
       {showCreate && (
         <CreateVaultDialog
+          suggestedName={vaults?.suggestedName}
           onCreateVault={onCreateVault}
           onClose={() => setShowCreate(false)}
           onCreated={(setActive) => {
@@ -257,6 +263,8 @@ function UnregisterVaultConfirm({
   onConfirm: () => void
 }) {
   useEscapeLayer(true, onCancel)
+  const t = useT()
+  const u = t.topbar.unregisterVault
   return (
     <div
       className="fixed inset-0 z-[60] flex items-center justify-center bg-black/30 backdrop-blur-sm"
@@ -267,14 +275,13 @@ function UnregisterVaultConfirm({
         className="w-[24rem] animate-grow-in rounded-2xl bg-white p-5 shadow-xl ring-1 ring-stone-200"
       >
         <h2 className="text-sm font-semibold text-stone-900">
-          Unregister vault “{name}”?
+          {u.title(name)}
         </h2>
         <p className="mt-1.5 text-xs leading-relaxed text-stone-600">
-          This removes “{name}” from the vault registry only.{' '}
-          <span className="font-semibold">
-            The vault directory on disk is NOT deleted
-          </span>{' '}
-          — only the registry entry is removed. You can register it again later.
+          {rich(u.body, {
+            name,
+            keep: <span className="font-semibold">{u.keepsFolder}</span>,
+          })}
         </p>
         <div className="mt-5 flex justify-end gap-2">
           <button
@@ -283,14 +290,14 @@ function UnregisterVaultConfirm({
             disabled={busy}
             className="rounded-lg px-3 py-1.5 text-xs text-stone-600 transition-colors hover:bg-stone-100 disabled:opacity-40"
           >
-            Cancel
+            {t.common.cancel}
           </button>
           <button
             onClick={onConfirm}
             disabled={busy}
             className="rounded-lg bg-rose-500 px-3 py-1.5 text-xs font-medium text-white transition-colors hover:bg-rose-600 disabled:opacity-60"
           >
-            {busy ? 'Unregistering…' : 'Unregister'}
+            {busy ? u.unregistering : u.unregister}
           </button>
         </div>
       </div>
@@ -319,6 +326,8 @@ function LocateVaultDialog({
   onCancel: () => void
   onLocated: () => void
 }) {
+  const t = useT()
+  const l = t.topbar.locateVault
   const [path, setPath] = useState('')
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -333,8 +342,9 @@ function LocateVaultDialog({
       await onRelocateVault(vault.name, trimmed)
       onLocated()
     } catch (err) {
-      // Verbatim backend message inline; keep the dialog open for correction.
-      setError(err instanceof Error ? err.message : String(err))
+      // The line for what the server refused, inline; keep the dialog open for
+      // correction. The server's full text is in the GUI log.
+      setError(errorLine(err, null, getT().errors.vault))
       setBusy(false)
     }
   }
@@ -352,19 +362,20 @@ function LocateVaultDialog({
         className="w-[26rem] animate-grow-in rounded-2xl bg-white p-5 shadow-xl ring-1 ring-stone-200"
       >
         <h2 className="text-sm font-semibold text-stone-900">
-          Locate “{vault.name}”
+          {l.title(vault.name)}
         </h2>
         <p className="mt-1.5 text-xs leading-relaxed text-stone-500">
-          This library moved from{' '}
-          <span className="font-mono text-[0.9em] text-rose-400 line-through">
-            {vault.path}
-          </span>
-          . Paste where it lives now — the vault folder itself, which must contain
-          a lit-config.yaml.
+          {rich(l.body, {
+            path: (
+              <span className="font-mono text-[0.9em] text-rose-400 line-through">
+                {vault.path}
+              </span>
+            ),
+          })}
         </p>
         <label className="mt-4 flex flex-col gap-1">
           <span className="text-[11px] font-semibold uppercase tracking-wider text-stone-600">
-            New vault path
+            {l.pathLabel}
           </span>
           <PathField
             mode="vault-dir"
@@ -372,7 +383,7 @@ function LocateVaultDialog({
             onChange={setPath}
             disabled={busy}
             autoFocus
-            placeholder="/work/you/literature_vault"
+            placeholder="/home/you/literature_vault"
             onEnter={() => {
               if (canSubmit) submit()
             }}
@@ -389,14 +400,14 @@ function LocateVaultDialog({
             disabled={busy}
             className="rounded-lg px-3 py-1.5 text-xs text-stone-600 transition-colors hover:bg-stone-100 disabled:opacity-40"
           >
-            Cancel
+            {t.common.cancel}
           </button>
           <button
             onClick={submit}
             disabled={!canSubmit}
             className="rounded-lg bg-accent-500 px-3 py-1.5 text-xs font-medium text-white transition-colors hover:bg-accent-600 disabled:opacity-60"
           >
-            {busy ? 'Locating…' : 'Locate'}
+            {busy ? l.locating : l.locate}
           </button>
         </div>
       </div>
@@ -421,6 +432,8 @@ function RegisterVaultDialog({
   onClose: () => void
   onRegistered: (setActive: boolean) => void
 }) {
+  const t = useT()
+  const r = t.topbar.registerVault
   const [name, setName] = useState('')
   const [path, setPath] = useState('')
   const [setActive, setSetActive] = useState(false)
@@ -437,8 +450,9 @@ function RegisterVaultDialog({
       await onRegisterVault(name.trim(), path.trim(), setActive)
       onRegistered(setActive)
     } catch (err) {
-      // Verbatim backend message inline; keep the dialog open for correction.
-      setError(err instanceof Error ? err.message : String(err))
+      // The line for what the server refused, inline; keep the dialog open for
+      // correction. The server's full text is in the GUI log.
+      setError(errorLine(err, null, getT().errors.vault))
       setBusy(false)
     }
   }
@@ -463,16 +477,15 @@ function RegisterVaultDialog({
         className="w-[26rem] animate-grow-in rounded-2xl bg-white p-5 shadow-xl ring-1 ring-stone-200"
       >
         <h2 className="text-sm font-semibold text-stone-900">
-          Register existing vault
+          {r.title}
         </h2>
         <p className="mt-1.5 text-xs leading-relaxed text-stone-500">
-          Adds an existing litman vault to the registry (nothing is created). The
-          path must already contain a lit-config.yaml.
+          {r.intro}
         </p>
         <div className="mt-4 flex flex-col gap-3">
           <label className="flex flex-col gap-1">
             <span className="text-[11px] font-semibold uppercase tracking-wider text-stone-600">
-              Name
+              {r.nameLabel}
             </span>
             <input
               autoFocus
@@ -486,18 +499,18 @@ function RegisterVaultDialog({
           </label>
           <label className="flex flex-col gap-1">
             <span className="text-[11px] font-semibold uppercase tracking-wider text-stone-600">
-              Vault path
+              {r.pathLabel}
             </span>
             <PathField
               mode="vault-dir"
               value={path}
               onChange={setPath}
               disabled={busy}
-              placeholder="/work/you/literature_vault"
+              placeholder="/home/you/literature_vault"
               onEnter={submit}
             />
             <span className="text-[11px] text-stone-400">
-              the vault folder itself, must exist + contain lit-config.yaml
+              {r.pathHint}
             </span>
           </label>
           <label className="flex items-center gap-2 text-xs text-stone-600">
@@ -508,7 +521,7 @@ function RegisterVaultDialog({
               onChange={(e) => setSetActive(e.target.checked)}
               className="h-3.5 w-3.5 rounded border-stone-300 text-accent-500 focus:ring-accent-500"
             />
-            Switch to it after registering
+            {r.switchAfter}
           </label>
         </div>
         {error && (
@@ -522,14 +535,14 @@ function RegisterVaultDialog({
             disabled={busy}
             className="rounded-lg px-3 py-1.5 text-xs text-stone-600 transition-colors hover:bg-stone-100 disabled:opacity-40"
           >
-            Cancel
+            {t.common.cancel}
           </button>
           <button
             onClick={submit}
             disabled={!canSubmit}
             className="rounded-lg bg-accent-500 px-3 py-1.5 text-xs font-medium text-white transition-colors hover:bg-accent-600 disabled:opacity-60"
           >
-            {busy ? 'Registering…' : 'Register'}
+            {busy ? r.registering : r.register}
           </button>
         </div>
       </div>
@@ -553,16 +566,23 @@ function RegisterVaultDialog({
  * One name, not two: the folder created on disk and the registry entry share it.
  * (`lit init --register-as` splits them; the GUI does not need to.) */
 function CreateVaultDialog({
+  suggestedName,
   onCreateVault,
   onClose,
   onCreated,
 }: {
+  /** The server's offer: the default name, or the first free `<default>_<n>`
+   * once a library already has it (a second library would collide). */
+  suggestedName?: string
   onCreateVault: (parentDir: string, name: string, setActive: boolean) => Promise<void>
   onClose: () => void
   onCreated: (setActive: boolean) => void
 }) {
+  const t = useT()
+  const c = t.topbar.createVault
+  const offered = suggestedName ?? 'literature_vault'
   const [parentDir, setParentDir] = useState('~')
-  const [name, setName] = useState('literature_vault')
+  const [name, setName] = useState(offered)
   const [setActive, setSetActive] = useState(true)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -591,9 +611,10 @@ function CreateVaultDialog({
     }
   }, [])
 
-  // Name defaults to 'literature_vault' and an empty name is no longer a
-  // blocker: an emptied field falls back server-side (createVault omits it), so
-  // only the Location is required — matching the welcome page.
+  // The name starts as the server's free offer, and an empty name is no
+  // blocker: an emptied field falls back server-side to that same offer
+  // (createVault omits it), so only the Location is required — matching the
+  // welcome page.
   const canSubmit = parentDir.trim().length > 0 && !busy
 
   async function submit() {
@@ -604,9 +625,10 @@ function CreateVaultDialog({
       await onCreateVault(parentDir.trim(), name.trim(), setActive)
       onCreated(setActive)
     } catch (err) {
-      // Verbatim backend message inline (missing parent / target not empty / name
-      // already registered); keep the dialog open so the user can correct it.
-      setError(err instanceof Error ? err.message : String(err))
+      // The line for what the server refused (missing parent / target not
+      // empty / name taken), inline; keep the dialog open so the user can
+      // correct it.
+      setError(errorLine(err, null, getT().errors.vault))
       setBusy(false)
     }
   }
@@ -631,10 +653,9 @@ function CreateVaultDialog({
         onClick={(e) => e.stopPropagation()}
         className="w-[26rem] animate-grow-in rounded-2xl bg-white p-5 shadow-xl ring-1 ring-stone-200"
       >
-        <h2 className="text-sm font-semibold text-stone-900">New vault</h2>
+        <h2 className="text-sm font-semibold text-stone-900">{c.title}</h2>
         <p className="mt-1.5 text-xs leading-relaxed text-stone-500">
-          Creates the vault folder and registers it. The location must already
-          exist; the vault folder itself must not.
+          {c.intro}
         </p>
         <div className="mt-4 flex flex-col gap-3">
           <div className="rounded-xl border border-stone-200 bg-stone-50 px-4 py-3">
@@ -642,29 +663,29 @@ function CreateVaultDialog({
               {anchorIcon(loc.kind, 'h-5 w-5 shrink-0 text-stone-500')}
               <span className="min-w-0 truncate">
                 {loc.label} <span className="text-stone-400">/</span>{' '}
-                {name.trim() || 'literature_vault'}
+                {name.trim() || offered}
               </span>
             </div>
           </div>
           <label className="flex flex-col gap-1">
             <span className="text-[11px] font-semibold uppercase tracking-wider text-stone-600">
-              Location
+              {c.locationLabel}
             </span>
             <PathField
               mode="parent-dir"
               value={parentDir}
               onChange={setParentDir}
               disabled={busy}
-              placeholder="/work/you"
+              placeholder="/home/you"
               onEnter={submit}
             />
             <span className="text-[11px] text-stone-400">
-              the folder to create the vault in
+              {c.locationHint}
             </span>
           </label>
           <label className="flex flex-col gap-1">
             <span className="text-[11px] font-semibold uppercase tracking-wider text-stone-600">
-              Name
+              {c.nameLabel}
             </span>
             <input
               autoFocus
@@ -672,7 +693,7 @@ function CreateVaultDialog({
               value={name}
               disabled={busy}
               spellCheck={false}
-              placeholder="literature_vault"
+              placeholder={offered}
               onChange={(e) => setName(e.target.value)}
               onKeyDown={(e) => {
                 if (e.key === 'Enter') submit()
@@ -688,7 +709,7 @@ function CreateVaultDialog({
               onChange={(e) => setSetActive(e.target.checked)}
               className="h-3.5 w-3.5 rounded border-stone-300 text-accent-500 focus:ring-accent-500"
             />
-            Switch to it after creating
+            {c.switchAfter}
           </label>
         </div>
         {error && (
@@ -702,14 +723,14 @@ function CreateVaultDialog({
             disabled={busy}
             className="rounded-lg px-3 py-1.5 text-xs text-stone-600 transition-colors hover:bg-stone-100 disabled:opacity-40"
           >
-            Cancel
+            {t.common.cancel}
           </button>
           <button
             onClick={submit}
             disabled={!canSubmit}
             className="rounded-lg bg-accent-500 px-3 py-1.5 text-xs font-medium text-white transition-colors hover:bg-accent-600 disabled:opacity-60"
           >
-            {busy ? 'Creating…' : 'Create vault'}
+            {busy ? c.creating : c.create}
           </button>
         </div>
       </div>

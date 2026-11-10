@@ -529,7 +529,7 @@ def test_rm_si_deletes_and_says_how_to_add_it_again(
     assert [r["file"] for r in _records(vault)] == ["si-01.csv"]
     assert (vault / "papers" / A_ID / "paper.pdf").is_file()  # the paper stays
     # No trash for SI.
-    assert "(trash is empty)" in _run(vault, "trash", "list").output
+    assert "(trash is empty)" in _run(vault, "trash", "list", "--format", "table").output
 
     again = _blob(tmp_path, "ci9b00237_si_002.xlsx", b"sheet")
     back = _run(vault, "add", "--si", A_ID, str(again))
@@ -741,7 +741,7 @@ def test_show_lists_si_after_pdf_and_notes(vault: Path, tmp_path: Path) -> None:
     unlock_truth_file(gone)
     gone.unlink()
 
-    result = _run(vault, "show", A_ID)
+    result = _run(vault, "show", A_ID, "--format", "table")
 
     assert result.exit_code == 0, result.output
     lines = result.output.splitlines()
@@ -771,7 +771,7 @@ def test_show_marks_an_si_file_it_cannot_look_at(
         return real_is_file(self, *args, **kwargs)
 
     monkeypatch.setattr(Path, "is_file", is_file)
-    result = _run(vault, "show", A_ID)
+    result = _run(vault, "show", A_ID, "--format", "table")
 
     assert result.exit_code == 0, result.output
     si_lines = [line for line in result.output.splitlines() if line.startswith("SI:")]
@@ -794,7 +794,7 @@ def test_show_with_a_malformed_field_says_so(vault: Path) -> None:
     meta_path = vault / "papers" / A_ID / "metadata.yaml"
     with meta_path.open("a", encoding="utf-8") as f:
         f.write("supplementary: si-01.pdf\n")
-    result = _run(vault, "show", A_ID)
+    result = _run(vault, "show", A_ID, "--format", "table")
     assert result.exit_code == 0, result.output
     assert "'supplementary' in metadata.yaml is malformed" in result.output
 

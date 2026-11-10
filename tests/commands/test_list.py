@@ -40,20 +40,20 @@ def vault(tmp_path: Path) -> Path:
     _seed_paper(
         v, "2023_Pandi_Cellfree",
         year=2023, type="research", status="inbox",
-        **{"priority-PepForge": "B"},
+        **{"priority-SeaHorse": "B"},
         topics=["AMP-prediction", "deep-learning"],
         methods=["transformer"],
-        projects=["PepForge"],
+        projects=["SeaHorse"],
         authors=["Pandi, Amir", "Smith, John"],
         title="Cell-free biosynthesis paper",
     )
     _seed_paper(
         v, "2024_Smith_BERT",
         year=2024, type="review", status="deep-read",
-        **{"priority-PepCodec": "A"},
+        **{"priority-BlueBell": "A"},
         topics=["NLP", "transformer"],
         methods=["BERT-style"],
-        projects=["PepCodec"],
+        projects=["BlueBell"],
         authors=["Smith, John", "Doe, Jane"],
         title="A review of BERT-based methods",
     )
@@ -62,10 +62,10 @@ def vault(tmp_path: Path) -> Path:
         year=2024, type="research", status="skim",
         # Different grades in the two projects: this is the paper that makes
         # `--project` narrowing observable (ADR-025 decision 8).
-        **{"priority-PepForge": "C", "priority-PepCodec": "A"},
+        **{"priority-SeaHorse": "C", "priority-BlueBell": "A"},
         topics=["GNN"],
         methods=["GNN"],
-        projects=["PepForge", "PepCodec"],
+        projects=["SeaHorse", "BlueBell"],
         authors=["Doe, Jane"],
         title="GNN survey",
     )
@@ -73,8 +73,12 @@ def vault(tmp_path: Path) -> Path:
 
 
 def _invoke(vault: Path, *args: str):
+    """``lit list`` as a person at a terminal runs it: the table, unless the
+    test picks a format. (CliRunner is not a terminal, where the default is
+    JSON; ``test_read_format_default.py`` covers that.)"""
     runner = CliRunner()
-    return runner.invoke(cli, ["list", "--library", str(vault), *args])
+    fmt = [] if "--format" in args else ["--format", "table"]
+    return runner.invoke(cli, ["list", "--library", str(vault), *fmt, *args])
 
 
 # ---------------------------------------------------------------------------
@@ -93,8 +97,7 @@ def test_list_no_filter_shows_all(vault: Path) -> None:
 
 def test_list_empty_vault(tmp_path: Path) -> None:
     empty_vault = create_vault(tmp_path)
-    runner = CliRunner()
-    result = runner.invoke(cli, ["list", "--library", str(empty_vault)])
+    result = _invoke(empty_vault)
     assert result.exit_code == 0
     assert "No papers in vault yet" in result.output
 
@@ -139,12 +142,12 @@ def test_list_priority_filter(vault: Path) -> None:
     """No --project: any project's grade qualifies (ADR-025 decision 8)."""
     result = _invoke(vault, "--priority", "C")
     assert result.exit_code == 0
-    assert "2024_Doe_GNN" in result.output   # C for PepForge
+    assert "2024_Doe_GNN" in result.output   # C for SeaHorse
     assert "1 of 3" in result.output
 
 
 def test_list_priority_filter_is_or_across_projects(vault: Path) -> None:
-    """Doe is a C for PepForge and an A for PepCodec, so it answers to both
+    """Doe is a C for SeaHorse and an A for BlueBell, so it answers to both
     when no project narrows the question."""
     for grade in ("A", "C"):
         result = _invoke(vault, "--priority", grade)
@@ -154,14 +157,14 @@ def test_list_priority_filter_is_or_across_projects(vault: Path) -> None:
 def test_list_priority_narrowed_by_project(vault: Path) -> None:
     """With --project, only that project's grade counts — the whole point of
     making the grade a property of the link."""
-    forge_c = _invoke(vault, "--project", "PepForge", "--priority", "C")
+    forge_c = _invoke(vault, "--project", "SeaHorse", "--priority", "C")
     assert "2024_Doe_GNN" in forge_c.output
 
-    forge_a = _invoke(vault, "--project", "PepForge", "--priority", "A")
+    forge_a = _invoke(vault, "--project", "SeaHorse", "--priority", "A")
     assert "2024_Doe_GNN" not in forge_a.output   # it is an A, but not here
     assert "No papers match" in forge_a.output
 
-    codec_a = _invoke(vault, "--project", "PepCodec", "--priority", "A")
+    codec_a = _invoke(vault, "--project", "BlueBell", "--priority", "A")
     assert "2024_Doe_GNN" in codec_a.output
     assert "2024_Smith_BERT" in codec_a.output
 
@@ -188,7 +191,7 @@ def test_list_method_filter(vault: Path) -> None:
 
 
 def test_list_project_filter_returns_multiple(vault: Path) -> None:
-    result = _invoke(vault, "--project", "PepForge")
+    result = _invoke(vault, "--project", "SeaHorse")
     assert result.exit_code == 0
     assert "2023_Pandi_Cellfree" in result.output
     assert "2024_Doe_GNN" in result.output
@@ -233,7 +236,7 @@ def test_list_combined_and_filter(vault: Path) -> None:
 def test_list_combined_three_filters(vault: Path) -> None:
     result = _invoke(
         vault,
-        "--project", "PepForge",
+        "--project", "SeaHorse",
         "--year", "2024",
         "--method", "GNN",
     )
@@ -277,7 +280,7 @@ def test_list_format_json_normalizes_absent_fields(tmp_path: Path) -> None:
         doi="10.1000/withdoi",
         topics=["AMP-prediction"],
         methods=["transformer"],
-        projects=["PepForge"],
+        projects=["SeaHorse"],
         title="Paper that has a doi",
     )
     _seed_paper(
@@ -376,10 +379,11 @@ def test_list_format_json_respects_filters(vault: Path) -> None:
 def test_list_format_json_empty_hit_is_empty_array(vault: Path) -> None:
     result = _invoke(vault, "--topic", "zzz", "--format", "json")
     assert result.exit_code == 0
-    assert result.output.strip() == "[]"
-    assert json.loads(result.output) == []
+    # stdout alone: the note about 'zzz' goes to stderr.
+    assert result.stdout.strip() == "[]"
+    assert json.loads(result.stdout) == []
     # No human-facing "No papers match" text leaks into json mode.
-    assert "No papers" not in result.output
+    assert "No papers" not in result.stdout
 
 
 def test_list_format_json_is_loads_parseable_no_markup(vault: Path) -> None:
@@ -959,15 +963,15 @@ def test_list_priority_column_names_the_project(
     # truncates the header this test is about. Widen the render, do not
     # weaken the assertion.
     monkeypatch.setenv("COLUMNS", "200")
-    out = _invoke(vault, "--project", "PepForge").output
-    assert "Priority(PepForge)" in out
+    out = _invoke(vault, "--project", "SeaHorse").output
+    assert "Priority(SeaHorse)" in out
 
 
 def test_list_priority_column_shows_that_projects_grade(vault: Path) -> None:
-    """Doe is a C for PepForge and an A for PepCodec; each listing shows the
+    """Doe is a C for SeaHorse and an A for BlueBell; each listing shows the
     grade for the project it was asked about."""
-    forge = _invoke(vault, "--project", "PepForge").output
-    codec = _invoke(vault, "--project", "PepCodec").output
+    forge = _invoke(vault, "--project", "SeaHorse").output
+    codec = _invoke(vault, "--project", "BlueBell").output
     doe_forge = next(ln for ln in forge.splitlines() if "2024_Doe_GNN" in ln)
     doe_codec = next(ln for ln in codec.splitlines() if "2024_Doe_GNN" in ln)
     assert " C " in doe_forge and " A " not in doe_forge
@@ -977,7 +981,7 @@ def test_list_priority_column_shows_that_projects_grade(vault: Path) -> None:
 def test_list_no_priority_column_for_several_projects(vault: Path) -> None:
     """Two projects name no single grade, so the column stays away rather than
     silently picking one."""
-    out = _invoke(vault, "--project", "PepForge,PepCodec").output
+    out = _invoke(vault, "--project", "SeaHorse,BlueBell").output
     assert "Priority(" not in out
 
 
@@ -985,11 +989,11 @@ def test_list_ungraded_link_renders_as_a_dash(vault: Path) -> None:
     _seed_paper(
         vault, "2025_Zed_Ungraded",
         year=2025, type="research", status="inbox",
-        projects=["PepForge"], authors=["Zed, Z."], title="Ungraded",
+        projects=["SeaHorse"], authors=["Zed, Z."], title="Ungraded",
     )
     line = next(
         ln
-        for ln in _invoke(vault, "--project", "PepForge").output.splitlines()
+        for ln in _invoke(vault, "--project", "SeaHorse").output.splitlines()
         if "2025_Zed_Ungraded" in ln
     )
     assert " - " in line
@@ -1000,7 +1004,7 @@ def test_list_json_never_grows_a_priority_column(vault: Path) -> None:
     asking for a project must not smuggle one in."""
     import json as _json
 
-    out = _invoke(vault, "--project", "PepForge", "--format", "json").output
+    out = _invoke(vault, "--project", "SeaHorse", "--format", "json").output
     rows = _json.loads(out)
     assert rows
     for row in rows:
@@ -1021,8 +1025,8 @@ def test_ac4_list_and_export_agree_on_priority_semantics(
     papers = list_papers(vault)
     for filters, expected in (
         ({"priority": ["A"], "project": None}, {"2024_Smith_BERT", "2024_Doe_GNN"}),
-        ({"priority": ["A"], "project": ["PepForge"]}, set()),
-        ({"priority": ["C"], "project": ["PepForge"]}, {"2024_Doe_GNN"}),
+        ({"priority": ["A"], "project": ["SeaHorse"]}, set()),
+        ({"priority": ["C"], "project": ["SeaHorse"]}, {"2024_Doe_GNN"}),
     ):
         got = {p["id"] for p in papers if matches_filters(p, filters)}
         assert got == expected, filters
@@ -1049,3 +1053,91 @@ def test_ac4_list_and_export_agree_on_priority_semantics(
             assert pid in content, (filters, pid)
         for pid in {"2023_Pandi_Cellfree", "2024_Smith_BERT", "2024_Doe_GNN"} - expected:
             assert pid not in content, (filters, pid)
+
+
+
+# ---------------------------------------------------------------------------
+# A filter value that can match nothing says so on stderr
+# ---------------------------------------------------------------------------
+
+
+def _register(vault: Path, dict_name: str, *values: str) -> None:
+    from litman.core.taxonomy import add_taxonomy_values
+
+    add_taxonomy_values(vault, dict_name, values, force=True)
+
+
+def test_list_unregistered_topic_names_close_registered_values(vault: Path) -> None:
+    """`--topic peptide` with only `peptide-design` registered: `[]` on stdout,
+    and stderr names the registered values spelled like it, with paper counts —
+    so an agent does not answer "nothing on peptides"."""
+    _register(vault, "topics", "peptide-design", "peptide-property-prediction", "NLP")
+    result = _invoke(vault, "--topic", "peptide", "--format", "json")
+    assert result.exit_code == 0, result.output
+    assert json.loads(result.stdout) == []
+    assert "'peptide'" in result.stderr
+    assert "peptide-design (0)" in result.stderr
+    assert "peptide-property-prediction (0)" in result.stderr
+    assert "NLP" not in result.stderr
+
+
+def test_list_unregistered_value_with_no_look_alike_lists_the_dict(vault: Path) -> None:
+    """`gnn` for `graph-nn` is a meaning, not a spelling: the note falls back to
+    the whole dict, most-used first, with counts from the papers."""
+    _register(vault, "methods", "graph-nn", "transformer")
+    result = _invoke(vault, "--method", "gnnx", "--format", "json")
+    assert json.loads(result.stdout) == []
+    note = result.stderr
+    assert "'gnnx'" in note
+    # transformer is carried by one paper, graph-nn by none.
+    assert note.index("transformer (1)") < note.index("graph-nn (0)")
+
+
+def test_list_value_carried_by_a_paper_gets_no_note(vault: Path) -> None:
+    """A value papers carry is a real filter even if TAXONOMY.md lacks it (that
+    drift is health-check's job), and a registered value is fine as well."""
+    _register(vault, "topics", "NLP")
+    for value in ("deep-learning", "NLP", "deep-learning,NLP"):
+        result = _invoke(vault, "--topic", value, "--format", "json")
+        assert result.exit_code == 0
+        assert result.stderr == "", (value, result.stderr)
+
+
+def test_list_dead_value_in_an_or_list_is_still_named(vault: Path) -> None:
+    """`--topic NLP,peptide` returns the NLP papers, but `peptide` matched
+    nothing: say so, or the agent believes it covered both."""
+    _register(vault, "topics", "NLP", "peptide-design")
+    result = _invoke(vault, "--topic", "NLP,peptide", "--format", "json")
+    assert {row["id"] for row in json.loads(result.stdout)} == {"2024_Smith_BERT"}
+    assert "'peptide'" in result.stderr
+    assert "'NLP'" not in result.stderr
+
+
+def test_list_dead_project_and_data_values_are_named(vault: Path) -> None:
+    _register(vault, "data", "PDB")
+    result = _invoke(vault, "--project", "PepForg", "--data", "pdb", "--format", "json")
+    assert json.loads(result.stdout) == []
+    assert "project 'PepForg'" in result.stderr
+    assert "data value 'pdb'" in result.stderr
+    # Same after normalisation: case is set aside.
+    assert "PDB (0)" in result.stderr
+
+
+def test_list_dead_value_note_in_table_format_too(vault: Path) -> None:
+    result = _invoke(vault, "--topic", "zzz")
+    assert result.exit_code == 0
+    assert "No papers match" in result.stdout
+    assert "'zzz'" in result.stderr
+    assert "No topics are registered yet" in result.stderr
+
+
+def test_dead_filter_notes_caps_a_long_dict() -> None:
+    from litman.commands.list import _DEAD_VALUE_LIST_CAP, dead_filter_notes
+
+    known = [f"value-{i:03d}" for i in range(_DEAD_VALUE_LIST_CAP + 5)]
+    notes = dead_filter_notes([], {"topic": ["zzz"]}, {"topics": known})
+    assert len(notes) == 1
+    assert "value-000 (0)" in notes[0]
+    assert f"value-{_DEAD_VALUE_LIST_CAP:03d}" not in notes[0]
+    assert "and 5 more (`lit taxonomy list topics`)" in notes[0]
+

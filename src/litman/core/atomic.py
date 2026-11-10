@@ -19,6 +19,13 @@ rolls the whole op back; a crash after it is rolled *forward* — recovery
 replays the manifest and finishes the half-done promotion. This makes the
 helper crash-safe up to the filesystem's own atomicity guarantee on POSIX.
 
+A promotion the disk refuses while the process is alive (a read-only folder,
+a file another program holds on Windows) is not a crash. If the refused file
+is the first, nothing changed: the op is called off and no recovery replays
+it. Once a file has landed it cannot be undone, so the op stays for recovery
+to finish, and the error says so (:func:`left_for_recovery`). Either way the
+refused file keeps its lock.
+
 A write can also move whole folders (:meth:`StagedWrite.move_dir`, used by
 ``lit rename``). The moves are listed in the manifest and done between the
 manifest and the sentinel, so a folder that cannot be moved (on Windows, a
@@ -80,6 +87,10 @@ _DIRS_DONE_FILENAME = "DIRS_DONE"
 # folder to the trash and `lit code rm` deletes the clone. Both can be rerun.
 _REAL_WORK_AFTER_COMMIT = ("rm-", "code-unbind-")
 _DIRS_UNCLEAR_FILENAME = "DIRS_UNCLEAR"
+# Set on the OSError a refused promotion raises: the vault-relative path of the
+# file the disk refused, and whether the write is left for recovery to finish.
+_REFUSED_FILE_ATTR = "litman_refused_file"
+_LEFT_FOR_RECOVERY_ATTR = "litman_left_for_recovery"
 
 # Stderr console so recovery / degrade notices don't contaminate stdout
 # (which CLI consumers may pipe / parse). Module-level singleton.
@@ -677,6 +688,36 @@ def _staging_is_empty(staging_dir: Path) -> bool:
         return next(it, None) is None
 
 
+def left_for_recovery(err: BaseException) -> bool:
+    """Did ``err`` stop a write that the next recovery finishes?
+
+    True when a promotion was refused after some of its files had landed (or
+    its decision could not be taken back): the change is partly on disk, and
+    the next command or server start that opens the library puts the rest in
+    place. Whoever reports the failure must not say that nothing changed.
+    """
+    return bool(getattr(err, _LEFT_FOR_RECOVERY_ATTR, False))
+
+
+def refused_file(err: BaseException) -> str | None:
+    """The vault-relative path of the file whose promotion ``err`` refused."""
+    value = getattr(err, _REFUSED_FILE_ATTR, None)
+    return value if isinstance(value, str) else None
+
+
+def _lock_back(path: Path) -> None:
+    """Put a TRUTH file's lock back after its replace was refused; best effort.
+
+    The file is as it was (``os.replace`` is all or nothing), so it gets its
+    read-only bit back. A lock that cannot be set is left to the next sweep
+    (``ensure_truth_locked``) rather than hiding the refusal being raised.
+    """
+    try:
+        lock_truth_file(path)
+    except OSError:
+        pass
+
+
 class StagedWrite:
     """Context manager for atomic multi-file writes within a vault.
 
@@ -687,7 +728,8 @@ class StagedWrite:
     exit, EXCEPT when the commit passed its atomic decision point (the
     COMMITTED sentinel is durable) but ``_promote`` failed partway: then the
     staging dir is preserved as the only roll-forward evidence for the next
-    :func:`recover_staging` pass (F3).
+    :func:`recover_staging` pass (F3). A promotion whose first file is
+    refused changed nothing and is called off instead (:meth:`_call_off`).
     """
 
     def __init__(self, vault: Path, op_id: str | None = None) -> None:
@@ -930,7 +972,8 @@ class StagedWrite:
         return True
 
     def _drop_sentinel(self) -> bool:
-        """Remove a ``COMMITTED`` that reached disk although its write failed.
+        """Remove a ``COMMITTED`` that reached disk although its write failed
+        (or was called off, :meth:`_call_off`).
 
         Done before any folder is moved back: a sentinel left beside a folder
         already back in place would roll the op forward later, over a
@@ -971,13 +1014,33 @@ class StagedWrite:
         unlock is mandatory there for every `lit` write command that funnels
         through staged_write (modify / taxonomy / rm / rename / project /
         trash-restore). ``unlock_truth_file`` no-ops on a first-time create.
+
+        A file the disk refuses (a read-only folder; on Windows, a file another
+        program holds past the wait in ``replace_file``) is left as it was, and
+        its lock goes back on. The ``OSError`` is raised with the file named
+        (:func:`refused_file`). Refused first, nothing changed: the op is
+        called off (:meth:`_call_off`). Refused after a file landed, the
+        old version of that file is gone and the op cannot be undone: it stays
+        for the next recovery to finish, and the error says so
+        (:func:`left_for_recovery`).
         """
-        for staging_path, target_path in self._staged.values():
-            target_path.parent.mkdir(parents=True, exist_ok=True)
+        # ``landed``: how many files are in place before this one.
+        for landed, (relpath, (staging_path, target_path)) in enumerate(
+            self._staged.items()
+        ):
             lockable = is_truth_lockable(self.vault, target_path)
-            if lockable:
-                unlock_truth_file(target_path)
-            replace_file(staging_path, target_path)
+            try:
+                target_path.parent.mkdir(parents=True, exist_ok=True)
+                if lockable:
+                    unlock_truth_file(target_path)
+                replace_file(staging_path, target_path)
+            except OSError as err:
+                if lockable:
+                    _lock_back(target_path)
+                setattr(err, _REFUSED_FILE_ATTR, relpath)
+                if landed or not self._call_off():
+                    setattr(err, _LEFT_FOR_RECOVERY_ATTR, True)
+                raise
             _fsync_dir(target_path.parent)
             if lockable:
                 lock_truth_file(target_path)
@@ -985,14 +1048,31 @@ class StagedWrite:
         # _cleanup may safely remove.
         self._promoted = True
 
+    def _call_off(self) -> bool:
+        """Take back the decision of a write none of whose files landed.
+
+        ``COMMITTED`` goes, so the op reads as one that never passed its
+        decision point: ``_cleanup`` moves back any folder it moved and
+        removes the op dir, no recovery replays a write its caller reported
+        as failed, and ``committed`` turns ``False`` for callers that undo a
+        step of their own on a failed write. ``False`` if the sentinel cannot
+        be removed: the decision stands and the next recovery rolls the op
+        forward, as for any torn commit.
+        """
+        if not self._drop_sentinel():
+            return False
+        self._committed = False
+        return True
+
     def _cleanup(self) -> None:
         """Remove this op's staging directory, unless it is recovery evidence.
 
         A torn promotion (COMMITTED sentinel durable but ``_promote`` did not
-        finish) leaves the staging dir as the ONLY roll-forward record;
+        finish after a file landed) leaves the staging dir as the ONLY
+        roll-forward record (a refused first file calls the op off instead);
         destroying it would strand the vault in a silent, unrecoverable torn
         state (F3). So rmtree only on a clean rollback (sentinel never
-        written) or a fully completed promotion; otherwise preserve the dir
+        written, or taken back) or a fully completed promotion; otherwise preserve the dir
         for the next ``recover_staging`` pass (vault-open hook / health-check).
 
         A rollback after a folder was already moved (the sentinel write
@@ -1134,6 +1214,7 @@ def _recover_one_op(op_dir: Path, vault: Path) -> RecoveryResult | None:
         staging_path = op_dir / relpath
         target_path = vault / relpath
         if staging_path.exists():
+            lockable = False
             try:
                 target_path.parent.mkdir(parents=True, exist_ok=True)
                 lockable = is_truth_lockable(vault, target_path)
@@ -1145,6 +1226,10 @@ def _recover_one_op(op_dir: Path, vault: Path) -> RecoveryResult | None:
                 if lockable:
                     lock_truth_file(target_path)
             except OSError:
+                # The file is as it was (or in place, if only its relock
+                # failed): either way it is a TRUTH file that keeps its lock.
+                if lockable:
+                    _lock_back(target_path)
                 # The promotion itself failed — typically the storage that
                 # tore the original commit is still unwritable. NEVER let this
                 # escape: recover_staging runs at the vault-open chokepoint, so

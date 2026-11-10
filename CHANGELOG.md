@@ -9,6 +9,172 @@ before, and everything else is a patch — however large it was to build.
 Anything that takes something out of your library is marked **Breaking** in its
 own entry. Read those before you upgrade, whatever the number says.
 
+## Unreleased
+
+### Added
+
+- **The GUI in Chinese.** The interface now comes in Simplified Chinese as well as
+  English, What's New included. It follows the system language; to choose one,
+  use the switch in the **?** panel, or the language menu in the corner of the
+  welcome card before you create a library. The choice is kept for this computer,
+  so the app window and a browser tab agree. Your papers, notes and file names stay
+  as they are.
+- **One library on several computers.** `lit sync` with no subcommand now syncs
+  both ways through [rclone](https://rclone.org/) 1.74.2 or newer and any cloud it
+  supports: what you changed on this computer goes up, and what changed on your
+  other computers comes down. Point each computer at the same cloud folder with
+  `lit sync setup`, or ask your agent: the skill walks it through, and you only
+  sign in to your cloud. The first sync fills an empty cloud folder from this
+  library, or a new, empty library from the cloud; when both already hold one, it
+  changes nothing and asks which one wins (`--first-from cloud` or `local`). When
+  both computers changed the same file, the newer copy is kept; a paper deleted on
+  one computer stays deleted even if the other changed it. Every file a sync
+  replaces or deletes is kept in a backup folder, on this computer and in the
+  cloud. `lit sync status` shows this computer's last sync in full and lists the
+  conflict backups of the last 7 days; with `--local` it answers from this
+  computer's records alone, at once and offline. Each computer keeps its own
+  `lit-config.yaml` and project folders.
+- **Code repos follow the library by commit.** `repo-meta.yaml` now records the
+  `commit` and `branch` of each checkout. After a sync, each computer fetches that
+  commit from the repo's upstream and moves its own checkout there, unless it
+  holds changes of yours. A repo that cannot follow (offline, or imported from a
+  local folder) never stops the sync: the summary says why and what to do, and the
+  next `lit sync` tries again. Changes you made in a checkout never travel: a repo
+  holding uncommitted changes, or commits no remote has, is listed by
+  `lit sync status` with what to do, and the cloud button counts it as having
+  changes only on this computer.
+- **The GUI syncs by itself while it runs.** For a library that has had its first
+  `lit sync` on this computer, the window syncs when it starts, about a minute
+  after a change, when another computer has synced, and once more as it closes. A
+  cloud button next to the library selector shows how it stands and has
+  **Sync now**. When a sync needs you, after an expired sign-in for example, auto
+  sync stops, and the other `lit` commands end with one line saying so until a
+  sync goes through, so your agent sees it too. `lit sync status` says why and
+  what to do.
+- **`lit sync disconnect` stops syncing on this computer.** It removes the
+  library's `sync:` setting and this computer's sync records, and leaves the
+  library, the backups, the cloud folders and the rclone remote as they are,
+  listing each with the command that removes it. Syncing again later starts with
+  a first sync.
+- **Read commands tell an agent what it missed.** A `lit list` filter such as
+  `--topic peptide` that no paper carries and `TAXONOMY.md` does not register now
+  gets a note naming the registered values spelled like it, each with its paper
+  count, so an agent no longer reads an empty list as "nothing on peptides".
+  `lit show --format json` adds `_paths`, the paths of the paper's folder, PDF,
+  notes, discussion, SI files and code clones. An ambiguous paper id lists at most
+  10 candidates.
+- **`lit gui-log` shows what the window could not do.** When the GUI fails at
+  something, it shows one short line, and the full text, with what to do, goes
+  to a log on this computer. `lit gui-log` prints the last 7 days of it, newest
+  first, so when you tell your agent what the window said, it can read the rest
+  and fix it. `lit uninstall` removes the log.
+
+### Changed
+
+- **The GUI's messages are short and say what happened.** Errors, notices and
+  hover texts, in both languages, now state what happened, without commands,
+  file paths, guesses at the cause or the server's own error text. In the
+  Chinese UI, server errors used to show in English. The full text is in
+  `lit gui-log`. The health panel names its groups in words and no longer lists
+  commands; its findings stay in English.
+- **`lit link` links a project with no folder on this computer.** A project
+  added on another computer arrives through sync in `TAXONOMY.md` only, and
+  linking a paper to it was refused, in the GUI too. Now only the paper's record
+  changes, and a note says so; the computer that has the folder adds the paper's
+  link and its row in `REFERENCES.md` at its next sync. `lit unlink` works the
+  same way.
+- **`lit list`, `lit show` and the `list` subcommands print JSON off a terminal.**
+  With no `--format`, they print a table at a terminal and JSON anywhere else: in
+  an agent's shell, a pipe or a file. An agent's shell got a table squeezed into
+  80 columns, with every column but the id cut short. A script of yours that reads
+  the table needs `--format table`.
+- **`lit search` shows the first 20 hits.** A note says how many matched and the
+  `--limit` that shows them all.
+- **`lit sync push` and `pull` refuse a library that syncs two-way.** Once a
+  library has synced with `lit sync`, on this computer or another, a push would
+  overwrite what your other computers synced, and a pull would delete files the
+  cloud never holds, such as `lit-config.yaml` and code checkouts. Both now stop
+  with one line pointing to `lit sync`. A library you only back up with `push`
+  works as before.
+- **A collapsed side panel opens from anywhere on its strip.** In the GUI, the
+  narrow strip a collapsed panel leaves is now one button, with its arrow at
+  mid-height, instead of a small arrow at the top.
+
+### Fixed
+
+- **A second library no longer collides with the first.** The GUI's New library
+  dialog offered the name `literature_vault` even when a library already had it,
+  so creating one failed unless you changed the name. It now offers the first
+  free name, such as `literature_vault_2`.
+- **A write the disk refused no longer lands later.** When the disk refused a
+  change, for example a PDF another program held open on Windows or a file in a
+  read-only folder, `lit` and the GUI said it failed, yet the next command or
+  start of the GUI wrote it anyway, and the file lost its read-only protection.
+  A refused write now changes nothing and the file stays read-only. If part of a
+  change was already written when the disk refused the rest, the rest still
+  lands the next time litman opens the library, and the GUI says so.
+- **A failed PDF save says so.** When annotations could not be written to a PDF,
+  because another program had it open on Windows or it was read-only, the save
+  failed without a word. A toast now says the annotations were not saved; your
+  edits stay in the tab, so you can save again.
+- **`lit search` no longer matches the heading litman writes.** The first line of
+  `notes.md` and `discussion.md` holds the paper's title or id, so a query found in
+  an id matched that paper's files whether or not you had written about it. Search
+  now skips that line and the notes placeholder line, as it already skipped
+  litman's comments.
+- **A Chinese comma no longer gives a paper the wrong id.** In the GUI's author
+  fields, a full-width comma (`，`), as a Chinese input method types it, was not
+  read as the comma between family and given names, so `Zhang，San` made a wrong
+  id. It now turns into `, ` as you type.
+- **A save in the GUI keeps the version it replaces.** When an agent rewrote
+  `notes.md` or `discussion.md` while you had it open with edits of your own,
+  saving overwrote the agent's version without a word. Your save still goes
+  through, and the version it replaced is now kept in a backup folder, with a
+  toast and a row in the activity log that names it. The same holds for a PDF, and
+  for a file a sync brings in.
+- **Cloning or updating a code repo no longer hangs.** `lit code add`,
+  `lit code update`, `lit code restore-all` and the re-clone in `lit trash restore`
+  could wait forever on a git prompt for a user name or password that an agent's
+  shell cannot answer, or on a download that had stalled. git now fails at once
+  instead of asking, and gives up on a transfer slower than 1 KB a second for a
+  minute; the error says why. At a terminal, `lit code add`, `lit code update` and
+  `lit code restore-all` now show git's progress as it goes.
+- **A project with no folder on this computer can get one.** A project listed in
+  `TAXONOMY.md` but missing from `lit-config.yaml`, one added on another computer
+  for example, sent you in a circle: `lit project set-path` said to use
+  `lit project add`, which refused because the project exists. `set-path` now
+  gives it its folder, and `lit health-check` points to it.
+- **`lit sync pull` refuses a cloud folder that holds no library.** A pull mirrors
+  the cloud folder with deletion, so pulling from an empty or wrong folder could
+  delete this library's files. It now stops unless the folder holds a
+  `lit-config.yaml`, as one you pushed to does, and says to point `lit sync setup`
+  at that folder.
+- **`lit sync push` and `pull` print the library's path whole.** A long path was
+  folded mid-line, and a part of it in square brackets dropped out.
+- **A note opened for editing shows changes until you type.** A notes or
+  discussion tab double-clicked into edit mode kept the old text when a sync, the
+  CLI or an agent changed the file, until the tab was reopened. It now follows
+  the file; once you have typed, your text stays, as before.
+- **The GUI's activity log lists rows in the order they happened.** A note
+  changed outside the window, by a sync, the CLI or an agent, was listed at the
+  time the file was written, among older rows. It is now listed when the window
+  notices it, and a long path wraps inside its row.
+- **Crossref lookups no longer send a personal e-mail.** The contact address in
+  litman's Crossref requests is now the project's own. Help texts, examples and
+  the template of a new library's `lit-config.yaml` no longer name a person or
+  a path on one machine.
+- **No reminders on a library that is new here.** A library added in the GUI
+  got "no `lit health-check` in 14+ days" from its first command, and a computer
+  just set up for sync got "no `lit sync` in 7+ days". Both reminders now count
+  from when the library was added or sync was set up.
+- **`lit sync` shows its own progress, not rclone's log.** rclone's notices,
+  progress and error lines no longer print above the result. In a terminal,
+  `lit sync`, `push` and `pull` show one line of how much has been copied,
+  gone once it is done. rclone's lines are listed in `lit sync status`, and an
+  error litman does not recognise still ends with them, as does every error of
+  `push` and `pull`, which keep no such record. An expired sign-in during
+  `push` or `pull` now says to sign in again, not to run it again.
+
 ## 1.3.11 — 2026-11-02
 
 ### Added
@@ -1605,7 +1771,7 @@ reading the library and regenerates it. `lit health-check --fix` and
 - **`lit link <paper> <project>` now shows you the command you meant.** That
   shape, and `lit code add <paper> <repo>`, are the ones a person reaches for
   first — but the second value belongs in a flag, and all these commands used
-  to say was "Got unexpected extra argument (pepforge)". They now print the
+  to say was "Got unexpected extra argument (my-project)". They now print the
   whole corrected line, ready to copy. (`lit unlink`, `lit code link` and
   `lit code unlink` too; `lit code add` works out which word is the repo, so
   the command it hands back is right even if you wrote them the other way

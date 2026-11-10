@@ -261,7 +261,7 @@ def test_c2_guards_the_value_it_reads_against_a_stray_revisit_stamp() -> None:
 
 
 def test_c2_intent_still_asks_for_the_field_only_show_can_answer() -> None:
-    """wangq's signed decision (2026-07-16): C2's intent asks an OUT-OF-PROJECTION
+    """The signed decision (2026-07-16): C2's intent asks an OUT-OF-PROJECTION
     field. The test above pins the assertion side; this pins the intent side, because
     ① can be reopened from either.
 
@@ -283,9 +283,9 @@ def test_c2_intent_still_asks_for_the_field_only_show_can_answer() -> None:
 
     So: 回看 must stay in the intent. If a future edit needs to drop it, the card needs a
     different out-of-projection field — not a generic question — and that is a change to a
-    signed decision, i.e. wangq's call, not an editor's.
+    signed decision, i.e. the maintainer's call, not an editor's.
 
-    One more rule the intent lives under (wangq, 2026-07-17, "按严格的来"): it must not
+    One more rule the intent lives under (2026-07-17, "按严格的来"): it must not
     reach for the skill's OWN wording for `show` — "full record" (SKILL.md:161), "full
     field set" (:39/:125/:129), "full metadata dict" (:135/:182). An intent that does lets
     the agent keyword-match its way to `show` instead of reasoning from the projection
@@ -300,7 +300,7 @@ def test_c2_intent_still_asks_for_the_field_only_show_can_answer() -> None:
     """
     card = {c.id: c for c in _all_cards()}["C2-show"]
     assert "回看" in card.intent, (
-        "C2's intent must ask for last-revisited (wangq's signed decision: 问投影外字段). "
+        "C2's intent must ask for last-revisited (the signed decision: 问投影外字段). "
         "A generic 'show me the details' lets `lit list` answer adequately while both "
         "assertions fail — the ADR-022 false negative, reopened from the intent side"
     )

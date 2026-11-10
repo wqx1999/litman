@@ -12,8 +12,8 @@ Removes the artifacts ``lit setup`` placed OUTSIDE the tool venv (uv or pipx):
 * the machine-level ``preferences.yaml`` (the chosen default agent),
 * the ``gui/`` records of running ``lit gui`` servers (a killed GUI leaves
   its record behind),
-* the update-check cache and the self-update log / failure flag kept beside
-  the registry,
+* the update-check cache, the self-update log / failure flag and the GUI log
+  (``gui-log.jsonl``) kept beside the registry,
 * the app-window browser profile (Chromium state for ``lit gui --window``).
 
 It deliberately does NOT remove the ``lit`` CLI itself: a running command
@@ -47,6 +47,8 @@ from litman.commands.install_completion import (
 from litman.core.agent_prefs import prefs_path, remove_prefs
 from litman.core.agents import skills_parent_dirs
 from litman.core.confirm import refuse_without_terminal
+from litman.core.gui_log import log_files as gui_log_files
+from litman.core.gui_log import remove_log_files as remove_gui_log_files
 from litman.core.gui_registry import (
     gui_dir,
     gui_dir_is_empty,
@@ -96,9 +98,9 @@ def uninstall_cmd(dry_run: bool, yes: bool) -> None:
     tab-completion block, the vault registry (the list of vault names/paths
     — NOT the vaults themselves), the machine-level agent preferences, the
     other files litman keeps beside the registry (Web UI pins, the
-    update-check cache, the self-update log, records a stopped `lit gui`
-    left), and the browser profile the app window uses. Your papers, PDFs,
-    notes and annotations are never touched.
+    update-check cache, the self-update log, the GUI log, records a stopped
+    `lit gui` left), and the browser profile the app window uses. Your
+    papers, PDFs, notes and annotations are never touched.
 
     This does NOT uninstall the lit CLI, because a running command can't
     delete its own environment. Finish with `uv tool uninstall litman` or
@@ -124,6 +126,7 @@ def uninstall_cmd(dry_run: bool, yes: bool) -> None:
     gui_empty = not gui_records and gui_dir_is_empty()
     update_cache = cache_files()
     self_update_files = leftover_files()
+    gui_logs = gui_log_files()
     reg = registry_path()
     reg_present = reg.is_file()
     prefs = prefs_path()
@@ -161,6 +164,11 @@ def uninstall_cmd(dry_run: bool, yes: bool) -> None:
             "[bold]Self-update log[/] [dim](what past upgrades left behind)[/]:"
         )
         plan_lines += [f"  [red]•[/] {escape(str(p))}" for p in self_update_files]
+    if gui_logs:
+        plan_lines.append(
+            "[bold]GUI log[/] [dim](what the litman window could not do)[/]:"
+        )
+        plan_lines += [f"  [red]•[/] {escape(str(p))}" for p in gui_logs]
     if reg_present:
         plan_lines.append(
             "[bold]Vault registry[/] [dim](de-registers vaults; data kept)[/]:"
@@ -236,7 +244,7 @@ def uninstall_cmd(dry_run: bool, yes: bool) -> None:
             done.append(f"completion ({shell})")
     # The shared config dir can only be empty once its last entry is gone, so
     # the removers run GUI records → update-check cache → self-update files →
-    # registry → prefs → ui-state, and each later one gets the rmdir chance
+    # GUI log → registry → prefs → ui-state, and each later one gets the rmdir chance
     # the earlier ones pass up (remove_prefs keeps a dir that still holds
     # ui-state.json). The records go first: the `gui/` folder is the one
     # entry the file removers cannot clear. Nothing writes the cache back
@@ -262,6 +270,11 @@ def uninstall_cmd(dry_run: bool, yes: bool) -> None:
         assert isinstance(removed, list)
         if removed:
             done.append(f"self-update log ({', '.join(p.name for p in removed)})")
+    if gui_logs:
+        removed = remove_gui_log_files()["removed"]
+        assert isinstance(removed, list)
+        if removed:
+            done.append(f"GUI log ({', '.join(p.name for p in removed)})")
     if reg_present and remove_registry()["removed"]:
         done.append("vault registry")
     if prefs_present and remove_prefs()["removed"]:

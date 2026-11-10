@@ -852,9 +852,12 @@ def check_paper_dir_validity(
                     paper_id=child.name,
                     message=(
                         f"papers/{child.name}/paper.pdf is missing — "
-                        "`lit open` cannot show it and the file is irreplaceable"
+                        "the file is irreplaceable"
                     ),
-                    hint="restore the PDF into the paper folder",
+                    hint=(
+                        "restore the PDF into the paper folder; until then "
+                        "`lit open` cannot show it"
+                    ),
                 )
             )
     return out

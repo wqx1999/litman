@@ -68,16 +68,42 @@ def test_bullets_for_current_version_nonempty() -> None:
     assert all(isinstance(b, str) and b for b in bullets)
 
 
-def test_packaged_file_sections_are_versions() -> None:
-    """Every `## ` heading in the shipped file is a plain X.Y.Z — a typo'd
+def test_bullets_for_current_version_nonempty_zh() -> None:
+    """RELEASE GATE, Chinese half: the GUI shows these when it runs in Chinese.
+    Red here means the release has English highlights but no matching
+    `## X.Y.Z` section in src/litman/data/whatsnew.zh.md."""
+    bullets = bullets_for(litman.__version__, "zh")
+    assert bullets, (
+        f"litman/data/whatsnew.zh.md has no `## {litman.__version__}` section — "
+        "write the Chinese highlights for this release."
+    )
+    assert all(isinstance(b, str) and b for b in bullets)
+
+
+@pytest.mark.parametrize("name", ["whatsnew.md", "whatsnew.zh.md"])
+def test_packaged_file_sections_are_versions(name: str) -> None:
+    """Every `## ` heading in a shipped file is a plain X.Y.Z — a typo'd
     heading would silently orphan its bullets."""
     from importlib.resources import files
 
-    text = files("litman.data").joinpath("whatsnew.md").read_text(encoding="utf-8")
+    text = files("litman.data").joinpath(name).read_text(encoding="utf-8")
     headings = [ln[3:].strip() for ln in text.splitlines() if ln.startswith("## ")]
-    assert headings, "packaged whatsnew.md has no version sections"
+    assert headings, f"packaged {name} has no version sections"
     for h in headings:
         assert re.fullmatch(r"\d+\.\d+\.\d+", h), f"malformed version heading: {h!r}"
+
+
+def test_parse_joins_chinese_continuation_without_space() -> None:
+    """A wrapped Chinese bullet joins back with no space between characters
+    (one there reads as a typo); English wraps keep theirs (tested above)."""
+    text = "## 1.0.0\n\n- 第一行\n  接着写。\n"
+    assert _parse(text, "1.0.0") == ["第一行接着写。"]
+
+
+def test_parse_empty_bullet_then_continuation_does_not_raise() -> None:
+    """A bare `- ` followed by an indented line must not crash the popup's
+    "never raises" read: the continuation simply becomes the bullet."""
+    assert _parse("## 1.0.0\n\n- \n  late text\n", "1.0.0") == ["late text"]
 
 
 def test_bullets_for_unreadable_file_is_empty(monkeypatch: pytest.MonkeyPatch) -> None:

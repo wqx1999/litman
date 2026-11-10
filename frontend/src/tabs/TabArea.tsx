@@ -6,6 +6,7 @@ import type { PdfHandle } from '../pdf/PdfView'
 import MdView from '../md/MdView'
 import type { MdDraft } from '../md/MdView'
 import { useEscapeLayer } from '../ui/escapeStack'
+import { useT, type Messages } from '../i18n'
 
 interface Props {
   tabs: Tab[]
@@ -36,11 +37,16 @@ interface Props {
    * agent edits to notes.md / discussion.md). Forwarded to MdView. */
   mdReloadToken?: number
   /** Forwarded md edit-session callbacks (App owns the per-tab draft map). */
-  onMdBeginEdit: (tabKey: string, seed: string) => void
+  onMdBeginEdit: (tabKey: string, seed: string, base: string | null) => void
+  onMdFileRead: (tabKey: string, text: string, base: string | null) => void
   onMdDraftChange: (tabKey: string, draft: string) => void
   onMdEndEdit: (tabKey: string) => void
+  onMdSaveSettled: (tabKey: string, sent: string, base: string | null) => void
   /** A successful md save — App advances its doc-mtime baseline (D2). */
   onMdSaved?: (paperId: string, doc: 'notes' | 'discussion') => void
+  /** A save (md or PDF) replaced a file that had changed since it was read;
+   * the other copy is at `backup`. Forwarded to both views. */
+  onSaveReplaced?: (paperId: string, file: string, backup: string) => void
 }
 
 /** Pixels of horizontal travel before a press becomes a drag. Below this a
@@ -52,6 +58,14 @@ const EDGE_SCROLL_STEP = 8
 /** How long a displaced tab takes to slide into its new slot, and how long the
  * carried tab takes to settle on release. */
 const SLIDE_MS = 160
+
+/** A tab's display label: the paper id, plus the doc kind for a notes /
+ * discussion tab. Built at render, never stored on the tab, so an open tab
+ * follows a language switch. */
+export function tabLabel(msg: Messages, tab: Pick<Tab, 'kind' | 'paperId'>): string {
+  if (tab.kind === 'pdf') return tab.paperId
+  return msg.browse.docTab[tab.kind](tab.paperId)
+}
 
 export default function TabArea({
   tabs,
@@ -69,10 +83,15 @@ export default function TabArea({
   mdDraft,
   mdReloadToken,
   onMdBeginEdit,
+  onMdFileRead,
   onMdDraftChange,
   onMdEndEdit,
+  onMdSaveSettled,
   onMdSaved,
+  onSaveReplaced,
 }: Props) {
+  const msg = useT()
+  const tx = msg.reader.tabArea
   const active = tabs.find((t) => t.key === activeKey) ?? null
 
   const stripRef = useRef<HTMLDivElement | null>(null)
@@ -252,7 +271,7 @@ export default function TabArea({
     // exposing the emulated absolute device as a tablet tool) reports the
     // press as mouse/id=1 but every move as pen/id=2/buttons=0 — an id match
     // discards each move and the strip reads as simply undraggable
-    // (2026-08-05, wangq's ubuntu-demo box, DevTools trace). Desktops have
+    // (seen in a DevTools trace on an Ubuntu VM). Desktops have
     // one hover cursor, so accept any hover-capable pointer's moves and keep
     // only touch out (touch must stay native scroll).
     if (e.pointerType === 'touch') return
@@ -337,7 +356,7 @@ export default function TabArea({
       >
         {tabs.length === 0 && (
           <div className="px-2 py-2 text-xs text-stone-400">
-            Open a paper from the list.
+            {tx.noTabs}
           </div>
         )}
         {tabs.map((t) => {
@@ -398,12 +417,12 @@ export default function TabArea({
                 }}
                 className="max-w-48 truncate"
               >
-                {t.label}
+                {tabLabel(msg, t)}
               </button>
               <button
                 data-tab-close
                 onClick={() => onClose(t.key)}
-                title="Close tab"
+                title={tx.closeTab}
                 className={`rounded p-0.5 leading-none text-stone-400 transition-colors hover:bg-stone-300 hover:text-stone-700 ${
                   isActive ? '' : 'opacity-0 group-hover:opacity-100'
                 }`}
@@ -438,7 +457,7 @@ export default function TabArea({
                 disabled={tabs.length < 2}
                 className={menuItem}
               >
-                Close other tabs
+                {tx.closeOthers}
               </button>
               <button
                 onClick={() => {
@@ -447,7 +466,7 @@ export default function TabArea({
                 }}
                 className={menuItem}
               >
-                Close all tabs
+                {tx.closeAll}
               </button>
             </div>
           </div>,
@@ -460,7 +479,7 @@ export default function TabArea({
       <div className="min-h-0 flex-1" onPointerDownCapture={onContentPress}>
         {active === null && (
           <div className="flex h-full items-center justify-center text-sm text-stone-400">
-            No document open.
+            {tx.noDocument}
           </div>
         )}
         {active && active.kind === 'pdf' && (
@@ -469,6 +488,9 @@ export default function TabArea({
             paperId={active.paperId}
             tabKey={active.key}
             onRegister={onRegisterPdf}
+            reloadToken={mdReloadToken}
+            onSaveReplaced={onSaveReplaced}
+            onNotify={onNotify}
           />
         )}
         {active && active.kind !== 'pdf' && (
@@ -485,9 +507,12 @@ export default function TabArea({
             draftEntry={mdDraft}
             reloadToken={mdReloadToken}
             onBeginEdit={onMdBeginEdit}
+            onFileRead={onMdFileRead}
             onDraftChange={onMdDraftChange}
             onEndEdit={onMdEndEdit}
+            onSaveSettled={onMdSaveSettled}
             onSaved={onMdSaved}
+            onSaveReplaced={onSaveReplaced}
           />
         )}
       </div>

@@ -19,7 +19,9 @@ read" ModifyError).
 from __future__ import annotations
 
 import os
+from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any
 
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import JSONResponse
@@ -43,6 +45,7 @@ from litman.core.project_link import (
     set_project_path,
     unlink_paper_from_project,
 )
+from litman.core.project_refs import LITERATURE_SUBDIR, REFERENCES_FILENAME
 from litman.core.taxonomy import (
     add_taxonomy_values,
     remove_taxonomy_value,
@@ -54,8 +57,10 @@ from litman.core.vault_registry import (
     apply_vault_use,
     find_by_name,
     load_registry,
+    mark_health_checked,
     remove_vault,
     save_registry,
+    suggest_vault_name,
 )
 from litman.exceptions import (
     LitmanError,
@@ -66,8 +71,14 @@ from litman.exceptions import (
     TaxonomySimilarError,
     VaultRegistryError,
 )
+from litman.server.errors import api_error, log_entry, log_warnings, write_refused
 
 router = APIRouter(prefix="/api")
+
+
+def _metadata_rel(paper_id: str) -> str:
+    """The file a paper's metadata write names when the disk refuses it."""
+    return f"papers/{paper_id}/metadata.yaml"
 
 
 def _require_valid_id(paper_id: str) -> None:
@@ -172,7 +183,7 @@ def _resolve_date(payload: object) -> str:
     try:
         return validate_iso_date(date_str)
     except Exception as exc:  # click.BadParameter on a malformed date
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+        raise api_error(400, exc) from exc
 
 
 async def _optional_json(request: Request) -> object:
@@ -286,9 +297,11 @@ async def put_metadata(request: Request, paper_id: str) -> dict[str, object]:
             drop_dangling_ops=drop_dangling_ops,
         )
     except PaperNotFoundError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
+        raise api_error(404, exc, id=paper_id) from exc
     except ModifyError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+        raise api_error(400, exc) from exc
+    except OSError as exc:
+        raise write_refused(exc, vault, _metadata_rel(paper_id)) from exc
     return {"ok": True, "changed": changed}
 
 
@@ -309,9 +322,11 @@ async def post_read(request: Request, paper_id: str) -> dict[str, object]:
     try:
         changed, message = apply_read(vault, paper_id, date_value)
     except PaperNotFoundError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
+        raise api_error(404, exc, id=paper_id) from exc
     except ModifyError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+        raise api_error(400, exc) from exc
+    except OSError as exc:
+        raise write_refused(exc, vault, _metadata_rel(paper_id)) from exc
     return {"ok": True, "changed": changed, "message": message}
 
 
@@ -332,9 +347,11 @@ async def post_revisit(request: Request, paper_id: str) -> dict[str, object]:
     try:
         apply_revisit(vault, paper_id, date_value)
     except PaperNotFoundError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
+        raise api_error(404, exc, id=paper_id) from exc
     except ModifyError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+        raise api_error(400, exc) from exc
+    except OSError as exc:
+        raise write_refused(exc, vault, _metadata_rel(paper_id)) from exc
     return {"ok": True}
 
 
@@ -358,9 +375,11 @@ async def post_unread(request: Request, paper_id: str) -> dict[str, object]:
     try:
         changed, message = apply_unread(vault, paper_id)
     except PaperNotFoundError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
+        raise api_error(404, exc, id=paper_id) from exc
     except ModifyError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+        raise api_error(400, exc) from exc
+    except OSError as exc:
+        raise write_refused(exc, vault, _metadata_rel(paper_id)) from exc
     return {"ok": True, "changed": changed, "message": message}
 
 
@@ -408,9 +427,9 @@ async def get_rm_preview(request: Request, paper_id: str) -> dict[str, object]:
     try:
         plan = discover_rm_impact(vault, paper_id)
     except PaperNotFoundError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
+        raise api_error(404, exc, id=paper_id) from exc
     except RmError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+        raise api_error(400, exc) from exc
     return _rm_impact_summary(plan)
 
 
@@ -440,9 +459,11 @@ async def delete_paper(request: Request, paper_id: str) -> dict[str, object]:
         plan = discover_rm_impact(vault, paper_id)
         result = execute_rm(plan, purge=False)
     except PaperNotFoundError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
+        raise api_error(404, exc, id=paper_id) from exc
     except RmError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+        raise api_error(400, exc) from exc
+    except OSError as exc:
+        raise write_refused(exc, vault, "INDEX.json") from exc
     if result.folder_left is not None:
         raise HTTPException(
             status_code=409, detail=folder_left_message(result, retry="delete it again")
@@ -458,7 +479,7 @@ async def delete_paper(request: Request, paper_id: str) -> dict[str, object]:
         "reposUnchecked": _unchecked(result.unchecked_repos),
         "projects": result.projects,
         "notes": result.note_files,
-        "warnings": result.warnings,
+        "warnings": log_warnings(request, result.warnings),
     }
 
 
@@ -507,7 +528,7 @@ async def post_paper_project(request: Request, paper_id: str) -> dict[str, objec
     vault = request.app.state.vault
     registry = load_config(vault).projects
     try:
-        link_paper_to_project(
+        summary = link_paper_to_project(
             vault,
             paper_id,
             project.strip(),
@@ -516,9 +537,12 @@ async def post_paper_project(request: Request, paper_id: str) -> dict[str, objec
             priority=priority,
         )
     except PaperNotFoundError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
+        raise api_error(404, exc, id=paper_id) from exc
     except LinkError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+        raise api_error(400, exc) from exc
+    except OSError as exc:
+        raise write_refused(exc, vault, _metadata_rel(paper_id)) from exc
+    _log_hub_errors(request, project.strip(), summary)
     return {"ok": True}
 
 
@@ -540,12 +564,33 @@ async def delete_paper_project(
     vault = request.app.state.vault
     registry = load_config(vault).projects
     try:
-        unlink_paper_from_project(vault, paper_id, project, registry)
+        summary = unlink_paper_from_project(vault, paper_id, project, registry)
     except PaperNotFoundError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
+        raise api_error(404, exc, id=paper_id) from exc
     except LinkError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+        raise api_error(400, exc) from exc
+    except OSError as exc:
+        raise write_refused(exc, vault, _metadata_rel(paper_id)) from exc
+    _log_hub_errors(request, project, summary)
     return {"ok": True}
+
+
+def _log_hub_errors(request: Request, project: str, summary: dict[str, Any]) -> None:
+    """The link went in; a project folder that could not follow goes to the log.
+
+    The page says nothing (the link itself worked), and ``lit health-check``
+    finds the stale folder later; the log says which and why now.
+    """
+    for err in summary.get("link_errors") or []:
+        log_entry(
+            request,
+            kind="warning",
+            text=(
+                f"Could not update the folder of project {project!r} "
+                f"({_os_error_reason(err)}). Fix that, then run `lit health-check --fix`."
+            ),
+            status=200,
+        )
 
 
 @router.post("/projects")
@@ -579,7 +624,7 @@ async def post_projects(request: Request) -> dict[str, object]:
     try:
         summary = add_project(vault, name, Path(path).expanduser())
     except TaxonomyError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+        raise api_error(400, exc) from exc
     return {"ok": True, "name": summary["name"], "path": summary["path"]}
 
 
@@ -632,7 +677,9 @@ async def post_taxonomy(request: Request, key: str) -> dict[str, object] | JSONR
             status_code=409, content={"detail": str(exc), "similar": similar}
         )
     except TaxonomyError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+        raise api_error(400, exc) from exc
+    except OSError as exc:
+        raise write_refused(exc, vault, "TAXONOMY.md") from exc
     return {"ok": True, "added": added, "skipped": skipped}
 
 
@@ -665,7 +712,9 @@ async def delete_taxonomy(
     try:
         n_changed, _ = remove_taxonomy_value(vault, key, value)
     except TaxonomyError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+        raise api_error(400, exc) from exc
+    except OSError as exc:
+        raise write_refused(exc, vault, "TAXONOMY.md") from exc
     return {"ok": True, "changed": n_changed}
 
 
@@ -706,7 +755,9 @@ async def put_taxonomy(request: Request, key: str) -> dict[str, object]:
     try:
         n_changed, _ = rename_taxonomy_value(vault, key, old, new)
     except TaxonomyError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+        raise api_error(400, exc) from exc
+    except OSError as exc:
+        raise write_refused(exc, vault, "TAXONOMY.md") from exc
     return {"ok": True, "changed": n_changed}
 
 
@@ -734,7 +785,27 @@ async def delete_project(request: Request, name: str) -> dict[str, object]:
     try:
         n_changed, _ = remove_project(vault, name, hubs_left=hubs_left)
     except TaxonomyError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+        raise api_error(400, exc) from exc
+    # The page counts them; nothing looks at these folders again, so the
+    # log is where the agent finds which, why, and what to delete.
+    for hub, err in hubs_left.items():
+        what = (
+            f"its links and {REFERENCES_FILENAME}"
+            if hub.name == LITERATURE_SUBDIR
+            else "its links"
+        )
+        log_entry(
+            request,
+            kind="warning",
+            text=(
+                f"Removed project {name!r}, but could not clean up {hub} "
+                f"({_os_error_reason(err)}). Delete {what} by hand: "
+                "lit no longer looks there."
+            ),
+            status=200,
+            code="project-folder-left",
+            params={"name": name},
+        )
     return {
         "ok": True,
         "changed": n_changed,
@@ -780,7 +851,7 @@ async def put_project(request: Request, name: str) -> dict[str, object]:
         # health checks instead (decision #9).
         n_changed, _, _ = rename_project(vault, name, new)
     except TaxonomyError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+        raise api_error(400, exc) from exc
     return {"ok": True, "changed": n_changed}
 
 
@@ -819,7 +890,7 @@ async def put_project_path(request: Request, name: str) -> dict[str, object]:
     try:
         result = set_project_path(vault, name, Path(path).expanduser())
     except TaxonomyError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+        raise api_error(400, exc) from exc
     return {"ok": True, "path": result["path"], "changed": result["changed"]}
 
 
@@ -857,7 +928,7 @@ async def put_active_vault(request: Request) -> dict[str, object]:
     try:
         entry = apply_vault_use(name, require_path=True)
     except VaultRegistryError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+        raise api_error(400, exc) from exc
 
     target = Path(entry.path).expanduser()
     request.app.state.vault = target
@@ -952,7 +1023,7 @@ async def put_vault_path(request: Request, name: str) -> dict[str, object]:
     try:
         entry = apply_vault_set_path(name, path)
     except VaultRegistryError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+        raise api_error(400, exc) from exc
 
     target = Path(entry.path).expanduser()
 
@@ -1070,7 +1141,10 @@ async def post_vault(request: Request) -> dict[str, object]:
     try:
         reg = add_vault(reg, name, path)
     except VaultRegistryError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+        raise api_error(400, exc) from exc
+    # As `lit vault add` does: the health-check tip counts from now, not from
+    # a check that never ran, so a library added today stays quiet.
+    reg = mark_health_checked(reg, name, datetime.now(UTC).isoformat())
     save_registry(reg)
 
     entry = find_by_name(reg, name)
@@ -1118,11 +1192,15 @@ async def create_vault_route(request: Request) -> dict[str, object]:
 
     parent = Path(parent_raw).expanduser()
     try:
-        vault, entry = apply_init(parent, name or DEFAULT_VAULT_NAME)
+        # No name: the default, or the first free `<default>_<n>`, so a second
+        # library made with the dialog's defaults does not collide with the
+        # first one's registration.
+        chosen = name or suggest_vault_name(load_registry(), DEFAULT_VAULT_NAME, parent)
+        vault, entry = apply_init(parent, chosen)
     except LitmanError as exc:
         # ParentNotFoundError / VaultExistsError / VaultRegistryError all subclass
         # LitmanError; the core message is already user-facing.
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+        raise api_error(400, exc) from exc
 
     # First vault → active → repoint this server in place so the next request
     # (the frontend's re-fetch) serves the new vault, no restart.
@@ -1162,17 +1240,19 @@ async def delete_vault(request: Request, name: str) -> dict[str, object]:
     if entry is not None and request.app.state.vault is not None:
         served = Path(request.app.state.vault).expanduser().resolve()
         if Path(entry.path).expanduser().resolve() == served:
-            raise HTTPException(
-                status_code=409,
-                detail=(
+            raise api_error(
+                409,
+                (
                     "Cannot unregister the vault the GUI is currently serving — "
                     "switch to another vault first."
                 ),
+                "vault-in-use",
+                name=name,
             )
 
     try:
         reg = remove_vault(reg, name)
     except VaultRegistryError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+        raise api_error(400, exc) from exc
     save_registry(reg)
     return {"ok": True}

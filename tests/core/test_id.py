@@ -232,7 +232,7 @@ def test_a_wholly_chinese_title_is_refused_too() -> None:
 def test_a_mixed_title_below_the_ratio_is_refused_however_good_the_fragment() -> None:
     """35% Latin: `PROTAC` alone would be a legal id and still a poor one.
 
-    wangq's call, deliberately the strict reading — "a Chinese title always
+    A deliberate call, the strict reading — "a Chinese title always
     needs an id from you" is easier to live with than "sometimes it works".
     """
     assert derive_keyword("一种新型 PROTAC 分子的设计与合成") == "untitled"

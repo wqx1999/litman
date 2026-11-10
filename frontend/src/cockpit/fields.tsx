@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import { useT } from '../i18n'
 import { ExternalLinkIcon } from '../ui/icons'
 
 /** A read-only chip group (relations / code-clones stay read-only in 3b). */
@@ -52,6 +53,7 @@ export function CodeCloneChips({
   upstream?: Record<string, string>
 }) {
   const [copied, setCopied] = useState<string | null>(null)
+  const m = useT().cockpit.codeClones
   if (!values || values.length === 0)
     return <span className="text-stone-400">—</span>
   const gone = new Set(missing ?? [])
@@ -70,13 +72,13 @@ export function CodeCloneChips({
         gone.has(v) ? (
           <span
             key={v}
-            title={`codes/${v}/ is missing — the clone was deleted. Re-clone it (lit code add) or drop the link (lit code unlink); lit health-check reports it.`}
+            title={m.missingTitle(v)}
             className="inline-flex items-center gap-1 rounded-md bg-amber-100 px-2 py-0.5 text-xs text-amber-700 ring-1 ring-amber-200 dark:bg-amber-900/50 dark:text-amber-200 dark:ring-amber-800"
           >
             <span aria-hidden>⚠</span>
             {v}
             <span className="text-[10px] font-medium uppercase tracking-wide opacity-80">
-              missing
+              {m.missing}
             </span>
           </span>
         ) : vaultPath ? (
@@ -84,7 +86,7 @@ export function CodeCloneChips({
             <button
               type="button"
               onClick={() => copy(v)}
-              title={`Copy the clone's folder path (codes/${v})`}
+              title={m.copyTitle(v)}
               className={
                 copied === v
                   ? 'rounded-md bg-emerald-100 px-2 py-0.5 text-xs text-emerald-700'
@@ -99,7 +101,7 @@ export function CodeCloneChips({
                 target="_blank"
                 rel="noreferrer"
                 title={upstream[v]}
-                aria-label={`Open ${v} upstream: ${upstream[v]}`}
+                aria-label={m.upstreamAria(v, upstream[v])}
                 className="rounded p-0.5 text-stone-400 transition-colors hover:text-accent-600"
               >
                 <ExternalLinkIcon className="h-[13px] w-[13px]" />
@@ -173,30 +175,35 @@ const SELECT_CLASS =
  * it takes only what the current letter needs, leaving the rest of the 320px
  * aside to the project name. */
 export function EnumSelect({
-  field,
+  label,
   value,
   options,
+  optionLabel,
   allowsNone,
   disabled,
   compact,
   selectRef,
   onPick,
 }: {
-  field: string
+  /** The select's accessible name. */
+  label: string
   value: string | null | undefined
   options: string[]
+  /** Display text of an option; the option's value stays the raw one. */
+  optionLabel?: (value: string) => string
   allowsNone: boolean
   disabled: boolean
   compact?: boolean
   selectRef?: React.Ref<HTMLSelectElement>
   onPick: (next: string | null) => void
 }) {
+  const m = useT().cockpit.enumSelect
   // Empty string is the sentinel for "— (unset)"; a real value never is.
   const current = value ?? ''
   return (
     <select
       ref={selectRef}
-      aria-label={field}
+      aria-label={label}
       className={
         compact
           ? SELECT_CLASS.replace('w-full', 'w-auto').replace('px-2', 'px-1.5') +
@@ -207,7 +214,7 @@ export function EnumSelect({
       disabled={disabled}
       onChange={(e) => onPick(e.target.value === '' ? null : e.target.value)}
     >
-      {allowsNone && <option value="">{compact ? '–' : '— (unset)'}</option>}
+      {allowsNone && <option value="">{compact ? '–' : m.unset}</option>}
       {!allowsNone && current === '' && (
         // A select whose stored value is absent, on a field that offers no
         // unset option. Without this the browser falls back to displaying the
@@ -216,12 +223,12 @@ export function EnumSelect({
         // Disabled: it can be left, never chosen. The GUI repairs the
         // ungraded state (ADR-025 decision 5); it never creates one.
         <option value="" disabled>
-          {compact ? '–' : '— (none)'}
+          {compact ? '–' : m.none}
         </option>
       )}
       {options.map((opt) => (
         <option key={opt} value={opt}>
-          {opt}
+          {optionLabel ? optionLabel(opt) : opt}
         </option>
       ))}
     </select>

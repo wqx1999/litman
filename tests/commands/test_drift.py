@@ -617,12 +617,12 @@ def test_project_drift_non_tty_warns_no_mutation(
     _drift.check_and_prompt_project_drift(
         stdin_is_tty=lambda: False,
         exists_fn=_exists_map(**{str(proj): False}),
-        load_config_fn=lambda _v: _FakeConfig({"pepforge": str(proj)}),
+        load_config_fn=lambda _v: _FakeConfig({"seahorse": str(proj)}),
     )
 
     captured = capsys.readouterr()
     err_flat = " ".join(captured.err.split())
-    assert "pepforge" in err_flat
+    assert "seahorse" in err_flat
     assert "lit project set-path" in err_flat
     # Config file untouched.
     assert (vault / "lit-config.yaml").read_bytes() == config_before
@@ -643,11 +643,11 @@ def test_project_drift_tty_blank_skips_no_mutation(
     _drift.check_and_prompt_project_drift(
         stdin_is_tty=lambda: True,
         exists_fn=_exists_map(**{str(proj): False}),
-        load_config_fn=lambda _v: _FakeConfig({"pepforge": str(proj)}),
+        load_config_fn=lambda _v: _FakeConfig({"seahorse": str(proj)}),
     )
 
     captured = capsys.readouterr()
-    assert "pepforge" in captured.out
+    assert "seahorse" in captured.out
     assert (vault / "lit-config.yaml").read_bytes() == config_before
 
 
@@ -717,7 +717,7 @@ def test_project_drift_rm_routes_to_project_rm(
     """
     vault = _seed_active_vault(tmp_path)
     proj = tmp_path / "gone"
-    _write_config_with_project(vault, "pepforge", proj)
+    _write_config_with_project(vault, "seahorse", proj)
 
     monkeypatch.setattr(click, "prompt", lambda *a, **kw: "rm")
     _accept_destructive(monkeypatch)
@@ -732,7 +732,7 @@ def test_project_drift_rm_routes_to_project_rm(
     assert "Remove from TAXONOMY.md and lit-config.yaml" in out
     from litman.core.config import load_config
 
-    assert "pepforge" not in load_config(vault).projects
+    assert "seahorse" not in load_config(vault).projects
 
 
 def test_project_drift_rm_declined_changes_nothing(
@@ -742,7 +742,7 @@ def test_project_drift_rm_declined_changes_nothing(
     """Declining the routed cascade leaves config + drift exactly as they were."""
     vault = _seed_active_vault(tmp_path)
     proj = tmp_path / "gone"
-    _write_config_with_project(vault, "pepforge", proj)
+    _write_config_with_project(vault, "seahorse", proj)
     config_before = (vault / "lit-config.yaml").read_bytes()
 
     monkeypatch.setattr(click, "prompt", lambda *a, **kw: "rm")
@@ -860,16 +860,16 @@ def test_project_drift_tty_heal_rebuilds_at_new_path(
     )
 
     # Register a project at its original location + link a paper to it.
-    old_dir = tmp_path / "pepforge_old"
+    old_dir = tmp_path / "seahorse_old"
     old_dir.mkdir()
-    _write_config_with_project(vault, "pepforge", old_dir)
-    _make_paper(vault, "p1", projects=["pepforge"])
-    rebuild_all_project_links(vault, {"pepforge": str(old_dir)})
+    _write_config_with_project(vault, "seahorse", old_dir)
+    _make_paper(vault, "p1", projects=["seahorse"])
+    rebuild_all_project_links(vault, {"seahorse": str(old_dir)})
     assert is_portable_link(old_dir / "litman_reflib" / "p1")
 
     # Simulate "user moved the directory": rename it on disk. The config still
     # points at old_dir, which no longer exists.
-    new_dir = tmp_path / "pepforge_new"
+    new_dir = tmp_path / "seahorse_new"
     old_dir.rename(new_dir)
     assert not old_dir.exists()
 
@@ -880,7 +880,7 @@ def test_project_drift_tty_heal_rebuilds_at_new_path(
     _drift.check_and_prompt_project_drift()
 
     # Config now points at the new location.
-    assert load_config(vault).projects["pepforge"] == str(new_dir)
+    assert load_config(vault).projects["seahorse"] == str(new_dir)
 
     # litman_reflib rebuilt at the NEW location.
     new_link = new_dir / "litman_reflib" / "p1"
@@ -927,12 +927,12 @@ def test_project_drift_tty_heal_says_what_it_did_with_folder_copies(
         )
     )
 
-    old_dir = tmp_path / "pepforge_old"
+    old_dir = tmp_path / "seahorse_old"
     old_dir.mkdir()
-    _write_config_with_project(vault, "pepforge", old_dir)
-    _make_paper(vault, "p1", projects=["pepforge"])
-    _make_paper(vault, "p2", projects=["pepforge"])
-    rebuild_all_project_links(vault, {"pepforge": str(old_dir)})
+    _write_config_with_project(vault, "seahorse", old_dir)
+    _make_paper(vault, "p1", projects=["seahorse"])
+    _make_paper(vault, "p2", projects=["seahorse"])
+    rebuild_all_project_links(vault, {"seahorse": str(old_dir)})
 
     # The copy tool turned both bridges into real folders; one of them then
     # got something the vault has never held.
@@ -944,7 +944,7 @@ def test_project_drift_tty_heal_says_what_it_did_with_folder_copies(
         "written on the other machine\n", encoding="utf-8"
     )
 
-    new_dir = tmp_path / "pepforge_new"
+    new_dir = tmp_path / "seahorse_new"
     old_dir.rename(new_dir)
 
     monkeypatch.setattr(_drift, "_default_tty_probe", lambda: True)
@@ -958,7 +958,7 @@ def test_project_drift_tty_heal_says_what_it_did_with_folder_copies(
     assert "kept 1 folder that does not match the vault:" in flat
 
     kept_root = (
-        vault / ".trash" / "replaced-folders" / "pepforge" / "litman_reflib"
+        vault / ".trash" / "replaced-folders" / "seahorse" / "litman_reflib"
     )
     kept = sorted(kept_root.iterdir())
     assert len(kept) == 1
@@ -1146,15 +1146,15 @@ def test_project_drift_tty_heal_preserves_code_symlink(
 
     # A real code clone on disk: <vault>/codes/<name>/repo must exist for
     # rebuild_all_project_links to create the litman_code symlink.
-    repo_name = "pepforge-net"
+    repo_name = "seahorse-net"
     (vault / "codes" / repo_name / "repo").mkdir(parents=True)
 
     old_dir = tmp_path / "proj_old"
     old_dir.mkdir()
-    _write_config_with_project(vault, "pepforge", old_dir)
+    _write_config_with_project(vault, "seahorse", old_dir)
 
     # Paper carries the code-clone binding (override the empty default).
-    _make_paper(vault, "p1", projects=["pepforge"])
+    _make_paper(vault, "p1", projects=["seahorse"])
     from ruamel.yaml import YAML
 
     from litman.core.document import read_metadata
@@ -1167,7 +1167,7 @@ def test_project_drift_tty_heal_preserves_code_symlink(
     with meta_path.open("w", encoding="utf-8") as f:
         y.dump(meta, f)
 
-    rebuild_all_project_links(vault, {"pepforge": str(old_dir)})
+    rebuild_all_project_links(vault, {"seahorse": str(old_dir)})
     assert is_portable_link(old_dir / "litman_code" / repo_name)
 
     # Project dir moves; config still points at old_dir.
@@ -1180,7 +1180,7 @@ def test_project_drift_tty_heal_preserves_code_symlink(
 
     _drift.check_and_prompt_project_drift()
 
-    assert load_config(vault).projects["pepforge"] == str(new_dir)
+    assert load_config(vault).projects["seahorse"] == str(new_dir)
 
     # Code half of the clone↔link dual rebuilt at the new location.
     code_link = new_dir / "litman_code" / repo_name
@@ -1217,7 +1217,7 @@ def test_project_drift_folder_gone_before_rebuild_claims_no_rebuild(
     from litman.core import project_link
     from litman.core.config import load_config
 
-    vault = _vault_with_gone_project(tmp_path, monkeypatch, "pepforge")
+    vault = _vault_with_gone_project(tmp_path, monkeypatch, "seahorse")
     new_dir = tmp_path / "gone_in_a_moment"
     new_dir.mkdir()
     expected = str(new_dir.resolve())
@@ -1236,7 +1236,7 @@ def test_project_drift_folder_gone_before_rebuild_claims_no_rebuild(
 
     _drift.check_and_prompt_project_drift()
 
-    assert load_config(vault).projects["pepforge"] == expected
+    assert load_config(vault).projects["seahorse"] == expected
     out = capsys.readouterr().out
     assert "✓ Updated" in out
     assert "rebuilt" not in out
@@ -1268,7 +1268,7 @@ def test_project_drift_refuses_a_path_set_path_would_refuse(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     """A wrong answer writes nothing and says why."""
-    vault = _vault_with_gone_project(tmp_path, monkeypatch, "pepforge")
+    vault = _vault_with_gone_project(tmp_path, monkeypatch, "seahorse")
     config_file = vault / "lit-config.yaml"
     before = config_file.read_bytes()
 
@@ -1292,14 +1292,14 @@ def test_project_drift_expands_home_in_a_new_path(
     from litman.core.config import load_config
 
     monkeypatch.setenv("USERPROFILE", str(fake_home))
-    vault = _vault_with_gone_project(tmp_path, monkeypatch, "pepforge")
+    vault = _vault_with_gone_project(tmp_path, monkeypatch, "seahorse")
     moved = fake_home / "moved"
     moved.mkdir()
     monkeypatch.setattr(click, "prompt", lambda *a, **kw: "~/moved")
 
     _drift.check_and_prompt_project_drift()
 
-    assert load_config(vault).projects["pepforge"] == str(moved.resolve())
+    assert load_config(vault).projects["seahorse"] == str(moved.resolve())
 
 
 def test_project_drift_normalizes_a_new_path(
@@ -1307,7 +1307,7 @@ def test_project_drift_normalizes_a_new_path(
 ) -> None:
     from litman.core.config import load_config
 
-    vault = _vault_with_gone_project(tmp_path, monkeypatch, "pepforge")
+    vault = _vault_with_gone_project(tmp_path, monkeypatch, "seahorse")
     moved = tmp_path / "moved"
     moved.mkdir()
     (tmp_path / "other").mkdir()
@@ -1316,7 +1316,7 @@ def test_project_drift_normalizes_a_new_path(
 
     _drift.check_and_prompt_project_drift()
 
-    assert load_config(vault).projects["pepforge"] == str(moved.resolve())
+    assert load_config(vault).projects["seahorse"] == str(moved.resolve())
 
 
 def test_project_drift_unreadable_new_path_is_refused_not_raised(
@@ -1324,7 +1324,7 @@ def test_project_drift_unreadable_new_path_is_refused_not_raised(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    vault = _vault_with_gone_project(tmp_path, monkeypatch, "pepforge")
+    vault = _vault_with_gone_project(tmp_path, monkeypatch, "seahorse")
     before = (vault / "lit-config.yaml").read_bytes()
     locked = tmp_path / "locked"
     locked.mkdir()
@@ -1354,7 +1354,7 @@ def test_project_drift_dead_mount_counts_as_refused(
 ) -> None:
     """Whichever stat of the check never returns, the prompt carries on. The
     folder is really there, so only the budget can refuse it."""
-    vault = _vault_with_gone_project(tmp_path, monkeypatch, "pepforge")
+    vault = _vault_with_gone_project(tmp_path, monkeypatch, "seahorse")
     config_file = vault / "lit-config.yaml"
     before = config_file.read_bytes()
     dead = tmp_path / "dead_mount"

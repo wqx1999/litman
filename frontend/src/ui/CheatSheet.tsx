@@ -1,6 +1,9 @@
 import { createPortal } from 'react-dom'
+import { useT, type Messages } from '../i18n'
 import { useEscapeLayer } from './escapeStack'
+import LangSwitch from './LangSwitch'
 import { modalBackdropProps } from './modalShell'
+import type { ToastVariant } from './Toast'
 
 /** The keyboard-shortcut cheat sheet (Phase 4, `?` toggles it).
  *
@@ -9,7 +12,8 @@ import { modalBackdropProps } from './modalShell'
  * grow-in card); Esc and the Done button close it, a click outside does not
  * (ui/modalShell — the rule is app-wide). Esc arrives through the shared layer
  * stack (ui/escapeStack), so it closes the sheet wherever focus happens to be.
- * Pure presentation — no shortcut logic.
+ * No shortcut logic. The header also carries the UI-language switch
+ * (ui/LangSwitch) — the one setting that has no other home.
  *
  * Portaled to document.body so its `fixed inset-0` resolves against the viewport
  * regardless of any backdrop-filter ancestor (same reasoning as Toast /
@@ -60,99 +64,111 @@ interface Section {
 // The scheme verbatim from §2.3. Modifiers are spelled out (Alt / Shift / Ctrl)
 // rather than shown as glyphs — see Chord. Ctrl is accurate on every platform:
 // the app binds every system shortcut on metaKey OR ctrlKey, so Ctrl works on
-// macOS too (even though a Mac user habitually presses ⌘).
-const SECTIONS: Section[] = [
-  {
-    title: 'Display & panels',
-    rows: [
-      { chords: [['F']], action: 'Focus mode (hide side panels)' },
-      { chords: [['L']], action: 'Toggle light / dark theme' },
-      { chords: [['[']], action: 'Toggle the left panel' },
-      { chords: [[']']], action: 'Toggle the right cockpit' },
-      { chords: [['R']], action: 'Refresh from disk' },
-      { chords: [['?']], action: 'Toggle this cheat sheet' },
-    ],
-  },
-  {
-    title: 'Agent',
-    // Labelled `~`, not `` ` ``: the backtick glyph is near-invisible at keycap
-    // size, and the tilde is what the eye finds on the physical key. The
-    // dispatcher accepts the key with or without Shift, so this label cannot
-    // teach a press that does nothing.
-    note: 'The key left of "1", with or without Shift. Plain launch opens setup when the default is not ready.',
-    rows: [
-      { chords: [['~']], action: 'Launch the default AI agent' },
-      { chords: [['Ctrl', '~']], action: 'Manage agents / change default' },
-    ],
-  },
-  {
-    title: 'Papers list & search',
-    note: 'Move through the middle list; Enter opens the PDF.',
-    rows: [
-      { chords: [['J']], action: 'Next paper' },
-      { chords: [['K']], action: 'Previous paper' },
-      { chords: [['P']], action: 'Pin / unpin the selected paper' },
-      { chords: [['Enter']], action: 'Open the selected paper' },
-      { chords: [['Shift', 'N']], action: 'Open its notes' },
-      { chords: [['Shift', 'D']], action: 'Open its discussion' },
-      { chords: [['/']], action: 'Focus search' },
-      { chords: [['Esc']], action: 'Clear search', scope: 'Search' },
-    ],
-  },
-  {
-    title: 'Tabs',
-    note: 'Drag a tab to reorder. Right-click the bar to close many.',
-    rows: [
-      { chords: [[',']], action: 'Previous tab' },
-      { chords: [['.']], action: 'Next tab' },
-      { chords: [['1–9']], action: 'Jump to tab 1–9' },
-    ],
-  },
-  {
-    title: 'PDF tools',
-    // Third sentence: undo comes from pdf.js and only runs while an annotation
-    // tool is on — it is inert in Cursor. Stating that is the whole point of
-    // listing it: pressed in Cursor it does nothing, and a row without the
-    // precondition would read as a broken shortcut.
-    note: 'Only while a PDF tab is active. Tools switch freely in any order. Undo needs a tool on — not Cursor.',
-    rows: [
-      { chords: [['V'], ['Esc']], action: 'Cursor (select / exit tool)', scope: 'PDF' },
-      { chords: [['Esc']], action: 'Save the note and close it', scope: 'Note' },
-      { chords: [['H']], action: 'Highlight', scope: 'PDF' },
-      { chords: [['T']], action: 'Text note', scope: 'PDF' },
-      { chords: [['D']], action: 'Draw (ink)', scope: 'PDF' },
-      { chords: [['Ctrl', 'Z']], action: 'Undo the last annotation change', scope: 'Tool' },
-      { chords: [['Ctrl', 'Y']], action: 'Redo it', scope: 'Tool' },
-      { chords: [['Alt', '←']], action: 'Back to where you jumped from', scope: 'PDF' },
-      { chords: [['Alt', '→']], action: 'Forward again', scope: 'PDF' },
-    ],
-  },
-  {
-    title: 'Curation — selected paper',
-    note: 'Hold Alt. Acts on the selected paper; none selected is a no-op.',
-    rows: [
-      { chords: [['Alt', 'R']], action: 'Mark read (idempotent)' },
-      { chords: [['Alt', 'Shift', 'R']], action: 'Mark unread (confirm)' },
-      { chords: [['Alt', 'P']], action: 'Promote (deep-read)' },
-      { chords: [['Alt', 'D']], action: 'Drop (confirm)' },
-      { chords: [['Alt', 'T']], action: 'Open the tag editor' },
-      { chords: [['Alt', 'C']], action: 'Copy paper path' },
-      { chords: [['Alt', 'Shift', 'C']], action: 'Copy paper id' },
-    ],
-  },
-  {
-    title: 'System (unchanged)',
-    rows: [
-      { chords: [['Ctrl', 'S']], action: 'Save the current tab' },
-      // One chord, not three: "Ctrl + / Ctrl − / Ctrl 0" was the only row wide
-      // enough to break the keycap column's alignment.
-      { chords: [['Ctrl', '+ / − / 0']], action: 'PDF zoom' },
-      { chords: [['Ctrl', 'K']], action: 'Focus search' },
-    ],
-  },
-]
+// macOS too (even though a Mac user habitually presses ⌘). Keycap labels are
+// not UI text — they match the printed key — so they stay here, not in the
+// text table.
+function sections(c: Messages['reader']['cheatSheet']): Section[] {
+  return [
+    {
+      title: c.display.title,
+      rows: [
+        { chords: [['F']], action: c.display.focusMode },
+        { chords: [['L']], action: c.display.theme },
+        { chords: [['[']], action: c.display.leftPanel },
+        { chords: [[']']], action: c.display.cockpit },
+        { chords: [['R']], action: c.display.refresh },
+        { chords: [['?']], action: c.display.cheatSheet },
+      ],
+    },
+    {
+      title: c.agent.title,
+      // Labelled `~`, not `` ` ``: the backtick glyph is near-invisible at keycap
+      // size, and the tilde is what the eye finds on the physical key. The
+      // dispatcher accepts the key with or without Shift, so this label cannot
+      // teach a press that does nothing.
+      note: c.agent.note,
+      rows: [
+        { chords: [['~']], action: c.agent.launch },
+        { chords: [['Ctrl', '~']], action: c.agent.manage },
+      ],
+    },
+    {
+      title: c.papers.title,
+      note: c.papers.note,
+      rows: [
+        { chords: [['J']], action: c.papers.next },
+        { chords: [['K']], action: c.papers.previous },
+        { chords: [['P']], action: c.papers.pin },
+        { chords: [['Enter']], action: c.papers.open },
+        { chords: [['Shift', 'N']], action: c.papers.openNotes },
+        { chords: [['Shift', 'D']], action: c.papers.openDiscussion },
+        { chords: [['/']], action: c.papers.focusSearch },
+        { chords: [['Esc']], action: c.papers.clearSearch, scope: c.scope.search },
+      ],
+    },
+    {
+      title: c.tabs.title,
+      note: c.tabs.note,
+      rows: [
+        { chords: [[',']], action: c.tabs.previous },
+        { chords: [['.']], action: c.tabs.next },
+        { chords: [['1–9']], action: c.tabs.jump },
+      ],
+    },
+    {
+      title: c.pdf.title,
+      // Third sentence: undo comes from pdf.js and only runs while an annotation
+      // tool is on — it is inert in Cursor. Stating that is the whole point of
+      // listing it: pressed in Cursor it does nothing, and a row without the
+      // precondition would read as a broken shortcut.
+      note: c.pdf.note,
+      rows: [
+        { chords: [['V'], ['Esc']], action: c.pdf.cursor, scope: c.scope.pdf },
+        { chords: [['Esc']], action: c.pdf.saveNote, scope: c.scope.note },
+        { chords: [['H']], action: c.pdf.highlight, scope: c.scope.pdf },
+        { chords: [['T']], action: c.pdf.textNote, scope: c.scope.pdf },
+        { chords: [['D']], action: c.pdf.draw, scope: c.scope.pdf },
+        { chords: [['Ctrl', 'Z']], action: c.pdf.undo, scope: c.scope.tool },
+        { chords: [['Ctrl', 'Y']], action: c.pdf.redo, scope: c.scope.tool },
+        { chords: [['Alt', '←']], action: c.pdf.back, scope: c.scope.pdf },
+        { chords: [['Alt', '→']], action: c.pdf.forward, scope: c.scope.pdf },
+      ],
+    },
+    {
+      title: c.curation.title,
+      note: c.curation.note,
+      rows: [
+        { chords: [['Alt', 'R']], action: c.curation.markRead },
+        { chords: [['Alt', 'Shift', 'R']], action: c.curation.markUnread },
+        { chords: [['Alt', 'P']], action: c.curation.promote },
+        { chords: [['Alt', 'D']], action: c.curation.drop },
+        { chords: [['Alt', 'T']], action: c.curation.tagEditor },
+        { chords: [['Alt', 'C']], action: c.curation.copyPath },
+        { chords: [['Alt', 'Shift', 'C']], action: c.curation.copyId },
+      ],
+    },
+    {
+      title: c.system.title,
+      rows: [
+        { chords: [['Ctrl', 'S']], action: c.system.save },
+        // One chord, not three: "Ctrl + / Ctrl − / Ctrl 0" was the only row wide
+        // enough to break the keycap column's alignment.
+        { chords: [['Ctrl', '+ / − / 0']], action: c.system.zoom },
+        { chords: [['Ctrl', 'K']], action: c.system.focusSearch },
+      ],
+    },
+  ]
+}
 
-export default function CheatSheet({ onClose }: { onClose: () => void }) {
+export default function CheatSheet({
+  onClose,
+  notify,
+}: {
+  onClose: () => void
+  notify: (msg: string, variant?: ToastVariant) => void
+}) {
+  const t = useT()
+  const c = t.reader.cheatSheet
   useEscapeLayer(true, onClose)
   return createPortal(
     <div
@@ -162,19 +178,20 @@ export default function CheatSheet({ onClose }: { onClose: () => void }) {
       <div
         onClick={(e) => e.stopPropagation()}
         role="dialog"
-        aria-label="Keyboard shortcuts"
+        aria-label={c.title}
         className="max-h-[85vh] w-[52rem] max-w-[94vw] animate-grow-in overflow-y-auto rounded-2xl bg-white p-6 shadow-xl ring-1 ring-stone-200"
       >
-        <h2 className="mb-4 text-sm font-semibold text-stone-900">
-          Keyboard shortcuts
-        </h2>
+        <div className="mb-4 flex items-center justify-between gap-4">
+          <h2 className="text-sm font-semibold text-stone-900">{c.title}</h2>
+          <LangSwitch notify={notify} />
+        </div>
 
         {/* Column FLOW (not a grid): sections pack bottom-up, so a one-row group
          * never leaves a hole the height of its neighbour. break-inside-avoid
          * keeps a section whole. */}
         <div className="columns-1 gap-8 sm:columns-2">
-          {SECTIONS.map((section) => (
-            <section key={section.title} className="mb-5 break-inside-avoid">
+          {sections(c).map((section, si) => (
+            <section key={si} className="mb-5 break-inside-avoid">
               <h3 className="mb-1 text-[11px] font-semibold uppercase tracking-wider text-stone-600">
                 {section.title}
               </h3>
@@ -184,13 +201,13 @@ export default function CheatSheet({ onClose }: { onClose: () => void }) {
                 </p>
               )}
               <ul className="space-y-1.5">
-                {section.rows.map((row) => (
+                {section.rows.map((row, ri) => (
                   // Fixed 9rem keycap column, right-aligned (macOS menu
                   // convention). A rigid track — not flex justify-between —
                   // means the keycaps land on the same x in every row and the
                   // description can never squeeze them into a wrap.
                   <li
-                    key={row.action}
+                    key={ri}
                     className="grid grid-cols-[1fr_9rem] items-baseline gap-3"
                   >
                     <span className="text-xs leading-5 text-stone-700">
@@ -205,7 +222,7 @@ export default function CheatSheet({ onClose }: { onClose: () => void }) {
                       {row.chords.map((chord, i) => (
                         <span key={i} className="flex items-center gap-1.5">
                           {i > 0 && (
-                            <span className="text-[10px] text-stone-400">or</span>
+                            <span className="text-[10px] text-stone-400">{c.or}</span>
                           )}
                           <Chord keys={chord} />
                         </span>
@@ -223,7 +240,7 @@ export default function CheatSheet({ onClose }: { onClose: () => void }) {
             onClick={onClose}
             className="rounded-lg px-3 py-1.5 text-xs text-stone-600 transition-colors hover:bg-stone-100"
           >
-            Done
+            {t.common.done}
           </button>
         </div>
       </div>

@@ -201,6 +201,56 @@ def test_whatsnew_seen_degrades_on_garbage(tmp_path: Path) -> None:
     assert ui_state.load_whatsnew_seen() == "1.3.3"
 
 
+def test_ui_lang_defaults_to_auto_and_round_trips() -> None:
+    """Nothing chosen → ``auto`` (follow the system); each value saves and
+    loads back, and a later choice overwrites."""
+    assert ui_state.load_ui_lang() == "auto"
+    for pref in ("zh", "en", "auto"):
+        ui_state.save_ui_lang(pref)
+        assert ui_state.load_ui_lang() == pref
+
+
+def test_ui_lang_rejects_unknown_values() -> None:
+    """The value comes from a client: anything the loader would not accept is
+    refused at save time, and the file is left untouched."""
+    ui_state.save_ui_lang("zh")
+    for bad in ("fr", "zh-CN", "", "AUTO"):
+        try:
+            ui_state.save_ui_lang(bad)
+        except ValueError:
+            pass
+        else:
+            raise AssertionError(f"save_ui_lang accepted {bad!r}")
+    assert ui_state.load_ui_lang() == "zh"
+
+
+def test_ui_lang_degrades_on_garbage() -> None:
+    """Corrupt file / wrong type / unknown value → ``auto``, never a crash."""
+    path = ui_state.ui_state_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    for bad in (
+        "not json",
+        json.dumps({"uiLang": 1}),
+        json.dumps({"uiLang": "fr"}),
+    ):
+        path.write_text(bad, encoding="utf-8")
+        assert ui_state.load_ui_lang() == "auto"
+
+
+def test_ui_lang_coexists_with_other_tenants(tmp_path: Path) -> None:
+    """Saving the language keeps pins and the what's-new marker, and the
+    other savers keep the language."""
+    vault = _vault(tmp_path)
+    ui_state.save_pins(vault, ["p1"])
+    ui_state.save_whatsnew_seen("1.3.3")
+    ui_state.save_ui_lang("zh")
+    assert ui_state.load_pins(vault) == ["p1"]
+    assert ui_state.load_whatsnew_seen() == "1.3.3"
+    ui_state.save_pins(vault, ["p1", "p2"])
+    ui_state.save_whatsnew_seen("1.4.0")
+    assert ui_state.load_ui_lang() == "zh"
+
+
 def test_remove_ui_state_takes_whatsnew_seen_with_it(tmp_path: Path) -> None:
     """AC-8: ``lit uninstall`` removes the whole file — pins AND the marker.
 

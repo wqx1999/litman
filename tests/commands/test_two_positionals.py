@@ -2,7 +2,7 @@
 
 `lit link <paper> <project>` and `lit code add <paper> <repo>` are what these
 commands look like they should take. They do not — the second value goes in a
-flag — and Click's own answer was "Got unexpected extra argument (pepforge)",
+flag — and Click's own answer was "Got unexpected extra argument (seahorse)",
 which names what is wrong and nothing about how to be right.
 
 We refuse rather than tolerantly accept the second positional: accepting it
@@ -29,12 +29,12 @@ def vault(tmp_path: Path) -> Path:
 # (argv, the command line the error must hand back)
 _MISUSES = [
     (
-        ["link", "2024_Foo", "pepforge"],
-        'lit link "2024_Foo" --project pepforge',
+        ["link", "2024_Foo", "seahorse"],
+        'lit link "2024_Foo" --project seahorse',
     ),
     (
-        ["unlink", "2024_Foo", "pepforge"],
-        'lit unlink "2024_Foo" --project pepforge',
+        ["unlink", "2024_Foo", "seahorse"],
+        'lit unlink "2024_Foo" --project seahorse',
     ),
     (
         ["code", "add", "https://github.com/x/y", "2024_Foo"],
@@ -109,8 +109,8 @@ def test_unlink_still_reports_a_genuinely_missing_project(vault: Path) -> None:
 @pytest.mark.parametrize(
     "argv",
     [
-        ["link", "2024_Foo", "--project", "pepforge"],
-        ["unlink", "2024_Foo", "--project", "pepforge"],
+        ["link", "2024_Foo", "--project", "seahorse"],
+        ["unlink", "2024_Foo", "--project", "seahorse"],
         ["code", "link", "myrepo", "--paper", "2024_Foo"],
         ["code", "unlink", "myrepo", "--paper", "2024_Foo"],
     ],

@@ -9,7 +9,6 @@ ADR-017). The vault is read from ``request.app.state.vault`` (set by
 from __future__ import annotations
 
 import dataclasses
-import hashlib
 import json
 import os
 from pathlib import Path
@@ -28,19 +27,26 @@ from litman.core.document import find_paper, list_papers
 from litman.core.fs_identity import Anchor
 from litman.core.gui_registry import host_id
 from litman.core.id import is_valid_id
+from litman.core.library import DEFAULT_VAULT_NAME
 from litman.core.query import recency_key
 from litman.core.schema import all_fixed_enums, fixed_enum_allows_none
 from litman.core.search import search_notes
 from litman.core.taxonomy import parse_taxonomy, read_taxonomy_text
-from litman.core.trash import TRASH_DIRNAME
 from litman.core.undecodable import has_undecodable, printable, printable_tree, refusal
-from litman.core.vault_registry import find_active, load_registry, registry_path
+from litman.core.vault_registry import (
+    find_active,
+    load_registry,
+    registry_path,
+    suggest_vault_name,
+)
+from litman.core.vault_token import fingerprint, gui_token, md_version
 from litman.core.views import (
     INDEX_PAPER_FIELDS,
     load_index_papers,
     project_paper,
 )
 from litman.exceptions import CorruptMetadataError, PaperNotFoundError
+from litman.server.errors import api_error
 
 router = APIRouter(prefix="/api")
 
@@ -220,6 +226,9 @@ def get_whatsnew() -> dict[str, Any]:
     return {
         "version": __version__,
         "bullets": bullets_for(__version__),
+        # The Chinese twin; [] when this version has none, and the SPA then
+        # shows the English bullets in a Chinese UI too.
+        "bulletsZh": bullets_for(__version__, "zh"),
         "changelogUrl": CHANGELOG_URL,
         "seen": load_whatsnew_seen(),
     }
@@ -392,43 +401,6 @@ def get_doc_mtimes(request: Request) -> dict[str, dict[str, float | None]]:
     return out
 
 
-# The library-level files whose mtime+size answers "did anything structural
-# change?": INDEX.json covers every paper's metadata (it is re-derived by every
-# write command), TAXONOMY.md the controlled vocabulary, lit-config.yaml the
-# project map `GET /api/projects` reads, and the .trash DIRECTORY's own mtime
-# flips whenever an entry is moved in or out of it.
-_VAULT_VERSION_FILES = ("INDEX.json", "TAXONOMY.md", CONFIG_FILENAME, TRASH_DIRNAME)
-
-# Free-form docs an agent rewrites in place. These are the reason the token
-# cannot be four stats: nothing in INDEX.json moves when an agent overwrites
-# notes.md, and that is the motivating case for the whole mechanism.
-_VAULT_VERSION_DOCS = ("notes.md", "discussion.md")
-
-
-def _fingerprint(path: Path) -> str:
-    """``mtime_ns:size`` for one path, or ``-`` when it is absent/unreadable.
-
-    Absent is a legitimate state (no .trash yet, a paper without notes.md), and
-    it has to be *distinguishable* from any present state — creating the file
-    must move the token.
-
-    Never raises: this runs on a timer, and a path the OS refuses to stat (a
-    permission, a name the platform rejects, a disconnected network drive)
-    reads as "not there" rather than turning the whole poll into a 500.
-
-    Resolution follows the filesystem's. On NTFS/ext4/APFS that is far finer
-    than the seconds between two polls; on FAT32 (a vault on a USB stick) mtime
-    is bucketed to 2s, so two edits inside one bucket that also leave the size
-    unchanged look like one. The next edit moves it again, and the window is a
-    fraction of the poll interval — worth knowing, not worth engineering around.
-    """
-    try:
-        st = os.stat(path)
-    except (OSError, ValueError):
-        return "-"
-    return f"{st.st_mtime_ns}:{st.st_size}"
-
-
 @router.get("/vault-version")
 def get_vault_version(request: Request) -> dict[str, Any]:
     """An opaque token that changes iff the vault changed on disk.
@@ -450,36 +422,24 @@ def get_vault_version(request: Request) -> dict[str, Any]:
     this library (``{id, paperId, title, link}``, all held in memory since the
     request was made) or ``null`` — how the page learns that ``lit add --si``
     is waiting for it, without a timer of its own. It is not part of the token.
+
+    ``sync`` rides along the same way: the auto sync's status
+    (``GET /api/sync/status``), or ``null`` when this library has no ``sync:``
+    set up. Held in memory; not part of the token either.
+
+    The token itself is :func:`litman.core.vault_token.gui_token`.
     """
     vault = _vault(request)
-    digest = hashlib.blake2b(digest_size=12)
-
-    def feed(label: str, path: Path) -> None:
-        # surrogatepass: a paper folder whose name is not UTF-8 text (any lone
-        # surrogate, whatever the platform) still feeds the hash instead of
-        # failing every poll.
-        digest.update(f"{label}\0{_fingerprint(path)}\n".encode("utf-8", "surrogatepass"))
-
-    for name in _VAULT_VERSION_FILES:
-        feed(name, vault / name)
-    # The registry lives outside the vault (per-user config dir) and drives the
-    # vault switcher, which the resync sweep re-pulls.
-    feed("registry", registry_path())
-
-    papers_dir = vault / "papers"
-    try:
-        entries = sorted(os.listdir(papers_dir))
-    except OSError:
-        entries = []
-    for paper_id in entries:
-        for doc in _VAULT_VERSION_DOCS:
-            feed(f"{paper_id}/{doc}", papers_dir / paper_id / doc)
-
     si_request = None
     table = getattr(request.app.state, "si_requests", None)
     if table is not None and table.has_open():
         si_request = table.first_open(Anchor.of(vault))
-    return {"version": digest.hexdigest(), "siRequest": si_request}
+    scheduler = getattr(request.app.state, "sync_scheduler", None)
+    return {
+        "version": gui_token(vault, registry_path()),
+        "siRequest": si_request,
+        "sync": scheduler.status_for(vault) if scheduler is not None else None,
+    }
 
 
 def _snippet_window(line: str, query: str, *, width: int = 90, lead: int = 24) -> str:
@@ -580,11 +540,11 @@ def get_paper(request: Request, paper_id: str) -> dict[str, Any]:
     try:
         meta = find_paper(vault, paper_id)
     except PaperNotFoundError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
+        raise api_error(404, exc, id=paper_id) from exc
     except CorruptMetadataError as exc:
         # The paper exists; its metadata is broken. That is a server-side
         # data problem (500), not a missing resource (404).
-        raise HTTPException(status_code=500, detail=str(exc)) from exc
+        raise api_error(500, exc) from exc
     if not meta:
         # find_paper returns {} for an empty / comment-only metadata.yaml; treat
         # that as a missing resource (mirrors get_trash_metadata) rather than
@@ -623,11 +583,16 @@ def get_paper_cite(request: Request, paper_id: str) -> dict[str, Any]:
     try:
         meta = find_paper(vault, paper_id)
     except PaperNotFoundError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
+        raise api_error(404, exc, id=paper_id) from exc
     except CorruptMetadataError as exc:
-        raise HTTPException(status_code=500, detail=str(exc)) from exc
+        raise api_error(500, exc) from exc
     citation = format_acs(meta)
-    return {"text": citation.text, "warnings": citation.warnings}
+    return {
+        "text": citation.text,
+        "warnings": citation.warnings,
+        # The same caveats as codes, for the page's own words.
+        "caveats": [{"code": code} for code in citation.codes],
+    }
 
 
 @router.get("/paper/{paper_id}/pdf")
@@ -653,7 +618,7 @@ def get_paper_pdf(request: Request, paper_id: str) -> FileResponse:
         raise HTTPException(status_code=404, detail=f"Invalid paper id: {paper_id!r}.")
     pdf_path = vault / "papers" / paper_id / "paper.pdf"
     if not pdf_path.is_file():
-        raise HTTPException(status_code=404, detail=f"No paper.pdf for {paper_id!r}.")
+        raise api_error(404, f"No paper.pdf for {paper_id!r}.", "pdf-missing", id=paper_id)
     return FileResponse(
         pdf_path,
         media_type="application/pdf",
@@ -661,15 +626,34 @@ def get_paper_pdf(request: Request, paper_id: str) -> FileResponse:
     )
 
 
+@router.get("/paper/{paper_id}/pdf-version")
+def get_paper_pdf_version(request: Request, paper_id: str) -> dict[str, str]:
+    """``{"version": "<mtime_ns>:<size>"}`` of ``papers/{id}/paper.pdf``.
+
+    The PDF tab asks before it loads the bytes and sends it back with an
+    annotation save (``base``), so a save over a copy that changed meanwhile
+    (a sync brought another machine's) keeps that copy in the backup. Asked
+    before the load, a change in between can only read as a change, never be
+    missed. Stat-only: hashing a large PDF on every save is not worth it.
+    """
+    vault = _vault(request)
+    if not is_valid_id(paper_id):
+        raise HTTPException(status_code=404, detail=f"Invalid paper id: {paper_id!r}.")
+    version = fingerprint(vault / "papers" / paper_id / "paper.pdf")
+    if version == "-":
+        raise api_error(404, f"No paper.pdf for {paper_id!r}.", "pdf-missing", id=paper_id)
+    return {"version": version}
+
+
 @router.get("/paper/{paper_id}/notes")
 def get_paper_notes(request: Request, paper_id: str) -> dict[str, str]:
-    """Raw ``notes.md`` text. 404 when the file is absent."""
+    """Raw ``notes.md`` text and its version. 404 when the file is absent."""
     return _read_paper_md(request, paper_id, "notes.md")
 
 
 @router.get("/paper/{paper_id}/discussion")
 def get_paper_discussion(request: Request, paper_id: str) -> dict[str, str]:
-    """Raw ``discussion.md`` text. 404 when the file is absent."""
+    """Raw ``discussion.md`` text and its version. 404 when the file is absent."""
     return _read_paper_md(request, paper_id, "discussion.md")
 
 
@@ -681,20 +665,28 @@ def _read_paper_md(request: Request, paper_id: str, filename: str) -> dict[str, 
         raise HTTPException(status_code=404, detail=f"Invalid paper id: {paper_id!r}.")
     md_path = vault / "papers" / paper_id / filename
     if not md_path.is_file():
-        raise HTTPException(status_code=404, detail=f"No {filename} for {paper_id!r}.")
+        # Not written yet: a state the tab shows as such, not a failure.
+        raise api_error(404, f"No {filename} for {paper_id!r}.", quiet=True)
     try:
-        return {"text": md_path.read_text(encoding="utf-8")}
+        data = md_path.read_bytes()
+        # Newlines as text mode reads them, so the text is what it always was.
+        text = data.decode("utf-8").replace("\r\n", "\n").replace("\r", "\n")
+        # The version of exactly the bytes the text came from: a save sends it
+        # back, and a file changed since then is kept before it is replaced.
+        return {"text": text, "version": md_version(data)}
     except (OSError, UnicodeDecodeError) as exc:
         # Present but unservable (external editor saved it non-UTF-8, cloud
         # client left a husk): damaged data, not a missing resource — the
         # same clean-500 contract as get_paper's CorruptMetadataError arm,
         # never an unhandled traceback.
-        raise HTTPException(
-            status_code=500,
-            detail=(
+        raise api_error(
+            500,
+            (
                 f"papers/{paper_id}/{filename} cannot be read "
                 f"(not UTF-8, or unreadable): {exc}"
             ),
+            "file-unreadable",
+            path=f"papers/{paper_id}/{filename}",
         ) from exc
 
 
@@ -814,6 +806,9 @@ def get_vaults(request: Request) -> dict[str, Any]:
             }
             for v in reg.vaults
         ],
+        # What the New-library dialogs offer as the name: the default, or the
+        # first free `<default>_<n>` once that is taken.
+        "suggestedName": suggest_vault_name(reg, DEFAULT_VAULT_NAME),
     }
 
 
@@ -1004,13 +999,11 @@ def get_fs_list(
     except OSError as exc:
         # resolve() can raise on a broken symlink chain / lookup loop — a path
         # that cannot even be resolved is bad input, not a server crash.
-        raise HTTPException(
-            status_code=400, detail=f"Cannot open folder: {path}"
-        ) from exc
+        raise api_error(400, f"Cannot open folder: {path}", "folder-missing") from exc
     if not target.exists():
-        raise HTTPException(status_code=400, detail=f"No such folder: {path}")
+        raise api_error(400, f"No such folder: {path}", "folder-missing")
     if not target.is_dir():
-        raise HTTPException(status_code=400, detail=f"Not a folder: {path}")
+        raise api_error(400, f"Not a folder: {path}", "not-a-folder")
     return _directory_listing(target, show_hidden=bool(show_hidden))
 
 
@@ -1035,7 +1028,7 @@ async def post_fs_mkdir(request: Request) -> dict[str, Any]:
     * ``parent`` missing / not a directory → 400.
     * bad ``name`` → 400, and nothing is created.
     * ``target`` already a directory → 200, its listing (idempotent: equivalent to
-      navigating into an existing folder — wangq 2026-07-23).
+      navigating into an existing folder).
     * ``target`` already a *file* → 400.
     * otherwise ``target.mkdir()``; a ``PermissionError`` degrades to 403 and any
       other ``OSError`` to 400 (mirrors ``fs/list``'s ``denied`` style — never 500).
@@ -1070,34 +1063,26 @@ async def post_fs_mkdir(request: Request) -> dict[str, Any]:
         parent_exists = parent.exists()
         parent_is_dir = parent.is_dir()
     except PermissionError as exc:
-        raise HTTPException(
-            status_code=403, detail=f"Permission denied opening: {parent_raw}"
+        raise api_error(
+            403, f"Permission denied opening: {parent_raw}", "open-denied"
         ) from exc
     except (OSError, ValueError) as exc:
-        raise HTTPException(
-            status_code=400, detail=f"Cannot open folder: {parent_raw}"
-        ) from exc
+        raise api_error(400, f"Cannot open folder: {parent_raw}", "folder-missing") from exc
     if not parent_exists:
-        raise HTTPException(
-            status_code=400, detail=f"Parent folder does not exist: {parent}"
-        )
+        raise api_error(400, f"Parent folder does not exist: {parent}", "folder-missing")
     if not parent_is_dir:
-        raise HTTPException(status_code=400, detail=f"Parent is not a folder: {parent}")
+        raise api_error(400, f"Parent is not a folder: {parent}", "not-a-folder")
 
     # 2. Name: exactly one path component (RED LINE — no separators, no traversal,
     #    no control chars / NUL — a NUL would make mkdir() raise ValueError → 500).
     if not name:
-        raise HTTPException(status_code=400, detail="Folder name can't be empty.")
+        raise api_error(400, "Folder name can't be empty.", "name-empty")
     if name in (".", ".."):
-        raise HTTPException(status_code=400, detail="Folder name can't be '.' or '..'.")
+        raise api_error(400, "Folder name can't be '.' or '..'.", "name-dots")
     if "/" in name or "\\" in name or ".." in name:
-        raise HTTPException(
-            status_code=400, detail="Folder name can't contain path separators."
-        )
+        raise api_error(400, "Folder name can't contain path separators.", "name-separator")
     if any(ord(ch) < 32 or ch == "\x7f" for ch in name):
-        raise HTTPException(
-            status_code=400, detail="Folder name can't contain control characters."
-        )
+        raise api_error(400, "Folder name can't contain control characters.", "name-control")
 
     # 3-6. Create (or idempotently enter) exactly one level under parent. Every
     # filesystem probe here can raise PermissionError inside a locked parent
@@ -1107,20 +1092,18 @@ async def post_fs_mkdir(request: Request) -> dict[str, Any]:
     try:
         already_dir = target.is_dir()
         if not already_dir and target.exists():
-            raise HTTPException(
-                status_code=400, detail="A file with that name already exists."
-            )
+            raise api_error(400, "A file with that name already exists.", "file-exists")
         if not already_dir:
             target.mkdir()  # single level; parent verified above (no parents=True)
     except PermissionError as exc:
-        raise HTTPException(
-            status_code=403,
-            detail=f"Permission denied creating a folder in {parent}.",
+        raise api_error(
+            403, f"Permission denied creating a folder in {parent}.", "mkdir-denied"
         ) from exc
     except (OSError, ValueError) as exc:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Couldn't create the folder: {getattr(exc, 'strerror', None) or exc}.",
+        raise api_error(
+            400,
+            f"Couldn't create the folder: {getattr(exc, 'strerror', None) or exc}.",
+            "mkdir-failed",
         ) from exc
 
     return _directory_listing(target)

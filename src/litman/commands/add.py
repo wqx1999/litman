@@ -63,13 +63,13 @@ from litman.core.id import (
 )
 from litman.core.library import find_vault, resolve_library_or_vault
 from litman.core.locking import lock_truth_file, rmtree
-from litman.core.notes import WIKILINK_REMINDER, discussion_scaffold
+from litman.core.notes import NOTES_PLACEHOLDER, WIKILINK_REMINDER, discussion_scaffold
 from litman.core.paper_lookup import complete_paper_id, resolve_paper_id
 from litman.core.placeholders import is_placeholder
 from litman.core.shell import shell_arg
 from litman.core.views import load_index_papers, view_fields_snapshot
 from litman.core.yaml_pool import ThreadLocalYAML
-from litman.exceptions import AddError, DuplicateDOIError, IDError
+from litman.exceptions import AddError, DuplicateDOIError, IDError, coded
 from litman.importers.crossref import fetch_crossref, parse_crossref
 from litman.importers.llm import parse_llm_json, parse_llm_json_text
 
@@ -167,16 +167,20 @@ def _refuse_doi_duplicate(doi: str, existing_id: str, meta: dict[str, Any]) -> N
     """Raise a friendly DuplicateDOIError describing the existing paper."""
     title = meta.get("title") or "(no title)"
     added = meta.get("created-at") or "(no timestamp)"
-    raise DuplicateDOIError(
-        f"DOI {doi!r} already registered in this vault:\n"
-        f"  id:    {existing_id}\n"
-        f"  title: {title}\n"
-        f"  added: {added}\n"
-        f"\n"
-        f"Next steps:\n"
-        f"  lit show {shell_arg(existing_id)}                       # inspect\n"
-        f"  lit rm {shell_arg(existing_id)}                         # replace, step 1\n"
-        f'  lit add "<pdf>" --doi {shell_arg(doi)}   # replace, step 2'
+    raise coded(
+        DuplicateDOIError(
+            f"DOI {doi!r} already registered in this vault:\n"
+            f"  id:    {existing_id}\n"
+            f"  title: {title}\n"
+            f"  added: {added}\n"
+            f"\n"
+            f"Next steps:\n"
+            f"  lit show {shell_arg(existing_id)}                       # inspect\n"
+            f"  lit rm {shell_arg(existing_id)}                         # replace, step 1\n"
+            f'  lit add "<pdf>" --doi {shell_arg(doi)}   # replace, step 2'
+        ),
+        "doi-taken",
+        id=existing_id,
     )
 
 
@@ -455,16 +459,22 @@ def _apply_add(
             # page as a second place to look lives in lit-library/add-errors.md,
             # where the rationale belongs; `lit add` always has the PDF in
             # hand, so page 1 always answers.
-            raise IDError(
-                f"Metadata from {source_label} has no year, which the paper id "
-                "needs. Take it from page 1 — not the download year — or pass "
-                "--id <year>_<Family>_<Keyword>."
+            raise coded(
+                IDError(
+                    f"Metadata from {source_label} has no year, which the paper id "
+                    "needs. Take it from page 1 — not the download year — or pass "
+                    "--id <year>_<Family>_<Keyword>."
+                ),
+                "id-no-year",
             )
         family_raw = first_author_family(parsed["authors"])
         if not family_raw:
-            raise IDError(
-                f"Metadata from {source_label} has no first-author "
-                "family name; pass --id explicitly."
+            raise coded(
+                IDError(
+                    f"Metadata from {source_label} has no first-author "
+                    "family name; pass --id explicitly."
+                ),
+                "id-no-first-author",
             )
         paper_id = derive_id(parsed["year"], family_raw, parsed["title"])
         year = parsed["year"]
@@ -477,9 +487,13 @@ def _apply_add(
     paper_dir = vault / "papers" / paper_id
     if paper_dir.exists():
         if id_override:
-            raise AddError(
-                f"Paper folder already exists: {paper_dir}. "
-                "Use a different --id or remove the existing folder first."
+            raise coded(
+                AddError(
+                    f"Paper folder already exists: {paper_dir}. "
+                    "Use a different --id or remove the existing folder first."
+                ),
+                "id-taken",
+                id=paper_id,
             )
         # Reaching here means the non-override path, where year is guarded
         # non-None above; narrow int|None -> int for the resolver.
@@ -499,10 +513,14 @@ def _apply_add(
         ]
         case_clash = find_case_fold_collision(existing_ids, paper_id)
         if case_clash is not None:
-            raise AddError(
-                f"Paper id {paper_id!r} differs only in case from existing "
-                f"paper {case_clash!r} — the two collide on Windows and "
-                "macOS. Pass --id <different-name>."
+            raise coded(
+                AddError(
+                    f"Paper id {paper_id!r} differs only in case from existing "
+                    f"paper {case_clash!r} — the two collide on Windows and "
+                    "macOS. Pass --id <different-name>."
+                ),
+                "id-taken",
+                id=case_clash,
             )
 
     # Atomic creation: any failure rolls back the half-built folder.
@@ -517,7 +535,7 @@ def _apply_add(
         (paper_dir / "notes.md").write_text(
             f"# {parsed['title']}\n\n"
             f"{WIKILINK_REMINDER}\n\n"
-            "(Personal notes go here.)\n",
+            f"{NOTES_PLACEHOLDER}\n",
             encoding="utf-8",
         )
         # The discussion log starts empty but not absent: its header carries the

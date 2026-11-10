@@ -167,7 +167,7 @@ def test_trash_excluded_from_index_and_list(vault: Path) -> None:
 
 def test_trash_list_empty_vault(vault: Path) -> None:
     runner = CliRunner()
-    result = runner.invoke(cli, ["trash", "list", "--library", str(vault)])
+    result = runner.invoke(cli, ["trash", "list", "--format", "table", "--library", str(vault)])
     assert result.exit_code == 0
     assert "trash is empty" in result.output
 
@@ -831,7 +831,7 @@ def test_a_leftover_removed_si_folder_is_ignored(vault: Path) -> None:
     assert not is_trash_entry_name("removed-si")
     assert list_trash(vault) == []
     assert check_trash_health(vault, []) == []
-    listed = runner.invoke(cli, ["trash", "list", "--library", str(vault)])
+    listed = runner.invoke(cli, ["trash", "list", "--format", "table", "--library", str(vault)])
     assert listed.exit_code == 0, listed.output
     assert "(trash is empty)" in listed.output
     rows = runner.invoke(

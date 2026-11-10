@@ -28,7 +28,16 @@ import {
   type ViewHistory,
   type ViewPos,
 } from './view-history'
-import { pdfUrl, putPdfAnnotations } from '../api'
+import {
+  ApiError,
+  OfflineError,
+  fetchPdfVersion,
+  logPageFailure,
+  pdfUrl,
+  putPdfAnnotations,
+} from '../api'
+import { describe, errorLine } from '../apiErrors'
+import { getT, useT } from '../i18n'
 import { isEditingTarget } from '../useKeyboardShortcuts'
 
 // pdf.js needs its worker registered once, before any document is parsed. The
@@ -211,6 +220,16 @@ interface Props {
   /** Override the document URL (the trash view serves from /api/trash/.../pdf).
    * Defaults to the live paper's /api/paper/{id}/pdf. */
   pdfSrc?: string
+  /** Bumped by the host on a resync-from-disk. The view looks at paper.pdf's
+   * version again: changed on disk (a sync brought the other machine's
+   * annotations) and no unsaved edits here → it reloads, keeping the place;
+   * with unsaved edits it keeps them, and their save keeps the other copy. */
+  reloadToken?: number
+  /** A save replaced a paper.pdf that had changed since it was loaded; the
+   * other copy is at `backup`. */
+  onSaveReplaced?: (paperId: string, file: string, backup: string) => void
+  /** Show a toast: a save that did not land says so (the edits stay). */
+  onNotify?: (message: string) => void
 }
 
 const MIN_SCALE = 0.5
@@ -254,12 +273,8 @@ const MODE_TO_EDIT: Record<number, EditMode> = {
   [AnnotationEditorType.FREETEXT]: 'freetext',
   [AnnotationEditorType.INK]: 'ink',
 }
-const EDIT_MODES: { mode: EditMode; label: string; title: string }[] = [
-  { mode: 'none', label: 'Cursor', title: 'Select text / follow links (double-click an annotation to edit)' },
-  { mode: 'highlight', label: 'Highlight', title: 'Highlight text' },
-  { mode: 'freetext', label: 'Text', title: 'Add a text note' },
-  { mode: 'ink', label: 'Draw', title: 'Freehand ink' },
-]
+// Toolbar order. Each tool's label and hover title: reader.pdfView.tool.
+const EDIT_MODES: EditMode[] = ['none', 'highlight', 'freetext', 'ink']
 
 // pdf.js's highlight editor is NOT self-sufficient: its UIManager.getNonHCMColorName()
 // does `highlightColorNames.get(color)` with NO null guard, and that map is null
@@ -407,7 +422,25 @@ export default function PdfView({
   onRegister,
   readOnly = false,
   pdfSrc,
+  reloadToken = 0,
+  onSaveReplaced,
+  onNotify,
 }: Props) {
+  const t = useT()
+  const tx = t.reader.pdfView
+  const onNotifyRef = useRef(onNotify)
+  onNotifyRef.current = onNotify
+  // paper.pdf's version (mtime:size) when each document was loaded, read
+  // BEFORE its bytes: a change in between can then only read as a change at
+  // save time, never be missed. Sent with every save of that document; the
+  // answer carries the next one. Kept per document, so a write of a document
+  // already replaced by a reload neither sends nor leaves the new one's
+  // version. Null for the trash view, which never saves.
+  const docVersionsRef = useRef(new WeakMap<PDFDocumentProxy, string | null>())
+  // Bumped to reload the document (the load effect depends on it).
+  const [reloadKey, setReloadKey] = useState(0)
+  const onSaveReplacedRef = useRef(onSaveReplaced)
+  onSaveReplacedRef.current = onSaveReplaced
   // The absolutely-positioned scroll container pdf_viewer attaches to.
   const containerRef = useRef<HTMLDivElement>(null)
   // The inner `.pdfViewer` div pdf_viewer fills with pages.
@@ -474,7 +507,9 @@ export default function PdfView({
   // closure changes (same pattern as commitNoteRef above).
   const onNavigateRef = useRef<() => void>(() => {})
 
-  const [error, setError] = useState<string | null>(null)
+  // Why the document did not load: no paper.pdf on the server (a 404), or
+  // anything else. pdf.js's own message goes to the console only.
+  const [error, setError] = useState<'missing' | 'failed' | null>(null)
   const [pageCount, setPageCount] = useState(0)
   const [scale, setScale] = useState(DEFAULT_SCALE)
   const [editMode, setEditMode] = useState<EditMode>('none')
@@ -831,7 +866,9 @@ export default function PdfView({
       const hash = doc.annotationStorage.serializable.hash
       if (hash === savedHashRef.current) return
       const bytes = await doc.saveDocument()
-      await putPdfAnnotations(id, bytes)
+      const saved = await putPdfAnnotations(id, bytes, docVersionsRef.current.get(doc) ?? null)
+      docVersionsRef.current.set(doc, saved.version)
+      if (saved.replaced) onSaveReplacedRef.current?.(id, 'paper.pdf', saved.replaced.backup)
       // Bookkeep ONLY after the write lands. If saveDocument()/PUT throws,
       // savedHashRef stays behind, the document still reads dirty, and a later
       // save retries instead of silently dropping the edit.
@@ -857,6 +894,26 @@ export default function PdfView({
     await runQueued(() => writeAnnotations(doc, id))
   }, [commitPending, runQueued, writeAnnotations])
 
+  // A save that did not land: one line for the person (the edits are kept,
+  // and the next save retries), the full text for the agent. A refusal from
+  // the server is in its GUI log already; a failure of pdf.js itself (it could
+  // not produce the annotated copy) never reached the server, so it is put
+  // there now.
+  const reportSaveFailure = useCallback((err: unknown) => {
+    const e = getT().errors
+    let line: string | null = e.pdfNotSaved
+    if (err instanceof ApiError || err instanceof OfflineError) {
+      line = errorLine(err, e.pdfNotSaved, {})
+    } else {
+      logPageFailure(
+        `save PDF annotations of ${paperIdRef.current}`,
+        describe(err),
+        'pdf-not-saved',
+      )
+    }
+    if (line) onNotifyRef.current?.(line)
+  }, [])
+
   // Explicit user save (Save button / ⌘-Ctrl+S): flush with visible state +
   // a brief "Saved ✓" confirmation. savingRef guards a double-fire.
   const saveNow = useCallback(async () => {
@@ -868,11 +925,12 @@ export default function PdfView({
       setSavedFlash(true)
     } catch (err) {
       console.error('Failed to save annotations:', err)
+      reportSaveFailure(err)
     } finally {
       savingRef.current = false
       setSaving(false)
     }
-  }, [flush, isDirtyDoc])
+  }, [flush, isDirtyDoc, reportSaveFailure])
 
   // Hide the read-only hover-note tooltip. Defined up here (not with the other
   // hover logic below) so the wheel-zoom effect can list it as a dep without a
@@ -973,7 +1031,9 @@ export default function PdfView({
     // A write for the PREVIOUS document may still be in the air; it carries its
     // own doc + paper id and finishes on its own. Dropping the reference here
     // just gives the incoming document a fresh queue (the identity check in
-    // runQueued's `clear` keeps the old one from clobbering this).
+    // runQueued's `clear` keeps the old one from clobbering this). The version
+    // read below waits for it: the document then loads with what it wrote.
+    const previousWrite = inflightRef.current
     inflightRef.current = null
     discardRef.current = false
     lastNoteEditorRef.current = null
@@ -1191,17 +1251,33 @@ export default function PdfView({
     eventBus.on('annotationeditorparamschanged', onParamsChanged)
 
     let cancelled = false
-    const loadingTask = pdfjsLib.getDocument({
-      url: pdfSrc ?? pdfUrl(paperId),
-      // Scanned (image-only) PDFs decode their JBIG2 / CCITT-fax / JPEG2000
-      // images in a WebAssembly module pdf.js fetches from this directory;
-      // build.sh vendors pdf.js's wasm/ folder to the served root. Without it a
-      // scanned page fetches <null>/jbig2.wasm, the image decodes to nothing,
-      // and the page paints blank ("Dependent image isn't ready yet").
-      wasmUrl: new URL('wasm/', document.baseURI).href,
-    })
-    Promise.all([loadingTask.promise, textLayerFontsReady()])
-      .then(([doc]) => {
+    let loadingTask: ReturnType<typeof pdfjsLib.getDocument> | null = null
+    // The version first, then the bytes (see docVersionsRef).
+    let version: string | null = null
+    const versionFirst = readOnly
+      ? Promise.resolve(null)
+      : (previousWrite ?? Promise.resolve())
+          .catch(() => {})
+          .then(() => fetchPdfVersion(paperId))
+          .catch(() => null)
+    versionFirst
+      .then((read) => {
+        if (cancelled) return null
+        version = read
+        loadingTask = pdfjsLib.getDocument({
+          url: pdfSrc ?? pdfUrl(paperId),
+          // Scanned (image-only) PDFs decode their JBIG2 / CCITT-fax / JPEG2000
+          // images in a WebAssembly module pdf.js fetches from this directory;
+          // build.sh vendors pdf.js's wasm/ folder to the served root. Without it a
+          // scanned page fetches <null>/jbig2.wasm, the image decodes to nothing,
+          // and the page paints blank ("Dependent image isn't ready yet").
+          wasmUrl: new URL('wasm/', document.baseURI).href,
+        })
+        return Promise.all([loadingTask.promise, textLayerFontsReady()])
+      })
+      .then((loaded) => {
+        if (!loaded) return
+        const [doc] = loaded
         if (cancelled) {
           void doc.destroy()
           return
@@ -1221,6 +1297,7 @@ export default function PdfView({
             throw err
           })
         docRef.current = doc
+        docVersionsRef.current.set(doc, version)
         // Baseline for the dirty comparison. Read it rather than assuming "":
         // whatever this document hashes to at rest is what "no unsaved edits"
         // means for it.
@@ -1231,7 +1308,15 @@ export default function PdfView({
       })
       .catch((err: unknown) => {
         if (!cancelled) {
-          setError(err instanceof Error ? err.message : String(err))
+          console.error('Failed to load PDF:', err)
+          // An answer from the server (a 404, a 500) is in its GUI log
+          // already; pdf.js's own failure (a damaged file) is put there now.
+          if (!(err instanceof pdfjsLib.ResponseException)) {
+            logPageFailure(`open PDF of ${paperIdRef.current}`, describe(err))
+          }
+          setError(
+            err instanceof pdfjsLib.ResponseException && err.missing ? 'missing' : 'failed',
+          )
         }
       })
 
@@ -1302,7 +1387,7 @@ export default function PdfView({
           console.error('Failed to destroy PDF editor UIManager:', err)
         }
         if (doc) void doc.destroy()
-        else void loadingTask.destroy()
+        else if (loadingTask) void loadingTask.destroy()
       }
 
       // Best-effort flush on plain unmount (tab switch). When the user closed the
@@ -1322,6 +1407,7 @@ export default function PdfView({
         runQueued(() => writeAnnotations(doc, id))
           .catch((err: unknown) => {
             console.error('Failed to embed PDF annotations:', err)
+            reportSaveFailure(err)
           })
           .finally(teardown)
       } else if (inflightRef.current) {
@@ -1333,7 +1419,35 @@ export default function PdfView({
         teardown()
       }
     }
-  }, [paperId, pdfSrc, readOnly, tabKey])
+  }, [paperId, pdfSrc, readOnly, tabKey, reloadKey])
+
+  // A resync-from-disk: did paper.pdf change under this tab (a sync brought
+  // the other machine's annotations)? Clean → reload, keeping the place
+  // (viewPositions, saved by the load effect's cleanup). Unsaved edits → keep
+  // them; their save replaces the file and keeps the other copy. The mount run
+  // is skipped: the load effect just read the version.
+  const firstReloadRef = useRef(true)
+  useEffect(() => {
+    if (firstReloadRef.current) {
+      firstReloadRef.current = false
+      return
+    }
+    if (readOnly) return
+    let cancelled = false
+    void fetchPdfVersion(paperId).then((version) => {
+      const doc = docRef.current
+      const known = doc ? docVersionsRef.current.get(doc) : undefined
+      if (cancelled || version === null || known == null) return
+      if (version === known) return
+      if (inflightRef.current || isDirtyDoc(docRef.current)) return
+      setReloadKey((k) => k + 1)
+    })
+    return () => {
+      cancelled = true
+    }
+    // Only reloadToken drives this look; the rest is read for its current value.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [reloadToken])
 
   // Ctrl/Cmd + wheel zooms the PDF instead of the browser page (also catches
   // trackpad pinch, which fires wheel events with ctrlKey set). Plain wheel is
@@ -1726,7 +1840,7 @@ export default function PdfView({
     return () => el.removeEventListener('scroll', onScroll)
   }, [clearHover, tabKey, syncPill])
 
-  const saveLabel = saving ? 'Saving…' : savedFlash && !dirty ? 'Saved ✓' : 'Save'
+  const saveLabel = saving ? tx.saving : savedFlash && !dirty ? tx.saved : tx.save
 
   return (
     <div className="flex h-full flex-col">
@@ -1734,7 +1848,7 @@ export default function PdfView({
         <button
           onClick={() => zoomBy(-ZOOM_STEP)}
           disabled={scale <= MIN_SCALE}
-          title="Zoom out"
+          title={tx.zoomOut}
           className="rounded-md px-2 py-0.5 text-sm text-stone-600 transition-colors hover:bg-stone-200 disabled:text-stone-300 disabled:hover:bg-transparent"
         >
           −
@@ -1759,8 +1873,8 @@ export default function PdfView({
               }
             }}
             inputMode="numeric"
-            aria-label="Zoom percentage"
-            title="Type a zoom %, then Enter"
+            aria-label={tx.zoomPercentLabel}
+            title={tx.zoomPercentTitle}
             className="w-9 rounded bg-transparent text-right text-xs tabular-nums text-stone-600 hover:bg-stone-200 focus:bg-white focus:outline-none focus:ring-1 focus:ring-stone-300"
           />
           <span className="text-xs text-stone-500">%</span>
@@ -1768,7 +1882,7 @@ export default function PdfView({
         <button
           onClick={() => zoomBy(ZOOM_STEP)}
           disabled={scale >= MAX_SCALE}
-          title="Zoom in"
+          title={tx.zoomIn}
           className="rounded-md px-2 py-0.5 text-sm text-stone-600 transition-colors hover:bg-stone-200 disabled:text-stone-300 disabled:hover:bg-transparent"
         >
           +
@@ -1781,13 +1895,13 @@ export default function PdfView({
             <div className="mx-1 h-4 w-px bg-stone-300" />
 
             <div className="flex items-center gap-1">
-              {EDIT_MODES.map(({ mode, label, title }) => {
+              {EDIT_MODES.map((mode) => {
                 const active = editMode === mode
                 return (
                   <button
                     key={mode}
                     onClick={() => selectMode(mode)}
-                    title={title}
+                    title={tx.tool[mode].title}
                     aria-pressed={active}
                     className={
                       'rounded-md border px-2 py-0.5 text-xs transition-colors ' +
@@ -1796,7 +1910,7 @@ export default function PdfView({
                         : 'border-transparent text-stone-600 hover:bg-stone-200')
                     }
                   >
-                    {label}
+                    {tx.tool[mode].label}
                   </button>
                 )
               })}
@@ -1829,11 +1943,7 @@ export default function PdfView({
             <button
               onClick={() => void saveNow()}
               disabled={!dirty || saving}
-              title={
-                dirty
-                  ? 'Save annotations into the PDF (⌘/Ctrl+S)'
-                  : 'No unsaved changes'
-              }
+              title={dirty ? tx.saveTitle : tx.noChanges}
               className={
                 'rounded-md px-2.5 py-0.5 text-xs font-medium transition-colors ' +
                 (dirty && !saving
@@ -1848,7 +1958,7 @@ export default function PdfView({
           )}
           {pageCount > 0 && (
             <span className="text-xs text-stone-500">
-              {pageCount} page{pageCount === 1 ? '' : 's'}
+              {tx.pageCount(pageCount)}
             </span>
           )}
         </div>
@@ -1868,12 +1978,12 @@ export default function PdfView({
       >
         {error && (
           <div className="absolute inset-x-0 top-0 z-10 p-6 text-sm text-red-700">
-            Failed to load PDF: {error}
+            {error === 'missing' ? tx.notOnThisComputer : tx.loadFailed}
           </div>
         )}
         {!error && pageCount === 0 && (
           <div className="absolute inset-x-0 top-0 z-10 p-6 text-sm text-stone-500">
-            Loading PDF…
+            {tx.loading}
           </div>
         )}
         <div ref={containerRef} className="absolute inset-0 overflow-auto p-6">
@@ -1954,18 +2064,18 @@ export default function PdfView({
                   }
                 }}
                 rows={2}
-                placeholder="Add a note…"
+                placeholder={tx.notePlaceholder}
                 className="w-52 resize-none rounded-lg border border-stone-200 bg-stone-50 p-2 text-xs text-stone-800 placeholder:text-stone-400 focus:border-accent-500 focus:bg-white focus:outline-none focus:ring-1 focus:ring-accent-500"
               />
             )}
             <button
               onClick={deleteSelected}
-              title="Delete annotation"
-              aria-label="Delete annotation"
+              title={tx.deleteAnnotation}
+              aria-label={tx.deleteAnnotation}
               className="flex items-center justify-center gap-1.5 rounded-lg px-2 py-1 text-xs text-red-600 transition-colors hover:bg-red-50"
             >
               <TrashIcon />
-              Delete
+              {t.common.delete}
             </button>
           </div>
         )}

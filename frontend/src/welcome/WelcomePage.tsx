@@ -8,8 +8,11 @@ import {
   unregisterVault,
 } from '../api'
 import type { FsAnchor } from '../api'
+import { getT, useT } from '../i18n'
+import { errorLine } from '../apiErrors'
 import type { VaultsPayload } from '../types'
 import { anchorIcon } from '../ui/icons'
+import { LangMenu } from '../ui/LangSwitch'
 import PathField, { describeLocation } from '../ui/PathField'
 import logoUrl from '../assets/logo.svg'
 
@@ -39,8 +42,18 @@ export default function WelcomePage({
   /** Re-fetch the vault list without leaving this page (after a Forget). */
   onRefresh: () => Promise<void>
 }) {
+  const T = useT()
+  const t = T.browse.welcome
   const [parentDir, setParentDir] = useState('~')
-  const [name, setName] = useState('literature_vault')
+  // The server's offer for the name: the default, or the first free
+  // `<default>_<n>` when a library (a moved one, say) already holds it.
+  const offered = vaults?.suggestedName ?? 'literature_vault'
+  const [name, setName] = useState(offered)
+  // Follow the offer as it arrives, until the user types a name of their own.
+  const [nameTouched, setNameTouched] = useState(false)
+  useEffect(() => {
+    if (!nameTouched) setName(offered)
+  }, [offered, nameTouched])
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
   // The moved entry the user is locating (its new path is typed inline).
@@ -85,7 +98,7 @@ export default function WelcomePage({
       await createVault(parentDir.trim(), name.trim() || undefined)
       onEnter() // unmounts this page once `served` flips
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e))
+      setError(errorLine(e, null, getT().errors.vault))
       setBusy(false)
     }
   }
@@ -98,7 +111,7 @@ export default function WelcomePage({
       await putActiveVault(vaultName)
       onEnter()
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e))
+      setError(errorLine(e, null, getT().errors.vault))
       setBusy(false)
     }
   }
@@ -117,7 +130,7 @@ export default function WelcomePage({
       await setVaultPath(vaultName, p)
       onEnter()
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e))
+      setError(errorLine(e, null, getT().errors.vault))
       setBusy(false)
     }
   }
@@ -134,7 +147,7 @@ export default function WelcomePage({
       setForgetting(null)
       await onRefresh()
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e))
+      setError(errorLine(e, null, getT().errors.vault))
     } finally {
       setBusy(false)
     }
@@ -142,14 +155,19 @@ export default function WelcomePage({
 
   return (
     <div className="flex h-full w-full items-center justify-center overflow-y-auto bg-stone-100 px-4 py-10 text-stone-800 antialiased">
-      <div className="w-full max-w-md animate-grow-in rounded-2xl bg-white p-8 shadow-xl ring-1 ring-stone-200">
+      <div className="relative w-full max-w-md animate-grow-in rounded-2xl bg-white p-8 shadow-xl ring-1 ring-stone-200">
+        {/* Choosing the UI language is part of first-run setup; there is no
+         * `?` panel here. A failed save reports in the card's error line. */}
+        <div className="absolute right-4 top-4">
+          <LangMenu onSaveError={setError} />
+        </div>
         <div className="flex flex-col items-center text-center">
           <img src={logoUrl} alt="litman" className="h-12 w-auto select-none" />
           <h1 className="mt-4 text-lg font-semibold text-stone-900">
-            Create your library
+            {t.title}
           </h1>
           <p className="mt-1.5 text-sm text-stone-500">
-            litman keeps your papers in one folder on disk.
+            {t.subtitle}
           </p>
         </div>
 
@@ -159,30 +177,33 @@ export default function WelcomePage({
               {anchorIcon(loc.kind, 'h-5 w-5 shrink-0 text-stone-500')}
               <span className="min-w-0 truncate">
                 {loc.label} <span className="text-stone-400">/</span>{' '}
-                {name.trim() || 'literature_vault'}
+                {name.trim() || offered}
               </span>
             </div>
           </div>
           <label className="block">
-            <span className="text-xs font-medium text-stone-600">Location</span>
+            <span className="text-xs font-medium text-stone-600">{t.location}</span>
             <PathField
               mode="parent-dir"
               value={parentDir}
               onChange={setParentDir}
               disabled={busy}
-              placeholder="/work/you"
+              placeholder="/home/you"
               onEnter={create}
               className="mt-1"
             />
           </label>
           <label className="block">
-            <span className="text-xs font-medium text-stone-600">Name</span>
+            <span className="text-xs font-medium text-stone-600">{t.name}</span>
             <input
               type="text"
               value={name}
               disabled={busy}
               spellCheck={false}
-              onChange={(e) => setName(e.target.value)}
+              onChange={(e) => {
+                setNameTouched(true)
+                setName(e.target.value)
+              }}
               onKeyDown={(e) => {
                 if (e.key === 'Enter') create()
               }}
@@ -202,13 +223,13 @@ export default function WelcomePage({
           disabled={!canCreate}
           className="mt-6 w-full rounded-lg bg-accent-500 px-4 py-2.5 text-sm font-medium text-white shadow-sm transition-colors hover:bg-accent-600 disabled:opacity-50"
         >
-          {busy ? 'Creating…' : 'Create library'}
+          {busy ? t.creating : t.create}
         </button>
 
         {existing.length > 0 && (
           <div className="mt-7 border-t border-stone-200 pt-5">
             <p className="text-xs font-medium text-stone-500">
-              Or open an existing library
+              {t.openExisting}
             </p>
             <ul className="mt-2 space-y-1.5">
               {existing.map((v) =>
@@ -228,7 +249,7 @@ export default function WelcomePage({
                         </span>
                       </span>
                       <span className="shrink-0 text-xs font-medium text-accent-600">
-                        Open
+                        {t.open}
                       </span>
                     </button>
                   </li>
@@ -247,7 +268,7 @@ export default function WelcomePage({
                             {v.name}
                           </span>
                           <span className="shrink-0 rounded-full bg-rose-100 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-rose-700">
-                            moved
+                            {t.moved}
                           </span>
                         </span>
                         <span className="block truncate font-mono text-[11px] text-rose-400 line-through">
@@ -266,7 +287,7 @@ export default function WelcomePage({
                             disabled={busy}
                             className="text-xs font-medium text-accent-600 disabled:opacity-50"
                           >
-                            Locate
+                            {t.locate}
                           </button>
                           <button
                             onClick={() => {
@@ -277,7 +298,7 @@ export default function WelcomePage({
                             disabled={busy}
                             className="text-xs font-medium text-stone-400 transition-colors hover:text-rose-500 disabled:opacity-50"
                           >
-                            Forget
+                            {t.forget}
                           </button>
                         </span>
                       )}
@@ -302,21 +323,21 @@ export default function WelcomePage({
                           disabled={busy}
                           className="shrink-0 rounded-md px-3 py-2 text-xs font-medium text-stone-500 transition-colors hover:bg-stone-100 disabled:opacity-50"
                         >
-                          Cancel
+                          {T.common.cancel}
                         </button>
                         <button
                           onClick={() => locate(v.name)}
                           disabled={busy || locatePath.trim().length === 0}
                           className="shrink-0 rounded-md bg-accent-500 px-3 py-2 text-xs font-medium text-white transition-colors hover:bg-accent-600 disabled:opacity-50"
                         >
-                          {busy ? '…' : 'Locate'}
+                          {busy ? '…' : t.locate}
                         </button>
                       </div>
                     )}
                     {forgetting === v.name && (
                       <div className="mt-2 flex items-center justify-between gap-2 rounded-md bg-rose-50 px-2.5 py-1.5 ring-1 ring-rose-100">
                         <span className="min-w-0 text-[11px] leading-snug text-rose-700">
-                          Remove from the list? Nothing on disk is deleted.
+                          {t.forgetConfirm}
                         </span>
                         <span className="flex shrink-0 items-center gap-1.5">
                           <button
@@ -324,14 +345,14 @@ export default function WelcomePage({
                             disabled={busy}
                             className="rounded px-2 py-1 text-[11px] font-medium text-stone-600 transition-colors hover:bg-white disabled:opacity-50"
                           >
-                            Cancel
+                            {T.common.cancel}
                           </button>
                           <button
                             onClick={() => forget(v.name)}
                             disabled={busy}
                             className="rounded-md bg-rose-500 px-2.5 py-1 text-[11px] font-medium text-white transition-colors hover:bg-rose-600 disabled:opacity-50"
                           >
-                            {busy ? '…' : 'Remove'}
+                            {busy ? '…' : t.remove}
                           </button>
                         </span>
                       </div>

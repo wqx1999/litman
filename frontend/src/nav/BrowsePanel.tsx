@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { IndexPaper } from '../types'
+import { enumLabel, useT } from '../i18n'
 import VocabPopover from '../ui/VocabPopover'
+import CollapsedStrip from '../ui/CollapsedStrip'
 import { IconTrash } from '../ui/icons'
 
 /** Sort presets: the two server-ordered smart-lists plus INDEX-order `all`. */
@@ -86,19 +88,16 @@ interface Props {
   onRegisterReveal?: (reveal: (() => void) | null) => void
 }
 
-const LIST_MODES: Array<[ListMode, string]> = [
-  ['reading', '📖 Reading'],
-  ['recent-read', '✅ Read'],
-  ['all', 'All'],
-]
+// Labels: `browse.browsePanel.listMode`.
+const LIST_MODES: readonly ListMode[] = ['reading', 'recent-read', 'all']
 
 /** A facet dimension's display config. `kind` selects the counting + filter
  * shape: `single` reads `p[key]` (string | null), `array` reads `p[key]`
  * (string[]). `order` pins the value sequence for fixed-enum dimensions; values
- * absent from it (none, for fixed enums) fall through to alphabetical. */
+ * absent from it (none, for fixed enums) fall through to alphabetical. The
+ * header label is `browse.browsePanel.dimension[key]`. */
 interface Dimension {
   key: FacetKey
-  label: string
   kind: 'single' | 'array'
   order?: readonly string[]
 }
@@ -114,13 +113,11 @@ interface Dimension {
 const DIMENSIONS: readonly Dimension[] = [
   {
     key: 'status',
-    label: 'Status',
     kind: 'single',
     order: ['deep-read', 'skim', 'inbox', 'dropped'],
   },
   {
     key: 'type',
-    label: 'Type',
     kind: 'single',
     order: [
       'research',
@@ -133,9 +130,9 @@ const DIMENSIONS: readonly Dimension[] = [
       'book-chapter',
     ],
   },
-  { key: 'topics', label: 'Topics', kind: 'array' },
-  { key: 'methods', label: 'Methods', kind: 'array' },
-  { key: 'data', label: 'Data', kind: 'array' },
+  { key: 'topics', kind: 'array' },
+  { key: 'methods', kind: 'array' },
+  { key: 'data', kind: 'array' },
 ]
 
 // Keyed on the authoritative status enum (core/schema.py
@@ -252,6 +249,16 @@ export default function BrowsePanel({
   onToggle,
   onRegisterReveal = () => {},
 }: Props) {
+  const T = useT()
+  const t = T.browse.browsePanel
+  // A facet value as shown: the fixed enums (status / type) get their label,
+  // free vocabulary shows as written. The filter itself keys on the value.
+  const valueLabel = (key: FacetKey, value: string): string =>
+    key === 'status'
+      ? enumLabel(T.common.status, value)
+      : key === 'type'
+        ? enumLabel(T.common.paperType, value)
+        : value
   // Level-1 disclosure: the whole Filter section. Collapsed by default so the
   // panel stays clean — the labelled "Filter" row is still an obvious entry.
   const [filterOpen, setFilterOpen] = useState(false)
@@ -388,7 +395,7 @@ export default function BrowsePanel({
   // Index of the active smart-list — drives the sliding segmented indicator.
   const listIndex = Math.max(
     0,
-    LIST_MODES.findIndex(([m]) => m === listMode),
+    LIST_MODES.indexOf(listMode),
   )
 
   // The main list = `visible` minus the pinned block (a paper renders exactly
@@ -443,12 +450,8 @@ export default function BrowsePanel({
               meant to open. */}
           <button
             onClick={() => onTogglePin(p.id)}
-            title={
-              pinned
-                ? 'Unpin (send back to its place in the list)'
-                : 'Pin to the top of the list'
-            }
-            aria-label={pinned ? `Unpin ${p.id}` : `Pin ${p.id}`}
+            title={pinned ? t.unpinTitle : t.pinTitle}
+            aria-label={pinned ? t.unpinAria(p.id) : t.pinAria(p.id)}
             className="grid h-6 w-6 shrink-0 place-items-center pl-1"
           >
             {/* `outline` rather than `ring`: its offset gap is transparent, so
@@ -482,9 +485,9 @@ export default function BrowsePanel({
             {isDropped && (
               <span
                 className="shrink-0 rounded bg-stone-200 px-1 py-px text-[9px] font-medium uppercase tracking-wide text-stone-500 dark:bg-stone-700 dark:text-stone-300"
-                title="Dropped — evaluated and set aside (kept as a record)"
+                title={t.droppedTitle}
               >
-                dropped
+                {T.common.status.dropped}
               </span>
             )}
             {p.year != null && (
@@ -529,13 +532,13 @@ export default function BrowsePanel({
                   onClick={() => onOpenDoc(p.id, 'notes')}
                   className="rounded-lg bg-white px-2 py-0.5 text-xs text-stone-700 shadow-sm ring-1 ring-stone-200 transition-colors hover:text-accent-700 hover:ring-accent-200"
                 >
-                  📝 notes
+                  {T.browse.openNotes}
                 </button>
                 <button
                   onClick={() => onOpenDoc(p.id, 'discussion')}
                   className="rounded-lg bg-white px-2 py-0.5 text-xs text-stone-700 shadow-sm ring-1 ring-stone-200 transition-colors hover:text-accent-700 hover:ring-accent-200"
                 >
-                  💬 discussion
+                  {T.browse.openDiscussion}
                 </button>
                 {/* Remove from library — set apart at the row's right edge
                     (ml-auto) and rose-on-hover so it never reads as another
@@ -545,8 +548,8 @@ export default function BrowsePanel({
                     Pinning lives on the status dot instead. */}
                 <button
                   onClick={() => onRemovePaper(p.id)}
-                  title="Remove paper from library (move to trash)"
-                  aria-label="Remove paper from library"
+                  title={t.removeTitle}
+                  aria-label={t.removeAria}
                   className="ml-auto grid h-6 w-6 shrink-0 place-items-center rounded-lg text-stone-400 ring-1 ring-transparent transition-colors hover:bg-rose-50 hover:text-rose-500 hover:ring-rose-200"
                 >
                   <IconTrash />
@@ -565,20 +568,12 @@ export default function BrowsePanel({
         collapsed ? 'w-9' : 'w-80'
       }`}
     >
-      {/* Collapsed strip: just the expand handle, fading in once narrowed. */}
-      <div
-        className={`absolute inset-0 flex flex-col items-center pt-3 transition-opacity duration-200 ${
-          collapsed ? 'opacity-100 delay-150' : 'pointer-events-none opacity-0'
-        }`}
-      >
-        <button
-          onClick={onToggle}
-          title="Expand browse panel"
-          className="text-stone-500 transition-colors hover:text-stone-800"
-        >
-          ›
-        </button>
-      </div>
+      <CollapsedStrip
+        collapsed={collapsed}
+        side="left"
+        title={t.expandTitle}
+        onExpand={onToggle}
+      />
 
       {/* Full panel — fixed w-80 so it never reflows while the container width
           animates; cross-fades out when collapsed. */}
@@ -596,7 +591,7 @@ export default function BrowsePanel({
                 onChange={(e) => onProjectScope(e.target.value || null)}
                 className="min-w-0 flex-1 rounded-md border border-stone-300 bg-white px-2 py-1 text-sm text-stone-800 shadow-sm transition focus:border-accent-500 focus:outline-none focus:ring-2 focus:ring-accent-500/25"
               >
-                <option value="">All projects</option>
+                <option value="">{t.allProjects}</option>
                 {projects.map((p) => (
                   <option key={p} value={p}>
                     {p}
@@ -608,7 +603,7 @@ export default function BrowsePanel({
                   setOpenDim(null)
                   onToggle()
                 }}
-                title="Collapse browse panel"
+                title={t.collapseTitle}
                 className="shrink-0 rounded-md px-1.5 py-1 text-stone-500 transition-colors hover:bg-stone-200 hover:text-stone-800"
               >
                 ‹
@@ -623,10 +618,10 @@ export default function BrowsePanel({
                   and muted dropped papers included — so it moves with each of
                   them. Hidden while the list loads or failed to load. */}
               <div className="mb-1 flex items-baseline justify-between text-[10px] font-semibold uppercase tracking-wider text-stone-400">
-                <span>Show</span>
+                <span>{t.show}</span>
                 {!loading && !loadFailed && (
                   <span className="normal-case tracking-normal tabular-nums">
-                    {visible.length} {visible.length === 1 ? 'paper' : 'papers'}
+                    {t.paperCount(visible.length)}
                   </span>
                 )}
               </div>
@@ -638,7 +633,7 @@ export default function BrowsePanel({
                     transform: `translateX(calc(${listIndex} * 100%))`,
                   }}
                 />
-                {LIST_MODES.map(([mode, label]) => (
+                {LIST_MODES.map((mode) => (
                   <button
                     key={mode}
                     onClick={() => onListMode(mode)}
@@ -648,7 +643,7 @@ export default function BrowsePanel({
                         : 'text-stone-600 hover:text-stone-800'
                     }`}
                   >
-                    {label}
+                    {t.listMode[mode]}
                   </button>
                 ))}
               </div>
@@ -673,7 +668,7 @@ export default function BrowsePanel({
                 >
                   ▸
                 </span>
-                <span>Filter</span>
+                <span>{t.filter}</span>
                 {activeCount > 0 && (
                   <span className="rounded-full bg-accent-500 px-1.5 py-px text-[10px] font-medium normal-case leading-none text-white">
                     {activeCount}
@@ -686,7 +681,7 @@ export default function BrowsePanel({
                     onClick={onClearFilters}
                     className="px-2 py-1 text-[11px] normal-case text-stone-500 underline decoration-stone-400 transition-colors hover:text-stone-800"
                   >
-                    Clear all
+                    {t.clearAll}
                   </button>
                 )}
               </div>
@@ -700,7 +695,7 @@ export default function BrowsePanel({
                     <button
                       key={`${dim.key}:${value}`}
                       onClick={() => onToggleFilter(dim.key, value)}
-                      title="Remove filter"
+                      title={t.removeFilterTitle}
                       className="flex items-center gap-1 rounded-full bg-accent-50 px-2 py-0.5 text-xs text-accent-700 transition-colors hover:bg-accent-100"
                     >
                       {dim.key === 'status' && (
@@ -710,7 +705,9 @@ export default function BrowsePanel({
                           )}`}
                         />
                       )}
-                      <span className="max-w-[7rem] truncate">{value}</span>
+                      <span className="max-w-[7rem] truncate">
+                        {valueLabel(dim.key, value)}
+                      </span>
                       <span className="text-accent-500/60">×</span>
                     </button>
                   )),
@@ -733,7 +730,7 @@ export default function BrowsePanel({
               <div className="px-2 pb-2 pt-1">
                 {visibleDims.length === 0 && (
                   <div className="px-1 py-2 text-xs text-stone-400">
-                    No tags to filter yet.
+                    {t.noTags}
                   </div>
                 )}
                 {visibleDims.map((dim) => {
@@ -751,7 +748,7 @@ export default function BrowsePanel({
                         className="flex w-full items-center justify-between rounded-md px-2 py-1.5 text-[11px] font-semibold uppercase tracking-wider text-stone-600 transition-colors hover:bg-stone-200"
                       >
                         <span>
-                          {dim.label}
+                          {t.dimension[dim.key]}
                           {sel.size > 0 && (
                             <span className="ml-1 font-normal normal-case text-accent-600">
                               ({sel.size})
@@ -772,10 +769,11 @@ export default function BrowsePanel({
                 {openDimension && (
                   <VocabPopover
                     key={openDimension.key}
-                    label={openDimension.label}
-                    noun={openDimension.label.toLowerCase()}
+                    label={t.dimension[openDimension.key]}
+                    noun={t.dimensionNoun[openDimension.key]}
                     values={entries.get(openDimension.key)!.map(([value, count]) => ({
                       value,
+                      label: valueLabel(openDimension.key, value),
                       count,
                       on: filters[openDimension.key].has(value),
                       dimmed: count === 0,
@@ -798,7 +796,7 @@ export default function BrowsePanel({
 
         {/* Paper list */}
         <div ref={listRef} className="min-h-0 flex-1 overflow-auto bg-white py-1">
-          {loading && <div className="p-3 text-sm text-stone-500">Loading…</div>}
+          {loading && <div className="p-3 text-sm text-stone-500">{T.browse.loading}</div>}
           {/* Three empty states, in precedence order: the list fetch failed
            * (server unreachable — never masquerade as an empty library), a
            * truly empty vault gets a getting-started card (the GUI has no add
@@ -808,7 +806,7 @@ export default function BrowsePanel({
            * Mirrors the CLI's own empty-vault guidance in list.py. */}
           {!loading && loadFailed && visible.length === 0 && (
             <div className="p-3 text-sm text-stone-400">
-              Couldn't reach the server — papers can't load.
+              {t.loadFailed}
             </div>
           )}
           {/* Pinned group (task-gui-pin): user-anchored rows above the ranked
@@ -828,22 +826,19 @@ export default function BrowsePanel({
                       answer to "was it already at the top, or did I put it
                       there?" — the per-row halo answers the rest. */}
                   <span className="text-[11px] font-semibold uppercase tracking-wider text-stone-600">
-                    📌 Pinned{pinnedRows.length > 0 && ` · ${pinnedRows.length}`}
+                    {t.pinned(pinnedRows.length)}
                   </span>
                   <button
                     onClick={onClearPins}
-                    title="Unpin all pinned papers"
+                    title={t.unpinAllTitle}
                     className="px-1 py-0.5 text-[11px] text-stone-500 underline decoration-stone-400 transition-colors hover:text-stone-800"
                   >
-                    Clear all
+                    {t.clearAll}
                   </button>
                 </div>
                 {pinnedHiddenCount > 0 && (
                   <div className="pb-0.5 pl-4 pr-3 text-[11px] text-stone-400">
-                    {pinnedHiddenCount === 1
-                      ? '1 pin is'
-                      : `${pinnedHiddenCount} pins are`}{' '}
-                    hidden by the current view
+                    {t.pinsHidden(pinnedHiddenCount)}
                   </div>
                 )}
                 <div className="max-h-56 overflow-y-auto">
@@ -852,21 +847,14 @@ export default function BrowsePanel({
               </div>
             )}
           {!loading && !loadFailed && visible.length === 0 && !vaultEmpty && (
-            <div className="p-3 text-sm text-stone-400">No papers match.</div>
+            <div className="p-3 text-sm text-stone-400">{t.noMatch}</div>
           )}
           {!loading && !loadFailed && vaultEmpty && (
             <div className="mx-2 my-3 rounded-xl bg-stone-100/80 p-4 text-sm text-stone-500 ring-1 ring-stone-200/80">
               <div className="mb-2 font-medium text-stone-700">
-                No papers in your vault yet.
+                {t.emptyTitle}
               </div>
-              <div>Add your first paper from the terminal:</div>
-              <div className="my-2 w-fit rounded-lg bg-stone-200/70 px-2.5 py-1.5 font-mono text-xs text-stone-700">
-                lit add &lt;pdf&gt; --doi &lt;doi&gt;
-              </div>
-              <div>…or ask your coding agent to add it for you.</div>
-              <div className="mt-2.5 text-xs text-stone-400">
-                add moves the source PDF into the vault.
-              </div>
+              <div>{t.emptyDrop}</div>
             </div>
           )}
           {restRows.map((p) => renderRow(p, false))}
@@ -879,11 +867,11 @@ export default function BrowsePanel({
         <div className="shrink-0 border-t border-stone-200">
           <button
             onClick={onOpenTrash}
-            title="Open the trash (recover deleted papers) · capped at 100"
+            title={t.trashTitle}
             className="flex w-full items-center gap-2 px-3 py-2 text-left text-sm text-stone-600 transition-colors hover:bg-stone-200"
           >
             <span>🗑</span>
-            <span>Trash</span>
+            <span>{t.trash}</span>
             <span className="ml-auto text-xs text-stone-400">{trashCount} / 100</span>
           </button>
         </div>

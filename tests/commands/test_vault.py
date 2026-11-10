@@ -145,7 +145,7 @@ def test_cli_vault_add_import_from_auto_fills_today(
         cli,
         [
             "vault", "add", "zhang", str(vault_a),
-            "--import-from", "Zhang via USB drop",
+            "--import-from", "a colleague, via USB",
         ],
     )
     assert result.exit_code == 0, result.output
@@ -153,7 +153,7 @@ def test_cli_vault_add_import_from_auto_fills_today(
     reg = load_registry()
     entry = find_by_name(reg, "zhang")
     assert entry is not None
-    assert entry.imported_from == "Zhang via USB drop"
+    assert entry.imported_from == "a colleague, via USB"
     assert entry.imported_at == date.today().isoformat()
 
 
@@ -377,7 +377,7 @@ def test_cli_vault_add_dead_name_points_at_set_path(
 
 def test_cli_vault_list_empty_registry(fake_home: Path) -> None:
     runner = CliRunner()
-    result = runner.invoke(cli, ["vault", "list"])
+    result = runner.invoke(cli, ["vault", "list", "--format", "table"])
     assert result.exit_code == 0, result.output
     assert "No vaults registered" in result.output
 
@@ -388,7 +388,7 @@ def test_cli_vault_list_shows_all_vaults_and_active_marker(
     runner = CliRunner()
     runner.invoke(cli, ["vault", "add", "main", str(vault_a)])
     runner.invoke(cli, ["vault", "add", "second", str(vault_b)])
-    result = runner.invoke(cli, ["vault", "list"])
+    result = runner.invoke(cli, ["vault", "list", "--format", "table"])
     assert result.exit_code == 0, result.output
     assert "main" in result.output
     assert "second" in result.output
@@ -403,12 +403,12 @@ def test_cli_vault_list_shows_provenance(
         cli,
         [
             "vault", "add", "zhang", str(vault_a),
-            "--import-from", "Zhang via USB drop",
+            "--import-from", "a colleague, via USB",
         ],
     )
     result = runner.invoke(cli, ["vault", "list"])
     assert result.exit_code == 0, result.output
-    assert "Zhang via USB drop" in result.output
+    assert "a colleague, via USB" in result.output
 
 
 def test_cli_vault_list_warns_when_no_active(
@@ -423,7 +423,7 @@ def test_cli_vault_list_warns_when_no_active(
     save_registry(reg)
 
     runner = CliRunner()
-    result = runner.invoke(cli, ["vault", "list"])
+    result = runner.invoke(cli, ["vault", "list", "--format", "table"])
     assert result.exit_code == 0, result.output
     assert "No active vault" in result.output
 
@@ -467,13 +467,13 @@ def test_cli_vault_info_with_provenance(
         cli,
         [
             "vault", "add", "zhang", str(vault_a),
-            "--import-from", "Zhang via USB drop",
+            "--import-from", "a colleague, via USB",
             "--import-at", "2026-01-15",
         ],
     )
     result = runner.invoke(cli, ["vault", "info", "zhang"])
     assert result.exit_code == 0, result.output
-    assert "Zhang via USB drop" in result.output
+    assert "a colleague, via USB" in result.output
     assert "2026-01-15" in result.output
     assert "Imported at:" in result.output
 

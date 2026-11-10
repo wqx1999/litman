@@ -16,6 +16,11 @@ from litman.core.search import search_notes
 
 console = Console()
 
+# Hits kept when --limit is not given: enough to answer "did I write about X",
+# small enough not to flood an agent's context on a large library. A stderr
+# note says when more matched.
+_DEFAULT_LIMIT = 20
+
 # Allowed --in stems. The search corpus is exactly the two authored markdown
 # files per paper (paper.pdf full text is `lit open`'s job; metadata is
 # `lit list`'s).
@@ -44,7 +49,8 @@ _IN_CHOICES = ("notes", "discussion")
     "--limit",
     type=click.IntRange(min=1),
     default=None,
-    help="Keep only the first N hits (bounded retrieval). Default: unbounded.",
+    help=f"Keep only the first N hits (bounded retrieval). Default: "
+    f"{_DEFAULT_LIMIT}; a note on stderr says when more matched.",
 )
 @library_option
 @vault_option
@@ -61,8 +67,9 @@ def search_cmd(
     Searches only the markdown you author per paper — NOT the PDF full text,
     NOT trashed papers, NOT the views/ link hubs. Each hit is one matched
     line. Default output is JSON ({id,file,line,snippet}) for agent bounded
-    retrieval; pass --format table for a human view. --limit N caps the hit
-    count for bounded retrieval.
+    retrieval; pass --format table for a human view. Only the first 20 hits
+    are shown unless --limit N says otherwise; a note on stderr gives the
+    total when more matched.
     """
     vault = find_vault(resolve_library_or_vault(library, vault_name))
 
@@ -75,8 +82,15 @@ def search_cmd(
         )
 
     hits = search_notes(vault, query, in_files=tuple(in_files))
-    if limit is not None:
-        hits = hits[:limit]
+    total = len(hits)
+    hits = hits[: limit if limit is not None else _DEFAULT_LIMIT]
+    if total > len(hits):
+        # stderr: --format json owns stdout.
+        Console(stderr=True).print(
+            f"[yellow]Showing the first {len(hits)} of {total} hits; pass "
+            f"--limit {total} to see them all.[/]",
+            soft_wrap=True,
+        )
 
     if output_format == "json":
         click.echo(json.dumps(hits, ensure_ascii=False))
@@ -86,7 +100,8 @@ def search_cmd(
         console.print(f"[dim]No matches for {query!r} in {', '.join(in_files)}.[/]")
         return
 
-    table = Table(title=f"Matches for {query!r} ({len(hits)})", show_lines=False)
+    shown = f"{len(hits)} of {total}" if total > len(hits) else f"{len(hits)}"
+    table = Table(title=f"Matches for {query!r} ({shown})", show_lines=False)
     table.add_column("id", style="cyan", no_wrap=True)
     table.add_column("file")
     table.add_column("line", justify="right")

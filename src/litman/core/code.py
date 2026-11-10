@@ -26,7 +26,7 @@ import re
 import shutil
 import subprocess
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Literal, cast
@@ -37,6 +37,7 @@ from ruamel.yaml.error import YAMLError
 from litman.core.atomic import op_is_decided, staged_write
 from litman.core.dates import now_iso
 from litman.core.document import list_papers, load_yaml_or_raise
+from litman.core.git import GitNotFoundError, output_tail, run_git
 from litman.core.locking import is_file_manager_dropping, rmtree
 from litman.core.undecodable import printable
 from litman.core.views import render_index
@@ -54,6 +55,24 @@ REPO_META_FILENAME = "repo-meta.yaml"
 NOTES_FILENAME = "notes.md"
 
 DEFAULT_CLONE_DEPTH = 1  # `git clone --depth 1`; `--depth 0` means "no shallow"
+
+#: The clone URL forms ``lit code add`` takes, and two-way sync fetches from.
+CLONE_URL_PREFIXES: tuple[str, ...] = (
+    "http://",
+    "https://",
+    "git@",
+    "ssh://",
+    "file://",
+)
+
+#: A commit id as git prints it: 40 hex digits (SHA-1) or 64 (SHA-256).
+_COMMIT_RE = re.compile(r"^[0-9a-f]{40}(?:[0-9a-f]{24})?$")
+
+#: Where a checkout keeps the commit litman last fetched by its id: a fetch by
+#: id leaves no remote branch naming it, and without this ref the commit would
+#: look like one of the user's that no remote has.
+FETCHED_REF = "refs/litman/fetched"
+_FETCHED_GLOB = "refs/litman/*"
 
 # Repo name shape: same chars as paper id (filesystem-safe, shell-friendly),
 # but starts with a letter/digit/underscore — leading hyphen would confuse
@@ -205,6 +224,8 @@ def clone_repo(
     url: str,
     target_path: Path,
     depth: int = DEFAULT_CLONE_DEPTH,
+    *,
+    progress: bool = False,
 ) -> None:
     """Run ``git clone`` into ``target_path``.
 
@@ -214,6 +235,7 @@ def clone_repo(
             an existing non-empty target; we surface the refusal as CodeError).
         depth: Shallow-clone depth. ``0`` (or negative) means "no shallow"
             (full history). Default ``1``.
+        progress: Show git's progress on the terminal as it clones.
 
     Raises:
         CodeError: git is not available, the URL fails to clone, or
@@ -224,31 +246,22 @@ def clone_repo(
             f"Clone target already exists: {target_path}. "
             "Remove it first or pick a different --name."
         )
-    cmd: list[str] = ["git", "clone"]
+    args: list[str] = ["clone"]
+    if progress:
+        args.append("--progress")
     if depth >= 1:
-        cmd += ["--depth", str(depth)]
+        args += ["--depth", str(depth)]
     # `--` terminates option parsing so a url beginning with `-` is treated as
     # the repository positional, not an injected git flag (review A5). `lit
     # code add` whitelists url prefixes, but restore_missing_repos clones from
     # the repo-meta.yaml upstream, which is NOT whitelisted — a cloud-sync
     # conflict copy could leave it starting with `-`.
-    cmd += ["--", url, str(target_path)]
-    try:
-        result = subprocess.run(
-            cmd,
-            check=False,
-            capture_output=True,
-            text=True,
-        )
-    except FileNotFoundError as e:
-        raise CodeError(
-            "`git` executable not found on PATH. Install git first."
-        ) from e
+    args += ["--", url, str(target_path)]
+    result = run_git(args, progress=progress)
     if result.returncode != 0:
-        stderr_tail = (result.stderr or "").strip().splitlines()[-5:]
         raise CodeError(
             f"git clone failed (exit {result.returncode}) for {url!r}.\n"
-            + "\n".join(stderr_tail)
+            + output_tail(result.stderr)
         )
 
 
@@ -266,18 +279,7 @@ def _extract_upstream_from_git_dir(repo_dir: Path) -> str | None:
     """
     if not (repo_dir / ".git").exists():
         return None
-    try:
-        result = subprocess.run(
-            ["git", "-C", str(repo_dir), "config", "--get", "remote.origin.url"],
-            check=False,
-            capture_output=True,
-            text=True,
-            errors="surrogateescape",
-        )
-    except FileNotFoundError as e:
-        raise CodeError(
-            "`git` executable not found on PATH. Install git first."
-        ) from e
+    result = run_git(["config", "--get", "remote.origin.url"], repo=repo_dir)
     if result.returncode != 0:
         return None
     url = result.stdout.strip()
@@ -296,38 +298,25 @@ def _init_git_repo_at(target_dir: Path, orig_path: Path) -> None:
     fresh machines, containers).
     """
 
-    def _run(args: list[str]) -> subprocess.CompletedProcess[str]:
-        return subprocess.run(
-            args,
-            check=False,
-            capture_output=True,
-            text=True,
-        )
-
-    try:
-        init = _run(["git", "-C", str(target_dir), "init", "-q"])
-    except FileNotFoundError as e:
-        raise CodeError(
-            "`git` executable not found on PATH. Install git first."
-        ) from e
+    init = run_git(["init", "-q"], repo=target_dir)
     if init.returncode != 0:
         raise CodeError(
             f"git init failed in {target_dir}: {(init.stderr or '').strip()}"
         )
 
-    add = _run(["git", "-C", str(target_dir), "add", "-A"])
+    add = run_git(["add", "-A"], repo=target_dir)
     if add.returncode != 0:
         raise CodeError(
             f"git add failed in {target_dir}: {(add.stderr or '').strip()}"
         )
 
-    commit = _run(
+    commit = run_git(
         [
-            "git", "-C", str(target_dir),
             "-c", "user.email=litman@localhost",
             "-c", "user.name=litman",
             "commit", "-q", "-m", f"import from {orig_path}",
-        ]
+        ],
+        repo=target_dir,
     )
     if commit.returncode != 0:
         raise CodeError(
@@ -494,12 +483,13 @@ def import_local_repo(
     _copy_source_tree(src_path, target_repo_root)
 
     name = target_repo_root.parent.name
+    upstream: str | None
     if is_git:
         upstream = _extract_upstream_from_git_dir(target_repo_root)
-        return make_repo_meta(name=name, upstream=upstream)
-
-    _init_git_repo_at(target_repo_root, orig_path=src_path)
-    return make_repo_meta(name=name, upstream=f"local:{src_path}")
+    else:
+        _init_git_repo_at(target_repo_root, orig_path=src_path)
+        upstream = f"local:{src_path}"
+    return make_repo_meta(name=name, upstream=upstream, head=read_head(target_repo_root))
 
 
 # ---------------------------------------------------------------------------
@@ -512,6 +502,7 @@ def make_repo_meta(
     upstream: str | None,
     papers: list[str] | None = None,
     now: str | None = None,
+    head: tuple[str, str | None] | None = None,
 ) -> dict[str, Any]:
     """Build the initial ``repo-meta.yaml`` dict.
 
@@ -523,12 +514,20 @@ def make_repo_meta(
     empty or absent upstream as "cannot restore" and reports it as failed.
     A byte of it that is not UTF-8 is kept as U+FFFD, since the note has to be
     YAML; ``restore_missing_repos`` then reports that clone as failed.
+
+    ``head`` is the checkout's ``(commit, branch)`` (:func:`read_head`). It is
+    recorded as ``commit`` and ``branch`` (``None`` when HEAD is detached),
+    which two-way ``lit sync`` brings the checkout on every machine to.
     """
     timestamp = now or now_iso()
-    return {
+    meta: dict[str, Any] = {
         # === identity (machine-maintained) ===
         "name": name,
         "upstream": printable(upstream) if upstream is not None else None,
+    }
+    if head is not None:
+        meta["commit"], meta["branch"] = head
+    meta.update({
         # === audit (machine-maintained) ===
         "created-at": timestamp,
         "updated-at": timestamp,
@@ -538,7 +537,8 @@ def make_repo_meta(
         "framework": None,
         "runs-on": None,
         "status": None,
-    }
+    })
+    return meta
 
 
 def _dump_yaml_to_string(data: dict[str, Any]) -> str:
@@ -987,11 +987,25 @@ def list_repos(vault: Path) -> list[dict[str, Any]]:
 # ---------------------------------------------------------------------------
 
 
-def git_pull(repo_path: Path, unshallow: bool = False) -> dict[str, Any]:
-    """Run ``git pull`` (and optionally ``--unshallow``) inside ``repo_path``.
+def git_pull(
+    repo_path: Path,
+    unshallow: bool = False,
+    *,
+    depth: int = DEFAULT_CLONE_DEPTH,
+    progress: bool = False,
+) -> dict[str, Any]:
+    """Run ``git pull --ff-only`` (and optionally ``--unshallow``) inside ``repo_path``.
 
     Returns a small status dict with ``before_sha`` / ``after_sha`` /
-    ``unshallow`` flag so the CLI can print a human-readable summary.
+    ``unshallow`` flag so the CLI can print a human-readable summary, and
+    ``head``: the checkout's ``(commit, branch)`` afterwards (``None`` when
+    git cannot tell).
+
+    A shallow clone that two-way sync brought to an older commit holds that
+    commit and its branch's tip as two pieces of history git cannot connect,
+    so ``--ff-only`` fails on it. When it does and the clone holds no work of
+    the user's, the branch is moved to its upstream branch's tip, fetched
+    ``depth`` deep: what the pull would have done.
 
     Raises:
         CodeError: ``repo_path`` is not a git checkout, or git fails.
@@ -1002,46 +1016,33 @@ def git_pull(repo_path: Path, unshallow: bool = False) -> dict[str, Any]:
             "Re-clone with `lit code add` or restore manually."
         )
 
-    def _run(args: list[str]) -> subprocess.CompletedProcess[str]:
-        return subprocess.run(
-            ["git", "-C", str(repo_path), *args],
-            check=False,
-            capture_output=True,
-            text=True,
-        )
-
-    try:
-        before = _run(["rev-parse", "HEAD"])
-    except FileNotFoundError as e:
-        raise CodeError("`git` executable not found on PATH.") from e
+    before = run_git(["rev-parse", "HEAD"], repo=repo_path)
     if before.returncode != 0:
         raise CodeError(
             f"git rev-parse failed in {repo_path}: {before.stderr.strip()}"
         )
     before_sha = before.stdout.strip()
+    show = ["--progress"] if progress else []
 
     did_unshallow = False
-    if unshallow:
-        # `--unshallow` is a no-op (with a non-zero exit) on already-full
-        # clones; tolerate that case so the user can re-run safely.
-        shallow_check = _run(["rev-parse", "--is-shallow-repository"])
-        is_shallow = shallow_check.stdout.strip() == "true"
-        if is_shallow:
-            r = _run(["fetch", "--unshallow"])
-            if r.returncode != 0:
-                raise CodeError(
-                    f"git fetch --unshallow failed: {r.stderr.strip()}"
-                )
-            did_unshallow = True
+    # `--unshallow` is a no-op (with a non-zero exit) on already-full clones;
+    # tolerate that case so the user can re-run safely.
+    if unshallow and _is_shallow(repo_path):
+        r = run_git(["fetch", *show, "--unshallow"], repo=repo_path, progress=progress)
+        if r.returncode != 0:
+            raise CodeError(f"git fetch --unshallow failed: {output_tail(r.stderr)}")
+        did_unshallow = True
 
-    pull = _run(["pull", "--ff-only"])
-    if pull.returncode != 0:
+    pull = run_git(["pull", *show, "--ff-only"], repo=repo_path, progress=progress)
+    if pull.returncode != 0 and not _follow_upstream_tip(
+        repo_path, depth=depth, progress=progress
+    ):
         raise CodeError(
-            f"git pull --ff-only failed in {repo_path}: {pull.stderr.strip()}"
+            f"git pull --ff-only failed in {repo_path}: {output_tail(pull.stderr)}"
         )
 
-    after = _run(["rev-parse", "HEAD"])
-    after_sha = after.stdout.strip() if after.returncode == 0 else before_sha
+    head = read_head(repo_path)
+    after_sha = head[0] if head is not None else before_sha
 
     return {
         "before_sha": before_sha,
@@ -1051,7 +1052,40 @@ def git_pull(repo_path: Path, unshallow: bool = False) -> dict[str, Any]:
         # the user passed --unshallow. Passing it to an already-full clone is a
         # no-op and must not bump updated-at or print "full history fetched".
         "unshallowed": did_unshallow,
+        "head": head,
     }
+
+
+def _follow_upstream_tip(repo: Path, *, depth: int, progress: bool) -> bool:
+    """Move a shallow clone's branch to its upstream branch's tip; whether it did.
+
+    For :func:`git_pull`, once ``--ff-only`` failed. Only a shallow clone on a
+    branch that follows a remote branch, holding no work of the user's, is
+    moved.
+    """
+    if not _is_shallow(repo):
+        return False
+    state = checkout_state(repo)
+    head = read_head(repo)
+    if state is None or state.has_work or head is None or head[1] is None:
+        return False
+    branch = head[1]
+    remote = _git_config(repo, f"branch.{branch}.remote")
+    merge = _git_config(repo, f"branch.{branch}.merge")
+    if not remote or remote == "." or not merge or not merge.startswith("refs/heads/"):
+        return False
+    tracking = f"refs/remotes/{remote}/{merge.removeprefix('refs/heads/')}"
+    fetch = ["fetch", "--no-tags"]
+    if progress:
+        fetch.append("--progress")
+    if depth >= 1:
+        fetch += ["--depth", str(depth)]
+    fetched = run_git(
+        [*fetch, remote, f"+{merge}:{tracking}"], repo=repo, progress=progress
+    )
+    if fetched.returncode != 0:
+        return False
+    return run_git(["checkout", "-q", "-B", branch, tracking], repo=repo).returncode == 0
 
 
 def bump_repo_updated_at(vault: Path, repo_name: str) -> None:
@@ -1071,6 +1105,47 @@ def bump_repo_updated_at(vault: Path, repo_name: str) -> None:
     rel = f"{CODES_DIRNAME}/{repo_name}/{REPO_META_FILENAME}"
     with staged_write(vault, op_id=f"code-update-{repo_name}") as stage:
         stage.write_text(rel, _dump_yaml_to_string(meta))
+
+
+def record_repo_heads(
+    vault: Path, heads: Mapping[str, tuple[str, str | None]], *, op_id: str
+) -> list[str]:
+    """Write each repo's ``(commit, branch)`` into its ``repo-meta.yaml``, in one staged write.
+
+    A file that already records that commit and branch is left as it is; one
+    that changes gets ``updated-at`` moved as well. Returns the repos written.
+
+    Raises:
+        CodeError: a repo has no ``repo-meta.yaml``, or it holds no mapping.
+        CorruptMetadataError: one cannot be read or parsed.
+    """
+    writes: dict[str, str] = {}
+    for name, (commit, branch) in sorted(heads.items()):
+        meta_file = vault / CODES_DIRNAME / name / REPO_META_FILENAME
+        if not meta_file.is_file():
+            raise CodeError(f"No repo-meta.yaml at {meta_file}.")
+        meta = load_yaml_or_raise(meta_file, _yaml)
+        if not isinstance(meta, dict):
+            raise CodeError(f"{meta_file} does not contain a YAML mapping.")
+        if meta.get("commit") == commit and "branch" in meta and meta["branch"] == branch:
+            continue
+        _set_after(meta, "commit", commit, after="upstream")
+        _set_after(meta, "branch", branch, after="commit")
+        meta["updated-at"] = now_iso()
+        writes[f"{CODES_DIRNAME}/{name}/{REPO_META_FILENAME}"] = _dump_yaml_to_string(meta)
+    if writes:
+        with staged_write(vault, op_id=op_id) as stage:
+            for rel, text in writes.items():
+                stage.write_text(rel, text)
+    return [rel.split("/")[1] for rel in writes]
+
+
+def _set_after(meta: Any, key: str, value: object, *, after: str) -> None:
+    """Set ``meta[key]``; a key it lacks goes right after ``after``, when it has that."""
+    if key in meta or after not in meta or not hasattr(meta, "insert"):
+        meta[key] = value
+        return
+    meta.insert(list(meta).index(after) + 1, key, value)
 
 
 # ---------------------------------------------------------------------------
@@ -1188,13 +1263,20 @@ def find_orphan_code_refs(vault: Path) -> list[tuple[str, str]]:
 
 
 def fetch_repo(
-    upstream: str, target_path: Path, depth: int = DEFAULT_CLONE_DEPTH
+    upstream: str,
+    target_path: Path,
+    depth: int = DEFAULT_CLONE_DEPTH,
+    *,
+    commit: str | None = None,
+    branch: str | None = None,
+    progress: bool = False,
 ) -> None:
     """Re-create a ``repo/`` checkout from its recorded ``upstream``.
 
-    ``git clone`` it, or — for a folder that was imported without git and so
-    recorded as ``local:<path>`` — copy that folder again, as ``lit code add``
-    did the first time.
+    Fetch the recorded ``commit`` (on ``branch``) when there is one
+    (:func:`restore_at_commit`), else ``git clone`` it; or, for a folder that
+    was imported without git and so recorded as ``local:<path>``, copy that
+    folder again, as ``lit code add`` did the first time.
 
     Raises:
         CodeError: the clone or the copy failed, or ``target_path`` exists.
@@ -1202,7 +1284,12 @@ def fetch_repo(
     if upstream.startswith("local:"):
         import_local_repo(Path(upstream.removeprefix("local:")), target_path)
         return
-    clone_repo(upstream, target_path, depth=depth)
+    if commit is not None:
+        restore_at_commit(
+            upstream, target_path, commit, branch, depth=depth, progress=progress
+        )
+        return
+    clone_repo(upstream, target_path, depth=depth, progress=progress)
 
 
 def can_fetch_again(upstream: str) -> bool:
@@ -1227,18 +1314,6 @@ RepoState = Literal["clean", "changed", "unchecked"]
 _CHANGES_TIMEOUT_S = 15.0
 # Who commits the folder _init_git_repo_at imports without git.
 _IMPORT_IDENTITY = "litman@localhost"
-# Variables that would point `git -C <dir>` at another repository.
-_GIT_LOCATION_VARS = frozenset(
-    {
-        "GIT_DIR",
-        "GIT_WORK_TREE",
-        "GIT_INDEX_FILE",
-        "GIT_OBJECT_DIRECTORY",
-        "GIT_ALTERNATE_OBJECT_DIRECTORIES",
-        "GIT_COMMON_DIR",
-        "GIT_NAMESPACE",
-    }
-)
 
 
 def _git_read(repo_dir: Path, *args: str) -> subprocess.CompletedProcess[str]:
@@ -1247,16 +1322,8 @@ def _git_read(repo_dir: Path, *args: str) -> subprocess.CompletedProcess[str]:
     ``GIT_OPTIONAL_LOCKS=0`` keeps ``git status`` from refreshing (and
     locking) the index: the check writes nothing.
     """
-    env = {k: v for k, v in os.environ.items() if k.upper() not in _GIT_LOCATION_VARS}
-    env["GIT_OPTIONAL_LOCKS"] = "0"
-    return subprocess.run(
-        ["git", "-C", str(repo_dir), *args],
-        check=False,
-        capture_output=True,
-        text=True,
-        errors="surrogateescape",
-        env=env,
-        timeout=_CHANGES_TIMEOUT_S,
+    return run_git(
+        args, repo=repo_dir, timeout=_CHANGES_TIMEOUT_S, env={"GIT_OPTIONAL_LOCKS": "0"}
     )
 
 
@@ -1307,9 +1374,11 @@ def repo_changes(repo_root: Path) -> tuple[RepoState, str]:
         # Commits on no remote, by committer: --branches as well as HEAD (a
         # commit on another local branch). The one litman makes importing a
         # folder without git is not the user's — a re-import makes it again —
-        # unless they amended it, which makes them its committer.
+        # unless they amended it, which makes them its committer. One litman
+        # fetched by its id (FETCHED_REF) is on a remote.
         log = _git_read(
-            repo_dir, "log", "--format=%ce", "HEAD", "--branches", "--not", "--remotes"
+            repo_dir, "log", "--format=%ce", "HEAD", "--branches",
+            "--not", "--remotes", f"--glob={_FETCHED_GLOB}",
         )
         if log.returncode != 0:
             return "unchecked", "git failed"
@@ -1322,7 +1391,7 @@ def repo_changes(repo_root: Path) -> tuple[RepoState, str]:
         if status.returncode != 0:
             return "unchecked", "git failed"
         return ("changed", "") if _has_own_files(status.stdout) else ("clean", "")
-    except FileNotFoundError:
+    except GitNotFoundError:
         return "unchecked", "git not found"
     except subprocess.TimeoutExpired:
         return "unchecked", "git took too long"
@@ -1330,10 +1399,338 @@ def repo_changes(repo_root: Path) -> tuple[RepoState, str]:
         return "unchecked", "git failed"
 
 
+# ---------------------------------------------------------------------------
+# Checkouts at a recorded commit (two-way `lit sync`, restore)
+# ---------------------------------------------------------------------------
+
+#: What git refuses in a branch name, or what would read as an option.
+_BAD_BRANCH_RE = re.compile(
+    r"[\x00-\x20\x7f~^:?*\[\\]|\.\.|@\{|//|^-|^/|/$|\.$|\.lock(?:/|$)|(?:^|/)\."
+)
+
+
+def valid_commit(value: object) -> str | None:
+    """``value`` when it is a full commit id, else ``None``."""
+    return value if isinstance(value, str) and _COMMIT_RE.fullmatch(value) else None
+
+
+def valid_branch(value: object) -> str | None:
+    """``value`` when it is a branch name git takes, else ``None``.
+
+    ``repo-meta.yaml`` comes from other machines, so a name is checked before
+    it reaches a git command line.
+    """
+    if not isinstance(value, str) or value in ("", "HEAD", "@"):
+        return None
+    return None if _BAD_BRANCH_RE.search(value) else value
+
+
+class GitStepError(CodeError):
+    """A git step failed. ``tail`` holds git's last lines of output."""
+
+    def __init__(self, step: str, result: subprocess.CompletedProcess[str]) -> None:
+        self.step = step
+        self.tail = output_tail(result.stderr)
+        lines = self.tail.splitlines()
+        reason = next(
+            (line for line in lines if line.startswith(("fatal:", "error:"))),
+            lines[-1] if lines else f"exit {result.returncode}",
+        )
+        super().__init__(f"git could not {step}: {reason}")
+
+
+def _git_step(step: str, result: subprocess.CompletedProcess[str]) -> None:
+    if result.returncode != 0:
+        raise GitStepError(step, result)
+
+
+def _git_config(repo: Path, key: str) -> str | None:
+    try:
+        result = _git_read(repo, "config", "--get", key)
+    except (GitNotFoundError, subprocess.TimeoutExpired, OSError):
+        return None
+    value = result.stdout.strip()
+    return value if result.returncode == 0 and value else None
+
+
+def _is_shallow(repo: Path) -> bool:
+    try:
+        result = _git_read(repo, "rev-parse", "--is-shallow-repository")
+    except (GitNotFoundError, subprocess.TimeoutExpired, OSError):
+        return False
+    return result.stdout.strip() == "true"
+
+
+def read_head(repo_dir: Path) -> tuple[str, str | None] | None:
+    """The commit ``repo_dir``'s checkout is at, and its branch (``None`` when detached).
+
+    ``None`` when ``repo_dir`` has no ``.git`` of its own (git would answer for
+    an enclosing repository, a vault kept in git), nothing is checked out yet,
+    or git is missing, fails or takes too long.
+    """
+    if not os.path.lexists(repo_dir / ".git"):
+        return None
+    try:
+        rev = _git_read(repo_dir, "rev-parse", "--verify", "--quiet", "HEAD^{commit}")
+        if rev.returncode != 0:
+            return None
+        ref = _git_read(repo_dir, "symbolic-ref", "--quiet", "--short", "HEAD")
+    except (GitNotFoundError, subprocess.TimeoutExpired, OSError):
+        return None
+    commit = valid_commit(rev.stdout.strip())
+    if commit is None:
+        return None
+    branch = ref.stdout.strip() if ref.returncode == 0 else ""
+    return commit, branch or None
+
+
+@dataclass(frozen=True)
+class CheckoutState:
+    """What a checkout holds that no other machine can fetch."""
+
+    #: A tracked file changed, staged or deleted.
+    changed: bool
+    #: A file git does not track (what a file manager leaves aside).
+    untracked: bool
+    #: How many commits on HEAD or a local branch no remote has.
+    unpushed: int
+
+    @property
+    def has_work(self) -> bool:
+        """Whether moving the checkout to another commit could lose the user's work.
+
+        Untracked files do not count: they stay, and git refuses a move that
+        would overwrite one.
+        """
+        return self.changed or self.unpushed > 0
+
+
+def checkout_state(repo_dir: Path) -> CheckoutState | None:
+    """What ``repo_dir``'s checkout holds of the user's own; ``None`` when git cannot tell.
+
+    A commit litman fetched by its id (:data:`FETCHED_REF`) is on a remote,
+    and so is one at the edge of a shallow clone's history: only a fetch
+    makes one. Without the second rule, a commit the user fetched by its id
+    and checked out would look like theirs.
+    """
+    try:
+        status = _git_read(repo_dir, "status", "--porcelain", "-z", "--untracked-files=all")
+        if status.returncode != 0:
+            return None
+        log = _git_read(
+            repo_dir, "log", "--format=%H", "HEAD", "--branches",
+            "--not", "--remotes", f"--glob={_FETCHED_GLOB}",
+        )
+        if log.returncode != 0:
+            return None
+        local = set(log.stdout.split())
+        if local:
+            local -= _shallow_edge(repo_dir)
+    except (GitNotFoundError, subprocess.TimeoutExpired, OSError):
+        return None
+    changed = untracked = False
+    for entry in status.stdout.split("\0"):
+        if not entry:
+            continue
+        code, rel = entry[:2], entry[3:]
+        if code != "??":
+            changed = True
+        elif not is_file_manager_dropping(rel.rsplit("/", 1)[-1]):
+            untracked = True
+    return CheckoutState(changed=changed, untracked=untracked, unpushed=len(local))
+
+
+def _shallow_edge(repo: Path) -> set[str]:
+    """The commits at the edge of a shallow clone's history (its ``shallow`` file)."""
+    where = _git_read(repo, "rev-parse", "--git-path", "shallow")
+    if where.returncode != 0:
+        return set()
+    path = Path(where.stdout.strip())
+    try:
+        return set((path if path.is_absolute() else repo / path).read_text("ascii").split())
+    except (OSError, UnicodeDecodeError):
+        return set()
+
+
+def _fetch_commit(repo: Path, commit: str, *, depth: int | None, progress: bool) -> None:
+    """Fetch ``commit`` from ``origin`` into :data:`FETCHED_REF`, ``depth`` deep."""
+    args = ["fetch", "--no-tags"]
+    if progress:
+        args.append("--progress")
+    if depth is not None:
+        args += ["--depth", str(depth)]
+    args += ["origin", f"+{commit}:{FETCHED_REF}"]
+    _git_step(f"fetch commit {commit[:7]}", run_git(args, repo=repo, progress=progress))
+
+
+def _checkout_commit(repo: Path, commit: str, branch: str | None) -> None:
+    """Check out ``commit``: on ``branch``, which follows ``origin``'s, or detached."""
+    if branch is None:
+        _git_step(
+            f"check out {commit[:7]}",
+            run_git(["checkout", "-q", "--detach", commit], repo=repo),
+        )
+        return
+    _git_step(
+        f"check out {commit[:7]} on {branch}",
+        run_git(["checkout", "-q", "-B", branch, commit], repo=repo),
+    )
+    # As after a clone, the branch follows origin's branch of that name, so
+    # `git pull` and `lit code update` work on it. One that already follows a
+    # branch keeps it.
+    if _git_config(repo, f"branch.{branch}.merge"):
+        return
+    tracking = f"refs/remotes/origin/{branch}"
+    if run_git(["rev-parse", "--verify", "--quiet", tracking], repo=repo).returncode != 0:
+        run_git(["update-ref", tracking, commit], repo=repo)
+    run_git(["branch", "-q", f"--set-upstream-to=origin/{branch}", branch], repo=repo)
+
+
+def restore_at_commit(
+    upstream: str,
+    target_path: Path,
+    commit: str,
+    branch: str | None,
+    *,
+    depth: int = DEFAULT_CLONE_DEPTH,
+    progress: bool = False,
+) -> None:
+    """Make ``target_path`` a checkout of ``upstream`` at ``commit``, on ``branch``.
+
+    Only that commit is fetched, ``depth`` deep (``0``: with its whole
+    history). A clone of the branch tip followed by a fetch of an older commit
+    would hold two pieces of history git cannot connect, and a later ``git
+    pull --ff-only`` would fail. ``branch`` follows ``origin``'s branch of that
+    name, as after a clone; ``None`` leaves HEAD detached at ``commit``.
+
+    Raises:
+        CodeError: ``target_path`` exists, or git is missing or failed
+            (:class:`GitStepError`). A half-made checkout is removed.
+    """
+    if os.path.lexists(target_path):
+        raise CodeError(
+            f"Clone target already exists: {target_path}. "
+            "Remove it first or pick a different --name."
+        )
+    target_path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        _git_step("make the checkout", run_git(["init", "-q", "--", str(target_path)]))
+        follows = ["-t", branch] if branch is not None else []
+        _git_step(
+            "add its upstream",
+            run_git(["remote", "add", *follows, "--", "origin", upstream], repo=target_path),
+        )
+        _fetch_commit(
+            target_path, commit, depth=depth if depth >= 1 else None, progress=progress
+        )
+        _checkout_commit(target_path, commit, branch)
+    except BaseException:
+        rmtree(target_path, ignore_errors=True)
+        raise
+
+
+def move_to_commit(
+    repo_dir: Path,
+    commit: str,
+    branch: str | None,
+    *,
+    depth: int = DEFAULT_CLONE_DEPTH,
+    progress: bool = False,
+) -> None:
+    """Bring the checkout in ``repo_dir`` to ``commit``, on ``branch`` (or detached).
+
+    For a checkout holding no work of the user's (:func:`checkout_state`). The
+    commit is fetched from ``origin``: ``depth`` deep into a shallow clone,
+    which stays shallow, and whole into a full one. Untracked files stay; git
+    refuses the move when the commit would overwrite one.
+
+    Raises:
+        CodeError: git is missing or failed (:class:`GitStepError`).
+    """
+    deep = depth if depth >= 1 and _is_shallow(repo_dir) else None
+    _fetch_commit(repo_dir, commit, depth=deep, progress=progress)
+    _checkout_commit(repo_dir, commit, branch)
+
+
+#: What a ``codes/<name>/`` folder holds (:func:`code_folder_kind`).
+CodeFolderKind = Literal["repo", "left-behind", "empty", "broken"]
+
+
+def code_folder_kind(folder: Path) -> CodeFolderKind:
+    """What a ``codes/<name>/`` folder holds, as the checks and two-way sync see it.
+
+    * ``repo``: it has a ``repo-meta.yaml``.
+    * ``left-behind``: only a ``repo/`` checkout with files in it. The repo
+      was removed from the library (two-way sync brings a removal made on
+      another machine), and its checkout, which sync never touches, stayed.
+    * ``empty``: no files, only empty folders and what a file manager leaves.
+      While a machine keeps a left-behind checkout, two-way sync brings its
+      empty folder to every other machine.
+    * ``broken``: anything else.
+    """
+    if (folder / REPO_META_FILENAME).is_file():
+        return "repo"
+    try:
+        names = [n for n in os.listdir(folder) if not is_file_manager_dropping(n)]
+        repo = folder / REPO_DIRNAME
+        if (
+            names == [REPO_DIRNAME]
+            and repo.is_dir()
+            and not os.path.islink(repo)
+            and _holds_files(repo)
+        ):
+            return "left-behind"
+        return "broken" if _holds_files(folder) else "empty"
+    except OSError:
+        return "broken"
+
+
+def _holds_files(top: Path) -> bool:
+    """Whether ``top`` holds a file or a link, other than what a file manager leaves."""
+
+    def fail(err: OSError) -> None:
+        raise err
+
+    for dirpath, dirnames, filenames in os.walk(top, onerror=fail):
+        if any(not is_file_manager_dropping(n) for n in filenames):
+            return True
+        if any(os.path.islink(os.path.join(dirpath, d)) for d in dirnames):
+            return True
+    return False
+
+
+def is_clone_url(value: str) -> bool:
+    """Whether ``value`` is a clone URL in one of the forms of :data:`CLONE_URL_PREFIXES`."""
+    return value.startswith(CLONE_URL_PREFIXES)
+
+
+def left_behind_message(name: str) -> tuple[str, str]:
+    """What a left-behind checkout (:func:`code_folder_kind`) is, and the way out.
+
+    One wording for the ``lit sync`` summary and ``lit health-check``.
+    """
+    return (
+        f"codes/{name}/repo/ stays on this machine: {name} was removed from the library",
+        "Move that folder out of the library, or delete it.",
+    )
+
+
+def remove_empty_subfolders(folder: Path) -> None:
+    """Remove the empty folders inside ``folder``, deepest first; ``folder`` stays."""
+    for dirpath, _dirnames, _filenames in os.walk(folder, topdown=False):
+        if Path(dirpath) != folder:
+            try:
+                os.rmdir(dirpath)
+            except OSError:
+                pass
+
+
 def restore_missing_repos(
     vault: Path,
     depth: int = DEFAULT_CLONE_DEPTH,
     dry_run: bool = False,
+    *,
+    progress: bool = False,
 ) -> RestoreReport:
     """Re-clone every ``codes/<name>/`` whose ``repo/`` checkout is missing.
 
@@ -1341,7 +1738,7 @@ def restore_missing_repos(
     ``codes/<name>/repo-meta.yaml`` but excludes the bulky ``repo/`` git
     checkouts (recommended pattern, see design doc §5.3 / §14.5), this
     re-creates each ``repo/`` from the ``upstream`` URL recorded in its
-    ``repo-meta.yaml``.
+    ``repo-meta.yaml``, at the recorded ``commit`` when there is one.
 
     Failures are isolated per repo: one clone failure (network, auth, bad
     URL, missing ``upstream``) does not abort the loop. The returned
@@ -1400,7 +1797,14 @@ def restore_missing_repos(
             continue
 
         try:
-            fetch_repo(upstream, repo_dir, depth=depth)
+            fetch_repo(
+                upstream,
+                repo_dir,
+                depth=depth,
+                commit=valid_commit(meta.get("commit")),
+                branch=valid_branch(meta.get("branch")),
+                progress=progress,
+            )
         except CodeError as e:
             first_line = str(e).splitlines()[0] if str(e) else "git clone failed"
             items.append(

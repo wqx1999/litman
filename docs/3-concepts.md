@@ -169,10 +169,10 @@ paper is linked to.
 | `priority-<project>` | string enum | `A`, `B`, `C` — how much the paper matters to that project. Written by `lit link --project <P> --priority A`, or later `lit modify --set priority-<P>=A`. Absent means linked but not graded yet. |
 
 ```yaml
-relevance-pepcodec: "Direct baseline — section 3.2 reuses the encoder block."
-priority-pepcodec: A
-relevance-pepforge: "Cited only as motivation in the introduction."
-priority-pepforge: C
+relevance-my-project: "Direct baseline; our model reuses its encoder block."
+priority-my-project: A
+relevance-side-project: "Cited only as motivation in the introduction."
+priority-side-project: C
 ```
 
 The project name appears verbatim in the field name, so each project carries
@@ -256,7 +256,7 @@ last-revisited: "2026-04-18"
 
 # Classification
 projects:
-  - PepCodec
+  - MyProject
 topics:
   - transformer
   - attention
@@ -279,7 +279,7 @@ code-clones:
   - transformer-pytorch
 
 # Project relevance (dynamic)
-relevance-PepCodec: "Foundational architecture; encoder block reused in section 3.2."
+relevance-MyProject: "Foundational architecture; our model reuses its encoder block."
 ```
 
 #### Adding a new field
@@ -307,8 +307,10 @@ from them, so there is no rebuild to run afterwards.
 |---|---|---|---|
 | `name` | string | machine | The `codes/<name>/` directory name. |
 | `upstream` | string or null | machine | Clone URL, `local:<path>` for an imported directory, or `null` when nothing is fetchable. `lit code restore-all` clones from it. |
+| `commit` | string | machine | The commit the checkout is at, as git writes it (40 hex digits). Written by `lit code add`, `lit code update` and `lit sync`; two-way `lit sync` brings every machine's checkout to it. Missing in files written before it existed. |
+| `branch` | string or null | machine | The checkout's branch, or `null` when HEAD is detached. Written with `commit`. |
 | `created-at` | string | machine | ISO 8601, set once at `lit code add`. |
-| `updated-at` | string | machine | Refreshed on bind, unbind, and `lit code update`. |
+| `updated-at` | string | machine | Refreshed on bind, unbind, `lit code update`, and when `commit` or `branch` changes. |
 | `papers` | list[string] | machine | Back-reference: the paper ids that list this repo under `code-clones`. The N side of the 1:N binding. |
 | `framework` | string or null | you (hand-edit) | Free annotation (e.g. `pytorch`). |
 | `runs-on` | string or null | you (hand-edit) | Free annotation (e.g. `cuda 12`). |
@@ -371,7 +373,7 @@ Seven dictionaries in two classes.
 
 | Dictionary | Drives field | Managed by | Typical values |
 |---|---|---|---|
-| `projects` | `projects` | `lit project {add,rename,set-path,rm,list}` | `PepForge`, `PepCodec` |
+| `projects` | `projects` | `lit project {add,rename,set-path,rm,list}` | `MyProject`, `SideProject` |
 | `topics` | `topics` | `lit taxonomy {add,rename,merge,rm}` | `transformer`, `peptide-design` |
 | `methods` | `methods` | `lit taxonomy {add,rename,merge,rm}` | `GAN`, `diffusion`, `cell-free` |
 | `data` | `data` | `lit taxonomy {add,rename,merge,rm}` | `UniProt`, `APD3`, `PDB` |
@@ -402,7 +404,7 @@ The parser accepts any non-empty string, but these conventions keep the
 vocabulary scannable and metadata grep-friendly:
 
 1. **kebab-case, lowercase** (`peptide-design`). Project names are the one
-   exception and may use mixed case (`PepCodec`) to match a real directory.
+   exception and may use mixed case (`MyProject`) to match a real directory.
 2. **No leading punctuation, whitespace, or slashes.**
 3. **ASCII only.**
 4. **Singular** (`transformer`, not `transformers`).
@@ -487,17 +489,22 @@ view with `lit config show`.
 | `view_definitions` | list[string] | `["by-project", "by-topic", "by-method", "by-status"]` | Nothing — legacy key, parsed but never read; no longer written into new libraries. The hub set `lit refresh-views` builds is fixed in code. |
 | `unique_keys` | list[string] | `["doi", "arxiv-id"]` | Nothing — legacy key, parsed but never read; no longer written into new libraries. `lit add`'s DOI duplicate precheck is fixed in code. |
 | `default_clone_depth` | integer ≥ 0 | `1` | `lit code add`, `lit code restore-all`. `0` means full history. |
-| `codes_ignore_patterns` | list[string] | `["repo/"]` | `lit sync push`. Glob patterns under `codes/` that backup tools exclude (keeps bulky checkouts out of the cloud; rebuild with `lit code restore-all`). |
+| `codes_ignore_patterns` | list[string] | `["repo/"]` | `lit sync push` / `pull`. Glob patterns under `codes/` that backup tools exclude (keeps bulky checkouts out of the cloud; rebuild with `lit code restore-all`). Two-way `lit sync` never carries `codes/*/repo/`. |
 | `projects` | dict[string, string] | `{}` | `lit link`, `lit unlink`, `lit refresh-views`. Project name to directory path. Must be populated (via `lit project add`) before `lit link`. |
-| `sync` | object or null | `null` | `lit sync`. `null` means sync is not configured. Populated by `lit sync setup`. |
+| `sync` | object or null | `null` | `lit sync`. `null` means sync is not configured. Populated by `lit sync setup`, removed by `lit sync disconnect`. |
 
 The nested `sync` object:
 
 | Field | Type | Default | Notes |
 |---|---|---|---|
 | `remote` | string (required) | — | rclone remote name, must match one in `rclone listremotes`. |
-| `path` | string | `""` | Path inside the remote. Empty syncs to the remote root. |
-| `exclude_repos` | boolean | `false` | When `true`, `codes/*/repo/` checkouts are excluded. |
+| `path` | string | `""` | Path inside the remote. Empty means the remote's top level, which `push` and `pull` accept and two-way `lit sync` refuses. |
+| `exclude_repos` | boolean | `false` | When `true`, `lit sync push` / `pull` leave out `codes/*/repo/` checkouts. |
+
+Two-way `lit sync` never carries `lit-config.yaml`: each machine keeps its own,
+runs `lit sync setup` itself (its rclone remote may have another name, as long
+as `path` names the same cloud folder) and sets its own project folders with
+`lit project set-path`.
 
 Three things are deliberately absent from the schema: (1) LLM API keys,
 endpoints, or models (the agent manages its own auth and litman never makes an

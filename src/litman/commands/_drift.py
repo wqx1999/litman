@@ -46,8 +46,7 @@ because that would train a lazy skip reflex into permanent drift (see
 
 History: registry drift used to be a single batched ``Remove ...? [Y/n]``
 defaulting to **Y**, and the project prompt deliberately offered no removal at
-all. Both were unified into the three-answer shape above (wangq, 2026-08-08 —
-see ``dev_docs/todo/archive/task-drift-prompt-answers.md``). ADR-014's rule
+all. Both were unified into the three-answer shape above. ADR-014's rule
 "destruction is never the default" still holds: blank/Enter skips in both.
 """
 
@@ -445,7 +444,7 @@ def check_and_prompt_project_drift(
       remedies, zero mutation.
 
     Removal used to be deliberately absent here. It was added when both prompts
-    were unified (wangq, 2026-08-08); Enter still never destroys, which is the
+    were unified; Enter still never destroys, which is the
     part ADR-014 actually fixes.
 
     Args:

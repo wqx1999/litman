@@ -22,9 +22,14 @@ import shutil
 import threading
 import time
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, Request
+
+from litman.server.errors import api_error
 
 router = APIRouter(prefix="/api")
+
+#: The page's code for an install this server cannot update by itself.
+_REFUSED = "update-refused"
 
 #: Grace period between answering 202 and asking uvicorn to exit — long enough
 #: for the response (and the SPA's overlay paint) to get out of the door.
@@ -66,26 +71,25 @@ def start_self_update(request: Request) -> dict[str, object]:
     from litman.core import launcher_stubs, self_update_helper
 
     if _is_editable_install():
-        raise HTTPException(status_code=409, detail=_EDITABLE_DETAIL)
+        raise api_error(409, _EDITABLE_DETAIL, _REFUSED)
     installer = _detect_installer()
     if installer is None:
-        raise HTTPException(status_code=409, detail=_NO_INSTALLER_DETAIL)
+        raise api_error(409, _NO_INSTALLER_DETAIL, _REFUSED)
 
     # Ahead of the session check: a source the installer cannot upgrade past is
     # the more specific reason, and refusing here keeps the window open — the
     # spawn below would close it for an upgrade that was never going to land.
     origin = _install_origin()
     if origin is not None:
-        raise HTTPException(
-            status_code=409,
-            detail=_NON_RELEASE_DETAIL.format(
-                origin=origin, command=_REINSTALL_CMDS[installer]
-            ),
+        raise api_error(
+            409,
+            _NON_RELEASE_DETAIL.format(origin=origin, command=_REINSTALL_CMDS[installer]),
+            _REFUSED,
         )
 
     relaunch = getattr(request.app.state, "self_update_relaunch", None)
     if not relaunch:
-        raise HTTPException(status_code=409, detail=_NO_SESSION_DETAIL)
+        raise api_error(409, _NO_SESSION_DETAIL, _REFUSED)
     port = int(getattr(request.app.state, "self_update_port", 0))
 
     # The helper runs in a detached process whose PATH is whatever the server
@@ -105,6 +109,12 @@ def start_self_update(request: Request) -> dict[str, object]:
         relaunch_cmd=list(relaunch),
         stub_paths=launcher_stubs.installed_stubs(),
     )
+
+    # The helper waits for this process to end: no sync before exit, which
+    # could hold it for a minute. The relaunched GUI syncs on its start.
+    scheduler = getattr(request.app.state, "sync_scheduler", None)
+    if scheduler is not None:
+        scheduler.self_update_pending = True
 
     # Bow out AFTER the response is flushed. The window watcher's presence
     # gate may beat us to it (the SPA closes its window) — both paths set the

@@ -170,6 +170,9 @@ export interface VaultsPayload {
    * name): the frontend keys the welcome page off this, not `active`. */
   served: string | null
   vaults: VaultEntry[]
+  /** The name the New-library dialogs offer: the default, or the first free
+   * `<default>_<n>` once that is taken. Absent from an older server. */
+  suggestedName?: string
 }
 
 /** A center-pane tab: a paper PDF or one of its markdown docs. */
@@ -180,8 +183,6 @@ export interface Tab {
   key: string
   kind: TabKind
   paperId: string
-  /** Display label (paper id + a kind suffix). */
-  label: string
   /** True for a tab opened from the trash view: PDF/md render read-only and the
    * tab carries a "Trash" badge. Absent on normal library tabs. */
   trash?: boolean
@@ -212,7 +213,8 @@ export interface HealthIssue {
 }
 
 /** One entry in the in-memory session activity log (the PyMOL-style history that
- * `notify` feeds). `ts` is `Date.now()` ms (rendered as local HH:MM:SS); `variant`
+ * `notify` feeds). `ts` is `Date.now()` ms when this window did or noticed the
+ * thing, never a file's own time (rendered as local HH:MM:SS); `variant`
  * picks the glyph. Never persisted — a page refresh clears the buffer (AC4). */
 export interface ActivityLogEntry {
   ts: number
@@ -232,4 +234,96 @@ export interface RestoreResult {
   projectsRebuilt: string[]
   missingRepos: Record<string, string>
   deadEdgesDropped: string[]
+}
+
+/** What the GUI's auto sync is doing (GET /api/sync/status, also riding on the
+ * vault-version poll as `sync`). `not-configured` never reaches the page: the
+ * poll sends `null` for a library without `sync:`, and the mark is not drawn. */
+export type SyncState =
+  | 'idle'
+  | 'running'
+  | 'ok'
+  | 'conflicts'
+  | 'error'
+  | 'offline'
+  | 'not-configured'
+  | 'not-initialised'
+
+/** A file both machines changed: whose copy was kept, where the other went. */
+export interface SyncConflictRow {
+  path: string
+  kept: 'local' | 'cloud'
+  backup: string
+}
+
+/** A folder deleted on one machine and changed on the other: the deletion won. */
+export interface SyncDeletedFolderRow {
+  folder: string
+  deletedHere: boolean
+  backup: string
+}
+
+/** A code repo that did not follow the library on this machine. `kind`:
+ * `not-restored` (not at the commit the library records), `left-behind`
+ * (removed from the library, its folder kept on this machine) or `failed`
+ * (the repo step itself failed; `name` is empty). The page words its row by
+ * `kind` alone: `what` and `wayOut` are the server's sentences for
+ * `lit sync status`. */
+export interface SyncRepoRow {
+  name: string
+  kind: 'not-restored' | 'left-behind' | 'failed'
+  what: string
+  wayOut: string
+}
+
+/** What one sync, or one stop, has to tell the page once (keyed by `seq`). */
+export interface SyncNotice {
+  kind: 'synced' | 'stopped'
+  conflicts?: SyncConflictRow[]
+  deletedFolders?: SyncDeletedFolderRow[]
+  reposNotRestored?: SyncRepoRow[]
+  /** `stopped`: why — `choice`, `safety-stop`, `auth`, ... */
+  reason?: string
+  message?: string
+}
+
+export interface SyncStatus {
+  state: SyncState
+  /** The rclone target, `remote:path`. */
+  remote: string | null
+  /** ISO times. */
+  lastOkAt: string | null
+  nextTryAt: string | null
+  runningSince: string | null
+  /** Why the state is what it is: `busy`, `offline`, `rclone`, `config`, or a
+   * stop's reason (`choice`, `safety-stop`, `auth`). */
+  reason: string | null
+  /** The server's own words (rclone's last line when offline); the page does
+   * not show them, `lit sync status` does. */
+  message: string | null
+  /** Bumped by every finished sync and every stop: the page tells each once. */
+  seq: number
+  notice: SyncNotice | null
+  /** While another sync holds the library's lock (`reason: 'busy'`): who
+   * (`lit sync`, `lit gui`) and since when (ISO). */
+  holder?: { by: string | null; since: string | null } | null
+  /** How many code repos the last sync found with changes only on this
+   * machine (uncommitted, or commits no remote has), each counted once and
+   * none that `notice` already names as not synced. Only the popover's line
+   * counts them: no toast, no log row. */
+  reposWithWork?: number
+}
+
+/** A notes / discussion file as read: its text and the version it was read at. */
+export interface MdFile {
+  text: string
+  /** sha256 of the file's bytes; sent back with a save as `base`. */
+  version: string | null
+}
+
+/** What a save answers. `replaced` is there when the file had changed since
+ * the page read it: the save won, and the copy it replaced is in the backup. */
+export interface SaveResult {
+  version: string | null
+  replaced: { backup: string } | null
 }

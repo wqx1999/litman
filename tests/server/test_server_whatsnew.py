@@ -35,6 +35,8 @@ def test_whatsnew_reports_running_version_digest(tmp_path: Path) -> None:
     assert body["version"] == litman.__version__
     assert isinstance(body["bullets"], list) and body["bullets"]
     assert all(isinstance(b, str) for b in body["bullets"])
+    assert isinstance(body["bulletsZh"], list) and body["bulletsZh"]
+    assert all(isinstance(b, str) for b in body["bulletsZh"])
     assert body["changelogUrl"] == CHANGELOG_URL
     assert body["seen"] is None  # fresh isolated state dir
 
@@ -50,6 +52,7 @@ def test_whatsnew_unknown_version_gives_empty_bullets(
     assert resp.json() == {
         "version": "0.0.0",
         "bullets": [],
+        "bulletsZh": [],
         "changelogUrl": CHANGELOG_URL,
         "seen": None,
     }
@@ -114,3 +117,36 @@ def test_put_seen_keeps_pins(tmp_path: Path) -> None:
     ui_state.save_pins(vault, ["some_paper"])
     TestClient(create_app(vault)).put("/api/whatsnew/seen")
     assert ui_state.load_pins(vault) == ["some_paper"]
+
+
+def test_ui_lang_defaults_to_auto_and_round_trips(tmp_path: Path) -> None:
+    """GET answers ``auto`` before anything was chosen; a PUT is what the next
+    GET — from any window, any browser profile — reads back."""
+    client = TestClient(create_app(create_vault(tmp_path)))
+    assert client.get("/api/ui-lang").json() == {"lang": "auto"}
+    resp = client.put("/api/ui-lang", json={"lang": "zh"})
+    assert resp.status_code == 200
+    assert resp.json() == {"lang": "zh"}
+    assert client.get("/api/ui-lang").json() == {"lang": "zh"}
+    assert ui_state.load_ui_lang() == "zh"
+
+
+@pytest.mark.parametrize(
+    ("body", "status"),
+    [({"lang": "fr"}, 422), ({"lang": 1}, 400), ({}, 400), (["zh"], 400)],
+)
+def test_ui_lang_put_rejects_bad_bodies(tmp_path: Path, body: object, status: int) -> None:
+    """Only the three known values are stored; anything else leaves the file
+    alone."""
+    client = TestClient(create_app(create_vault(tmp_path)))
+    client.put("/api/ui-lang", json={"lang": "en"})
+    assert client.put("/api/ui-lang", json=body).status_code == status
+    assert ui_state.load_ui_lang() == "en"
+
+
+def test_ui_lang_works_without_vault() -> None:
+    """The welcome page (no library yet) renders in the chosen language and
+    can change it, so both halves sit on the vaultless allowlist."""
+    client = TestClient(create_app(None))
+    assert client.put("/api/ui-lang", json={"lang": "zh"}).status_code == 200
+    assert client.get("/api/ui-lang").json() == {"lang": "zh"}

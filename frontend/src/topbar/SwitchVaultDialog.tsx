@@ -1,3 +1,5 @@
+import { useT } from '../i18n'
+import { rich } from '../i18n/rich'
 import { useEscapeLayer } from '../ui/escapeStack'
 import { modalBackdropProps } from '../ui/modalShell'
 
@@ -30,6 +32,8 @@ export default function SwitchVaultDialog({
   // No `switching` guard, matching the Escape this replaces — the refactor is
   // behaviour-preserving, and the button gating is a separate question.
   useEscapeLayer(true, onCancel)
+  const t = useT()
+  const s = t.topbar.switchVault
   return (
     <div
       className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 backdrop-blur-sm"
@@ -40,23 +44,16 @@ export default function SwitchVaultDialog({
         className="w-[24rem] animate-grow-in rounded-2xl bg-white p-5 shadow-xl ring-1 ring-stone-200"
       >
         <h2 className="text-sm font-semibold text-stone-900">
-          Switch vault to “{targetName}”?
+          {s.title(targetName)}
         </h2>
         <p className="mt-1.5 text-xs leading-relaxed text-stone-600">
-          This changes the active vault{' '}
-          <span className="font-medium">globally</span> — it affects{' '}
-          <code className="rounded bg-stone-100 px-1 py-0.5">lit</code> in every
-          terminal without an explicit{' '}
-          <code className="rounded bg-stone-100 px-1 py-0.5">--library</code> /{' '}
-          <code className="rounded bg-stone-100 px-1 py-0.5">$LIT_LIBRARY</code>.
-          {tabCount > 0 &&
-            ` All ${tabCount} open tab${tabCount === 1 ? '' : 's'} will close.`}
+          {rich(s.body(tabCount), {
+            globally: <span className="font-medium">{s.globally}</span>,
+          })}
         </p>
         {dirtyCount > 0 && (
           <p className="mt-2 rounded-md border border-amber-300 bg-amber-50 px-2.5 py-1.5 text-xs leading-relaxed text-amber-700">
-            {dirtyCount} tab{dirtyCount === 1 ? '' : 's'} ha
-            {dirtyCount === 1 ? 's' : 've'} unsaved changes — they will be saved
-            before switching.
+            {s.unsaved(dirtyCount)}
           </p>
         )}
         <div className="mt-5 flex justify-end gap-2">
@@ -66,14 +63,14 @@ export default function SwitchVaultDialog({
             disabled={switching}
             className="rounded-lg px-3 py-1.5 text-xs text-stone-600 transition-colors hover:bg-stone-100 disabled:opacity-40"
           >
-            Cancel
+            {t.common.cancel}
           </button>
           <button
             onClick={onConfirm}
             disabled={switching}
             className="rounded-lg bg-accent-500 px-3 py-1.5 text-xs font-medium text-white transition-colors hover:bg-accent-600 disabled:opacity-60"
           >
-            {switching ? 'Switching…' : dirtyCount > 0 ? 'Save & switch' : 'Switch'}
+            {switching ? s.switching : dirtyCount > 0 ? s.saveAndSwitch : s.switch}
           </button>
         </div>
       </div>

@@ -5,6 +5,7 @@ import type {
   HealthIssue,
   IndexPaper,
   ProjectEntry,
+  SyncStatus,
   VaultsPayload,
 } from '../types'
 import type { Candidate } from '../search'
@@ -20,6 +21,9 @@ import {
   setDefaultAgent,
 } from '../api'
 import type { AgentLaunchMode, AgentLaunchResult, AgentStatus } from '../api'
+import { getT, useT } from '../i18n'
+import { errorLine } from '../apiErrors'
+import SyncButton from './SyncButton'
 import SearchBox from './SearchBox'
 import ProjectManager from './ProjectManager'
 import VaultManager from './VaultManager'
@@ -147,6 +151,11 @@ interface Props {
    * search) — they act on the live library, not the trash being browsed. The
    * vault identity moves into the trash banner (see TrashView). */
   trashMode?: boolean
+  /** The auto sync's status (riding on the vault-version poll): null for a
+   * library without `sync:` (a bare cloud), undefined until the first poll. */
+  syncStatus?: SyncStatus | null
+  /** The cloud button's "Sync now". */
+  onSyncNow?: () => void
 }
 
 /** Global chrome: brand, current-vault indicator, the global Projects manager,
@@ -193,7 +202,11 @@ export default function TopBar({
   onRegisterAgentManage,
   onRegisterVaultManagerOpen,
   trashMode,
+  syncStatus,
+  onSyncNow,
 }: Props) {
+  const t = useT()
+  const tb = t.topbar.topBar
   const [showProjects, setShowProjects] = useState(false)
   const [showVaults, setShowVaults] = useState(false)
   const [updateOpen, setUpdateOpen] = useState(false)
@@ -203,7 +216,10 @@ export default function TopBar({
   // replaces the button and carries its own manual instructions — the popover
   // offers one action, never a button and a command to choose between.
   const [updatePhase, setUpdatePhase] = useState<null | 'busy' | 'closing'>(null)
-  const [updateRefused, setUpdateRefused] = useState<string | null>(null)
+  // 'refused' when this install cannot update itself (the server says why in
+  // the GUI log), 'startFailed' for any other failure; the sentence is built at
+  // render, so it follows a language switch.
+  const [updateRefused, setUpdateRefused] = useState<'refused' | 'startFailed' | null>(null)
 
   const startSelfUpdate = () => {
     if (updatePhase) return
@@ -219,9 +235,7 @@ export default function TopBar({
       .catch((err) => {
         setUpdatePhase(null)
         setUpdateRefused(
-          err instanceof ApiError
-            ? err.message
-            : 'Could not start the update — run `lit self-update` in a terminal.',
+          err instanceof ApiError && err.code === 'update-refused' ? 'refused' : 'startFailed',
         )
       })
   }
@@ -243,7 +257,8 @@ export default function TopBar({
   // re-runs it: not focus, not resync, no timer (run_all_checks is Tier-2).
   const [healthIssues, setHealthIssues] = useState<HealthIssue[] | null>(null)
   const [healthLoading, setHealthLoading] = useState(false)
-  const [healthError, setHealthError] = useState<string | null>(null)
+  // The last run failed; the panel says so in one line (the server logged why).
+  const [healthError, setHealthError] = useState(false)
 
   // Two independent knobs — kept separate on purpose, so a future foreground
   // caller can disown a stale run and still be told when it fails:
@@ -267,15 +282,15 @@ export default function TopBar({
     const isStale = opts?.isStale
     if (isStale?.()) return
     setHealthLoading(true)
-    setHealthError(null)
+    setHealthError(false)
     fetchHealth()
       .then((issues) => {
         if (isStale?.()) return
         setHealthIssues(issues)
       })
-      .catch((err) => {
+      .catch(() => {
         if (opts?.silent || isStale?.()) return
-        setHealthError(err instanceof Error ? err.message : String(err))
+        setHealthError(true)
       })
       .finally(() => {
         if (isStale?.()) return
@@ -311,7 +326,7 @@ export default function TopBar({
   useEffect(() => {
     if (!vaults?.served) return
     setHealthIssues(null)
-    setHealthError(null)
+    setHealthError(false)
     let cancelled = false
     const go = () => runHealth({ isStale: () => cancelled, silent: true })
     const idle = (window as any).requestIdleCallback as
@@ -412,14 +427,27 @@ export default function TopBar({
     }
   }, [])
 
+  // The name an agent is shown by (the status lists it); the name itself until
+  // the status has loaded.
+  const displayOf = (name: string) =>
+    agentStatus?.agents.find((a) => a.name === name)?.display ?? name
+
+  // Launch, install, default, mode: a failure the server named gets its line
+  // (not installed, could not open); otherwise the action's.
+  const notifyAgentFailure = (err: unknown, fixed?: string) => {
+    const line = errorLine(err, fixed ?? null, getT().errors.agent.codes)
+    if (line) notify(line, 'error')
+  }
+
   const handleLaunch = (res: AgentLaunchResult) => {
     if (res.permission_warning) {
-      notify(res.permission_warning, 'warning')
+      // What was not written, and where, is in the GUI log.
+      notify(getT().errors.agent.permissionsNotWritten(displayOf(res.agent)), 'warning')
     }
     if (res.mode === 'spawned') {
       setAgentUi(null)
       if (!res.permission_warning) {
-        notify(`Launched ${res.agent} in a terminal window`, 'success')
+        notify(getT().topbar.topBar.launchedInTerminal(res.agent), 'success')
       }
     } else if (res.mode === 'app') {
       setAgentUi(null)
@@ -427,7 +455,7 @@ export default function TopBar({
         const display =
           agentStatus?.agents.find((a) => a.name === res.agent)?.display ??
           res.agent
-        notify(`Opened ${display}`, 'success')
+        notify(getT().topbar.topBar.openedApp(display), 'success')
       }
     } else {
       setAgentUi({ kind: 'copy', agent: res.agent, command: res.command })
@@ -448,9 +476,7 @@ export default function TopBar({
         }
         return launchAgent().then(handleLaunch)
       })
-      .catch((err) =>
-        notify(err instanceof Error ? err.message : String(err), 'error'),
-      )
+      .catch((err) => notifyAgentFailure(err, getT().errors.agent.statusFailed))
       .finally(() => setAgentBusy(false))
   }
 
@@ -470,9 +496,7 @@ export default function TopBar({
     setAgentBusy(true)
     refreshAgentStatus()
       .then((status) => setAgentUi({ kind: 'setup', status }))
-      .catch((err) =>
-        notify(err instanceof Error ? err.message : String(err), 'error'),
-      )
+      .catch((err) => notifyAgentFailure(err, getT().errors.agent.statusFailed))
       .finally(() => setAgentBusy(false))
   }
 
@@ -490,7 +514,7 @@ export default function TopBar({
       .then(handleLaunch)
       .catch((err) => {
         setAgentUi(null)
-        notify(err instanceof Error ? err.message : String(err), 'error')
+        notifyAgentFailure(err)
       })
       .finally(() => setAgentBusy(false))
   }
@@ -511,19 +535,17 @@ export default function TopBar({
       .then((s) => {
         setAgentUi({ kind: 'setup', status: s })
         if (permissionWarning) {
-          notify(permissionWarning, 'warning')
+          notify(getT().errors.agent.permissionsNotWritten(displayOf(name)), 'warning')
         } else {
           notify(
             makeDefault
-              ? `${name} is installed and is now your default agent`
-              : 'Agent skill installed or updated',
+              ? getT().topbar.topBar.skillInstalledDefault(name)
+              : getT().topbar.topBar.skillInstalled,
             'success',
           )
         }
       })
-      .catch((err) =>
-        notify(err instanceof Error ? err.message : String(err), 'error'),
-      )
+      .catch((err) => notifyAgentFailure(err))
       .finally(() => setAgentBusy(false))
   }
 
@@ -536,11 +558,9 @@ export default function TopBar({
       .then(refreshAgentStatus)
       .then((s) => {
         setAgentUi({ kind: 'setup', status: s })
-        notify(`${name} is now your default agent`, 'success')
+        notify(getT().topbar.topBar.nowDefault(name), 'success')
       })
-      .catch((err) =>
-        notify(err instanceof Error ? err.message : String(err), 'error'),
-      )
+      .catch((err) => notifyAgentFailure(err))
       .finally(() => setAgentBusy(false))
   }
 
@@ -572,7 +592,7 @@ export default function TopBar({
       .then(() => true)
       .catch((err) => {
         if (before) show(before)
-        notify(err instanceof Error ? err.message : String(err), 'error')
+        notifyAgentFailure(err)
         return false
       })
       .finally(() => {
@@ -713,8 +733,8 @@ export default function TopBar({
       <button
         type="button"
         className="relative shrink-0 rounded-md transition duration-200 ease-fluid hover:opacity-70"
-        title="litman — what's new in this version"
-        aria-label="What's new in this version"
+        title={tb.whatsNewTitle}
+        aria-label={tb.whatsNewLabel}
         onClick={onShowWhatsNew}
       >
         <LitmanMark className="h-6 w-6 select-none text-stone-800" />
@@ -727,8 +747,8 @@ export default function TopBar({
           <button
             type="button"
             onClick={() => setUpdateOpen((v) => !v)}
-            title={`litman ${updateAvailable} is available`}
-            aria-label={`Update available: litman ${updateAvailable}`}
+            title={tb.updateAvailable(updateAvailable)}
+            aria-label={tb.updateChipLabel(updateAvailable)}
             className="flex items-center gap-0.5 rounded-full bg-accent-500/10 px-2 py-0.5 text-[11px] font-semibold text-accent-600 transition duration-200 ease-fluid hover:bg-accent-500/20"
           >
             <span aria-hidden="true">↑</span>
@@ -742,15 +762,19 @@ export default function TopBar({
               />
               <div className="absolute left-0 top-full z-50 mt-2 w-72 rounded-xl border border-stone-200 bg-stone-50 p-3 shadow-lg shadow-stone-900/10">
                 <div className="text-sm font-medium text-stone-800">
-                  litman {updateAvailable} is available
+                  {tb.updateAvailable(updateAvailable)}
                 </div>
                 {currentVersion && (
                   <div className="mt-0.5 text-xs text-stone-500">
-                    You have {currentVersion}.
+                    {tb.youHave(currentVersion)}
                   </div>
                 )}
                 {updateRefused ? (
-                  <div className="mt-2 text-xs text-amber-700">{updateRefused}</div>
+                  <div className="mt-2 text-xs text-amber-700">
+                    {updateRefused === 'startFailed'
+                      ? tb.updateStartFailed
+                      : t.errors.updateRefused}
+                  </div>
                 ) : (
                   <button
                     type="button"
@@ -758,7 +782,7 @@ export default function TopBar({
                     disabled={updatePhase !== null}
                     className="mt-2 w-full rounded-lg bg-accent-500 px-3 py-1.5 text-sm font-medium text-white transition duration-200 ease-fluid hover:bg-accent-600 disabled:opacity-60"
                   >
-                    {updatePhase ? 'Starting…' : 'Update & restart'}
+                    {updatePhase ? tb.updateStarting : tb.updateAndRestart}
                   </button>
                 )}
               </div>
@@ -769,12 +793,10 @@ export default function TopBar({
               <div className="fixed inset-0 z-[80] flex items-center justify-center bg-stone-50/95 backdrop-blur-sm">
                 <div className="max-w-sm px-6 text-center">
                   <div className="text-base font-medium text-stone-800">
-                    Updating litman…
+                    {tb.updatingTitle}
                   </div>
                   <div className="mt-2 text-sm text-stone-500">
-                    This window will close, and litman reopens by itself when
-                    the update finishes. If the window stays open, you can
-                    close it yourself.
+                    {tb.updatingBody}
                   </div>
                 </div>
               </div>,
@@ -791,12 +813,12 @@ export default function TopBar({
         disabled={switching || switchTargets === 0}
         title={
           looseServed
-            ? 'Opened by path, not in your vault list'
+            ? tb.vaultSelectLoose
             : switchTargets > 0
-            ? 'Switch the active vault (applies globally)'
+            ? tb.vaultSelectSwitch
             : vaults?.vaults.length
-              ? 'Only one vault registered'
-              : 'No vault registered'
+              ? tb.vaultSelectOnlyOne
+              : tb.vaultSelectNone
         }
         className={`rounded-md border border-stone-300 bg-white px-2 py-1 text-sm ${
           looseServed ? 'text-amber-700 dark:text-amber-400' : 'text-stone-700'
@@ -817,23 +839,25 @@ export default function TopBar({
             // would just repeat the selection. It shows when `lit gui
             // --library` / `--vault` / $LIT_LIBRARY left the active one behind.
             <option key={v.name} value={v.name} className="text-stone-700">
-              {v.name}
-              {v.active && !v.served ? ' (active)' : ''}
-              {v.exists ? '' : ' — missing'}
+              {tb.vaultOption(v.name, v.active && !v.served, !v.exists)}
             </option>
           ))
         ) : !served ? (
-          <option value="">no vault</option>
+          <option value="">{tb.noVault}</option>
         ) : null}
       </select>
+      {/* The cloud sync's own button, next to the library it syncs. */}
+      {served && onSyncNow && (
+        <SyncButton status={syncStatus} onSyncNow={onSyncNow} onOpenLog={openLog} />
+      )}
 
       {/* Always enabled — NOT gated by the <select>'s <2-vault disable, so a
           single-vault user can still open the manager to register a second. */}
       <button
         type="button"
         onClick={() => setShowVaults(true)}
-        title="Register or unregister vaults"
-        aria-label="Manage vaults"
+        title={tb.manageVaultsTitle}
+        aria-label={tb.manageVaultsLabel}
         className="grid h-8 w-8 shrink-0 place-items-center rounded-lg border border-stone-300 bg-white text-stone-500 shadow-sm transition duration-200 ease-fluid hover:bg-stone-50 hover:text-stone-700"
       >
         <IconVault />
@@ -842,10 +866,10 @@ export default function TopBar({
       <button
         type="button"
         onClick={() => setShowProjects(true)}
-        title="Register or remove projects"
+        title={tb.projectsTitle}
         className="flex shrink-0 items-center gap-1.5 rounded-lg border border-stone-300 bg-white px-2.5 py-1 text-sm font-medium text-stone-600 shadow-sm transition duration-200 ease-fluid hover:bg-stone-50 hover:text-stone-900"
       >
-        <FolderIcon /> Projects
+        <FolderIcon /> {tb.projects}
       </button>
 
       {showProjects && (
@@ -896,8 +920,8 @@ export default function TopBar({
       <button
         type="button"
         onClick={onRefresh}
-        title="Refresh from disk (R) — pull in changes made via the CLI"
-        aria-label="Refresh from disk"
+        title={tb.refreshTitle}
+        aria-label={tb.refreshLabel}
         className="grid h-8 w-8 shrink-0 place-items-center rounded-lg text-stone-500 transition duration-200 ease-fluid hover:bg-stone-200/70 hover:text-stone-700"
       >
         <IconRefresh />
@@ -906,8 +930,8 @@ export default function TopBar({
       <button
         type="button"
         onClick={openLog}
-        title="Activity log — recent actions this session"
-        aria-label="Activity log"
+        title={tb.activityLogTitle}
+        aria-label={tb.activityLogLabel}
         className="relative grid h-8 w-8 shrink-0 place-items-center rounded-lg text-stone-500 transition duration-200 ease-fluid hover:bg-stone-200/70 hover:text-stone-700"
       >
         <IconLog />
@@ -919,8 +943,8 @@ export default function TopBar({
       <button
         type="button"
         onClick={openHealth}
-        title="Health check — audit library consistency"
-        aria-label="Health check"
+        title={tb.healthTitle}
+        aria-label={tb.healthLabel}
         className="relative grid h-8 w-8 shrink-0 place-items-center rounded-lg text-stone-500 transition duration-200 ease-fluid hover:bg-stone-200/70 hover:text-stone-700"
       >
         <IconShield />
@@ -940,7 +964,7 @@ export default function TopBar({
         <HealthPanel
           issues={healthIssues}
           loading={healthLoading}
-          error={healthError}
+          error={healthError ? t.errors.healthFailed : null}
           onRerun={() => runHealth()}
           onClose={closePanel}
         />
@@ -956,16 +980,16 @@ export default function TopBar({
         disabled={agentBusy}
         title={
           agentStatus?.needs_setup
-            ? 'Set up your AI agent'
-            : 'Launch default agent — ~ · Right-click or Ctrl+~ to manage'
+            ? tb.agentSetupTitle
+            : tb.agentLaunchTitle
         }
-        aria-label={agentStatus?.needs_setup ? 'Set up agent' : 'Launch agent'}
+        aria-label={agentStatus?.needs_setup ? tb.agentSetupLabel : tb.agentLaunchLabel}
         className="relative grid h-8 w-8 shrink-0 place-items-center rounded-lg text-stone-500 transition duration-200 ease-fluid hover:bg-stone-200/70 hover:text-stone-700 disabled:opacity-50"
       >
         <IconAgent />
         {agentStatus?.needs_setup && (
           <span
-            aria-label="Agent setup needed"
+            aria-label={tb.agentSetupNeeded}
             className="absolute -right-0.5 -top-0.5 h-2.5 w-2.5 rounded-full bg-rose-500 ring-2 ring-stone-50"
           />
         )}
@@ -992,7 +1016,7 @@ export default function TopBar({
         type="button"
         onClick={onToggleFocus}
         aria-pressed={focusMode}
-        title={focusMode ? 'Exit focus mode' : 'Focus mode — hide side panels'}
+        title={focusMode ? tb.focusExit : tb.focusEnter}
         className={`grid h-8 w-8 shrink-0 place-items-center rounded-lg transition duration-200 ease-fluid ${
           focusMode
             ? 'bg-accent-50 text-accent-600'
@@ -1006,7 +1030,7 @@ export default function TopBar({
         type="button"
         onClick={onToggleDark}
         aria-pressed={dark}
-        title={dark ? 'Switch to light mode' : 'Switch to dark mode'}
+        title={dark ? tb.lightMode : tb.darkMode}
         className="grid h-8 w-8 shrink-0 place-items-center rounded-lg text-stone-500 transition duration-200 ease-fluid hover:bg-stone-200/70 hover:text-stone-700"
       >
         {dark ? <IconSun /> : <IconMoon />}
@@ -1015,8 +1039,8 @@ export default function TopBar({
       <button
         type="button"
         onClick={onShowShortcuts}
-        title="Keyboard shortcuts (?)"
-        aria-label="Keyboard shortcuts"
+        title={tb.shortcutsTitle}
+        aria-label={tb.shortcutsLabel}
         className="grid h-8 w-8 shrink-0 place-items-center rounded-lg text-stone-500 transition duration-200 ease-fluid hover:bg-stone-200/70 hover:text-stone-700"
       >
         <IconHelp />

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from typing import Any
 
 import click
 from rich.console import Console
@@ -11,7 +12,12 @@ from rich.markup import escape
 from rich.panel import Panel
 from rich.syntax import Syntax
 
-from litman.commands._options import library_option, vault_option
+from litman.commands._options import (
+    FORMAT_DEFAULT_HELP,
+    library_option,
+    table_or_json,
+    vault_option,
+)
 from litman.core.code import missing_code_clones
 from litman.core.document import find_paper
 from litman.core.library import find_vault, resolve_library_or_vault
@@ -48,10 +54,12 @@ console = Console()
     "--format",
     "output_format",
     type=click.Choice(["table", "json"]),
-    default="table",
-    help="Output format. 'table' (default) renders a Panel of metadata.yaml + "
+    default=None,
+    callback=table_or_json,
+    help="Output format. 'table' renders a Panel of metadata.yaml + "
     "the PDF, notes, SI and code paths; 'json' emits the FULL metadata dict "
-    "(every field, not the INDEX projection) for agent bounded retrieval.",
+    "(every field, not the INDEX projection) plus a '_paths' object with "
+    f"those paths, for agent bounded retrieval. {FORMAT_DEFAULT_HELP}",
 )
 @library_option
 @vault_option
@@ -71,7 +79,9 @@ def show_cmd(
     same paper `lit list --sort recent` puts at the top. The paper id
     otherwise accepts a full id, a unique case-insensitive substring, or
     omit it and pass --paper-doi <DOI> instead. --format json emits the full
-    metadata dict (all fields) for agents.
+    metadata dict (all fields) for agents, plus '_paths': the absolute paths of
+    the paper folder, PDF, notes, discussion, SI files and code clones, and a
+    'missing' list of those that are not on disk.
     """
     vault = find_vault(resolve_library_or_vault(library, vault_name))
 
@@ -94,8 +104,9 @@ def show_cmd(
         # updated-at) and date (read-date / last-revisited) values, which
         # json.dumps cannot serialize natively — without it a paper WITH a
         # read-date raises TypeError (the M25/M31 trap, spec §9).
+        payload = {**meta, "_paths": _paths_block(vault, paper_id, meta)}
         click.echo(
-            json.dumps(meta, default=str, ensure_ascii=False, indent=2)
+            json.dumps(payload, default=str, ensure_ascii=False, indent=2)
         )
         return
 
@@ -122,8 +133,12 @@ def show_cmd(
 
     pdf_status = "" if pdf_file.is_file() else "  [bold red](missing!)[/]"
     notes_status = "" if notes_file.is_file() else "  [bold red](missing!)[/]"
-    console.print(f"[dim]PDF:  [/] {pdf_file}{pdf_status}")
-    console.print(f"[dim]Notes:[/] {notes_file}{notes_status}")
+    # soft_wrap: a non-TTY console (an agent's) is 80 columns wide and would
+    # fold the path in two (commands/_path_lines.py).
+    console.print(f"[dim]PDF:  [/] {escape(str(pdf_file))}{pdf_status}", soft_wrap=True)
+    console.print(
+        f"[dim]Notes:[/] {escape(str(notes_file))}{notes_status}", soft_wrap=True
+    )
 
     # SI: one line per recorded file — path, the name it was added under, and
     # its size — with the same (missing!) marker. A malformed field lists what
@@ -161,4 +176,47 @@ def show_cmd(
         codes_dir = vault / "codes"
         for name in code_clones:
             status = "  [bold red](missing!)[/]" if name in gone else ""
-            console.print(f"[dim]Code: [/] {codes_dir / name}{status}")
+            console.print(
+                f"[dim]Code: [/] {escape(str(codes_dir / name))}{status}",
+                soft_wrap=True,
+            )
+
+
+def _paths_block(vault: Path, paper_id: str, meta: dict[str, Any]) -> dict[str, Any]:
+    """Where the paper's files are: ``_paths`` in ``lit show --format json``.
+
+    What an agent opens or appends to next, so it never assembles
+    ``<vault>/papers/<id>/...`` itself. The leading underscore keeps the key
+    apart from metadata fields. ``si`` follows the SI records' order and
+    ``code`` the ``code-clones`` list; ``missing`` names every path among them
+    that is not on disk (the table's ``(missing!)``).
+    """
+    paper_dir = vault / "papers" / paper_id
+    pdf = paper_dir / "paper.pdf"
+    notes = paper_dir / "notes.md"
+    discussion = paper_dir / "discussion.md"
+    si_dir = paper_dir / SI_DIRNAME
+    si = [si_dir / record["file"] for record in list_supplementary(meta)]
+    # find_paper has already refused a code-clones that is not a list.
+    names = [n for n in meta.get("code-clones") or [] if isinstance(n, str) and n]
+    gone = set(missing_code_clones(vault, names))
+    code = [vault / "codes" / name for name in names]
+
+    missing: list[str] = []
+    for path in (pdf, notes, discussion, *si):
+        try:
+            present = path.is_file()
+        except OSError:
+            present = False
+        if not present:
+            missing.append(str(path))
+    missing += [str(vault / "codes" / name) for name in names if name in gone]
+    return {
+        "folder": str(paper_dir),
+        "pdf": str(pdf),
+        "notes": str(notes),
+        "discussion": str(discussion),
+        "si": [str(path) for path in si],
+        "code": [str(path) for path in code],
+        "missing": missing,
+    }

@@ -1,3 +1,5 @@
+import { useT } from '../i18n'
+
 interface Props {
   /** Page number the back step would return to (the pill's whole message). */
   page: number
@@ -24,6 +26,7 @@ interface Props {
  * Presentational only: it holds no history, no timer, and no keyboard binding —
  * clicking it runs the same handler as Alt+←. */
 export default function JumpBackPill({ page, expanded, onClick }: Props) {
+  const tx = useT().reader.jumpBackPill
   return (
     <button
       type="button"
@@ -33,8 +36,8 @@ export default function JumpBackPill({ page, expanded, onClick }: Props) {
       // the editor popover.
       onPointerDown={(e) => e.stopPropagation()}
       onPointerUp={(e) => e.stopPropagation()}
-      aria-label={`Back to page ${page}`}
-      title={`Back to page ${page} (Alt+←)`}
+      aria-label={tx.label(page)}
+      title={tx.title(page)}
       className="group flex items-center rounded-full border border-stone-200 bg-stone-50/95 px-2.5 py-1.5 text-xs text-stone-700 shadow-xl shadow-stone-900/10 backdrop-blur-sm transition-colors hover:bg-stone-100"
     >
       <span aria-hidden className="leading-none">
@@ -48,7 +51,7 @@ export default function JumpBackPill({ page, expanded, onClick }: Props) {
             : 'ml-0 max-w-0 opacity-0 group-hover:ml-1.5 group-hover:max-w-[12rem] group-hover:opacity-100')
         }
       >
-        Back to p.{page}
+        {tx.text(page)}
       </span>
     </button>
   )

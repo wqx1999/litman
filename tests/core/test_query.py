@@ -42,9 +42,9 @@ def test_list_field_intersection_hit_miss_and_or() -> None:
 
 
 def test_list_field_methods_projects_data() -> None:
-    paper = {"methods": ["BERT"], "projects": ["PepForge"], "data": ["GDP-2"]}
+    paper = {"methods": ["BERT"], "projects": ["SeaHorse"], "data": ["GDP-2"]}
     assert matches_filters(paper, {"method": ["BERT"]}) is True
-    assert matches_filters(paper, {"project": ["PepCodec"]}) is False
+    assert matches_filters(paper, {"project": ["BlueBell"]}) is False
     assert matches_filters(paper, {"data": ["GDP-2", "other"]}) is True
 
 
@@ -87,7 +87,7 @@ def test_priority_without_a_project_matches_any_project_grade() -> None:
     A paper the user graded A for one project and C for another IS an "A
     paper" to the question "show me my A papers".
     """
-    paper = _graded(pepforge="C", pepcodec="A")
+    paper = _graded(seahorse="C", bluebell="A")
     assert matches_filters(paper, {"priority": ["A"]}) is True
     assert matches_filters(paper, {"priority": ["C"]}) is True
     assert matches_filters(paper, {"priority": ["B"]}) is False
@@ -96,15 +96,15 @@ def test_priority_without_a_project_matches_any_project_grade() -> None:
 def test_priority_with_one_project_reads_only_that_projects_grade() -> None:
     """`--project P --priority A` asks what the paper is worth TO P. A grade
     earned in some other project must not let it through."""
-    paper = _graded(pepforge="C", pepcodec="A")
+    paper = _graded(seahorse="C", bluebell="A")
     assert (
-        matches_filters(paper, {"project": ["pepcodec"], "priority": ["A"]}) is True
+        matches_filters(paper, {"project": ["bluebell"], "priority": ["A"]}) is True
     )
     assert (
-        matches_filters(paper, {"project": ["pepforge"], "priority": ["A"]}) is False
+        matches_filters(paper, {"project": ["seahorse"], "priority": ["A"]}) is False
     )
     assert (
-        matches_filters(paper, {"project": ["pepforge"], "priority": ["C"]}) is True
+        matches_filters(paper, {"project": ["seahorse"], "priority": ["C"]}) is True
     )
 
 
@@ -112,10 +112,10 @@ def test_priority_with_several_projects_falls_back_to_the_or_semantics() -> None
     """`--project a,b` names no single project to narrow by, so the OR branch
     applies — narrowing to "whichever of the two" would be a third semantics
     nobody asked for."""
-    paper = _graded(pepforge="C", pepcodec="A")
+    paper = _graded(seahorse="C", bluebell="A")
     assert (
         matches_filters(
-            paper, {"project": ["pepforge", "pepcodec"], "priority": ["A"]}
+            paper, {"project": ["seahorse", "bluebell"], "priority": ["A"]}
         )
         is True
     )
@@ -206,8 +206,8 @@ def test_backward_compat_single_element_list() -> None:
     paper = {
         "topics": ["x", "y"],
         "status": "skim",
-        "projects": ["pepforge"],
-        "priority-pepforge": "A",
+        "projects": ["seahorse"],
+        "priority-seahorse": "A",
         "type": "research",
         "year": 2023,
         "authors": ["Jane Smith"],

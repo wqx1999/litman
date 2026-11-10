@@ -1,0 +1,42 @@
+{
+ "scenario": "08-cloud-deleted-pull-only",
+ "rclone": "1.75.2",
+ "returncode": 0,
+ "report": [
+  "INFO  : Setting --ignore-listing-checksum as neither --checksum nor --compare checksum are set.",
+  "INFO  : Bisyncing with Comparison Settings: ",
+  "{",
+  "\t\"Modtime\": true,",
+  "\t\"Size\": true,",
+  "\t\"Checksum\": false,",
+  "\t\"HashType1\": 0,",
+  "\t\"HashType2\": 0,",
+  "\t\"NoSlowHash\": false,",
+  "\t\"SlowHashSyncOnly\": false,",
+  "\t\"SlowHashDetected\": true,",
+  "\t\"DownloadHash\": false",
+  "}",
+  "INFO  : lock file renewed for 5m0s. New expiration: 2026-11-06 08:16:39.000058312 +0100 CET m=+300.055470566",
+  "INFO  : Synching Path1 \"<P>/vault/\" with Path2 \"fake-cloud:<P>/cloud/lib/\"",
+  "INFO  : Using filters file <P>/wd/filters.txt",
+  "INFO  : Building Path1 and Path2 listings",
+  "INFO  : Path1 checking for diffs",
+  "INFO  : Path2 checking for diffs",
+  "INFO  : - Path2             File was deleted                            - papers/b/notes.md",
+  "INFO  : Path2:    1 changes:    0 new,    0 modified,    1 deleted",
+  "INFO  : Applying changes",
+  "INFO  : - Path1             Queue delete                                - <P>/vault/papers/b/notes.md",
+  "INFO  : - Path2             Do queued copies to                         - Path1",
+  "INFO  : papers/b: Set directory modification time (using SetModTime)",
+  "INFO  : papers/b/notes.md: Moved (server-side)",
+  "INFO  : papers/b/notes.md: Moved into backup dir",
+  "INFO  : There was nothing to transfer",
+  "INFO  : Updating listings",
+  "INFO  : Validating listings for Path1 \"<P>/vault/\" vs Path2 \"fake-cloud:<P>/cloud/lib/\"",
+  "INFO  : Bisync successful"
+ ],
+ "lines": [
+  "NOTICE:           0 B / 0 B, -, 0 B/s, ETA -"
+ ],
+ "cloud_changed": false
+}

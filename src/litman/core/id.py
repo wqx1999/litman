@@ -67,7 +67,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
-from litman.exceptions import IDError
+from litman.exceptions import IDError, coded
 
 # Tokens to drop when picking significant words. Lowercased before comparison.
 # Kept small on purpose — domain-specific short words (e.g. "de", "ex", "in
@@ -508,15 +508,18 @@ def derive_id(year: int | None, first_author_family: str, title: str) -> str:
 
     family_slug = _slug(first_author_family)
     if not family_slug:
-        raise IDError(
-            f"First-author family name normalizes to empty: "
-            f"{first_author_family!r}."
+        raise coded(
+            IDError(
+                f"First-author family name normalizes to empty: "
+                f"{first_author_family!r}."
+            ),
+            "id-no-author",
         )
     family = family_slug[0].upper() + family_slug[1:]
 
     keyword = derive_keyword(title)
     if keyword == "untitled":
-        raise IDError(_no_keyword_message(year, family, title))
+        raise coded(IDError(_no_keyword_message(year, family, title)), "id-no-title")
 
     return f"{year}_{family}_{keyword}"
 

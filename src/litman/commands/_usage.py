@@ -3,7 +3,7 @@
 ``lit link <paper> <project>`` and ``lit code add <paper> <repo>`` are what
 the commands *look* like they should take. They do not: the second value goes
 in a flag (``--project`` / ``--paper``). Click's own answer to the extra word
-is "Got unexpected extra argument (pepforge)", which names the thing that is
+is "Got unexpected extra argument (my-project)", which names the thing that is
 wrong and nothing about how to be right.
 
 Each affected command declares a trailing optional argument purely to catch

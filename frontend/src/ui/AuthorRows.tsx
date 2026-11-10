@@ -1,4 +1,12 @@
 import { useState } from 'react'
+import { useT } from '../i18n'
+
+/** A Chinese input method types the full-width comma "，". The family name is
+ * cut at the ASCII comma (core/id.py first_author_family), so "Zhang，San"
+ * would become one family name and a wrong id. Turn it into ", " as typed. */
+function normalizeComma(v: string): string {
+  return v.replace(/\s*，\s*/g, ', ')
+}
 
 /** The ordered author-list editor, shared by the metadata edit dialog and the
  * hand-entry half of Add paper.
@@ -27,6 +35,7 @@ export default function AuthorRows({
   // Index of the row being dragged, or null. Reorder happens live on dragover
   // (the sortable-list idiom), so drop needs no handler of its own.
   const [dragIdx, setDragIdx] = useState<number | null>(null)
+  const m = useT().cockpit.authorRows
 
   function move(from: number, to: number) {
     if (to < 0 || to >= authors.length) return
@@ -39,10 +48,8 @@ export default function AuthorRows({
   return (
     <div>
       <span className="mb-0.5 block text-[11px] font-semibold uppercase tracking-wider text-stone-600">
-        Authors{' '}
-        <span className="normal-case tracking-normal text-stone-400">
-          — order matters: the first author names the paper
-        </span>
+        {m.label}{' '}
+        <span className="normal-case tracking-normal text-stone-400">{m.orderHint}</span>
       </span>
       <div className="space-y-1.5">
         {authors.map((name, i) => (
@@ -60,7 +67,7 @@ export default function AuthorRows({
               draggable={!disabled}
               onDragStart={() => setDragIdx(i)}
               onDragEnd={() => setDragIdx(null)}
-              title="Drag to reorder"
+              title={m.dragTitle}
               className="cursor-grab select-none px-0.5 text-stone-400 hover:text-stone-600 active:cursor-grabbing"
             >
               ⋮⋮
@@ -68,9 +75,11 @@ export default function AuthorRows({
             <input
               type="text"
               value={name}
-              placeholder="Family, Given"
+              placeholder={m.placeholder}
               onChange={(e) =>
-                onChange(authors.map((a, j) => (j === i ? e.target.value : a)))
+                onChange(
+                  authors.map((a, j) => (j === i ? normalizeComma(e.target.value) : a)),
+                )
               }
               disabled={disabled}
               className="min-w-0 flex-1 rounded-md border border-stone-300 bg-white px-2 py-1 text-sm text-stone-800 focus:border-accent-500 focus:outline-none disabled:opacity-50"
@@ -79,8 +88,8 @@ export default function AuthorRows({
               type="button"
               onClick={() => move(i, i - 1)}
               disabled={disabled || i === 0}
-              title="Move up"
-              aria-label={`Move author ${i + 1} up`}
+              title={m.moveUpTitle}
+              aria-label={m.moveUpAria(i + 1)}
               className="rounded px-1 text-xs text-stone-400 transition-colors hover:bg-stone-100 hover:text-stone-700 disabled:opacity-30"
             >
               ↑
@@ -89,8 +98,8 @@ export default function AuthorRows({
               type="button"
               onClick={() => move(i, i + 1)}
               disabled={disabled || i === authors.length - 1}
-              title="Move down"
-              aria-label={`Move author ${i + 1} down`}
+              title={m.moveDownTitle}
+              aria-label={m.moveDownAria(i + 1)}
               className="rounded px-1 text-xs text-stone-400 transition-colors hover:bg-stone-100 hover:text-stone-700 disabled:opacity-30"
             >
               ↓
@@ -99,8 +108,8 @@ export default function AuthorRows({
               type="button"
               onClick={() => onChange(authors.filter((_, j) => j !== i))}
               disabled={disabled}
-              title="Remove this author"
-              aria-label={`Remove author ${i + 1}`}
+              title={m.removeTitle}
+              aria-label={m.removeAria(i + 1)}
               className="rounded px-1 text-sm leading-none text-stone-400 transition-colors hover:bg-red-50 hover:text-red-600 disabled:opacity-30"
             >
               ×
@@ -114,7 +123,7 @@ export default function AuthorRows({
         disabled={disabled}
         className="mt-1.5 text-xs font-medium text-accent-600 transition-colors hover:underline disabled:opacity-40"
       >
-        + Add author
+        {m.add}
       </button>
     </div>
   )

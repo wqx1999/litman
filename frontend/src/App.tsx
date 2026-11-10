@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   ApiError,
+  OfflineError,
   cancelSi,
   clearPins,
   createSiRequest,
@@ -17,14 +18,17 @@ import {
   fetchSearch,
   fetchVaults,
   fetchVaultVersion,
+  fetchUiLang,
   fetchVersion,
   fetchWhatsNew,
+  logPageFailure,
   markWhatsNewSeen,
   type WhatsNewInfo,
   type IngestUploadResult,
   uploadIngestPdf,
   discardIngest,
   pinPaper,
+  postSyncNow,
   putActiveVault,
   putDiscussion,
   putNotes,
@@ -48,6 +52,7 @@ import DropZone from './ui/DropZone'
 import AddPaper from './ui/AddPaper'
 import AddSi from './ui/AddSi'
 import { escapeLayerOpen } from './ui/escapeStack'
+import { stopCause } from './topbar/SyncButton'
 import SaveDialog from './tabs/SaveDialog'
 import RemovePaperConfirm from './tabs/RemovePaperConfirm'
 import { mergeCandidates, type Candidate } from './search'
@@ -60,6 +65,7 @@ import type {
   ProjectEntry,
   SearchHit,
   SmartListView,
+  SyncStatus,
   Tab,
   TabKind,
   Taxonomy,
@@ -73,10 +79,13 @@ import SwitchVaultDialog from './topbar/SwitchVaultDialog'
 import BrowsePanel from './nav/BrowsePanel'
 import type { FacetKey, Filters, ListMode } from './nav/BrowsePanel'
 import { emptyFilters } from './nav/BrowsePanel'
-import TabArea from './tabs/TabArea'
+import TabArea, { tabLabel } from './tabs/TabArea'
 import Cockpit from './cockpit/Cockpit'
 import Toast, { type ToastVariant } from './ui/Toast'
 import { servedVault } from './vaults'
+import { describe, errorLine } from './apiErrors'
+import { enumLabel, getLangPref, getT, isLangPref, setLangPref, useT } from './i18n'
+import { rich } from './i18n/rich'
 
 const SMART_VIEWS: ReadonlySet<string> = new Set(['reading', 'recent-read'])
 
@@ -86,6 +95,20 @@ const SMART_VIEWS: ReadonlySet<string> = new Set(['reading', 'recent-read'])
 // change still costs a request line in the launcher's log file, so this stays
 // on the slow side of the ≤5s the spec asks for.
 const VAULT_POLL_MS = 4000
+
+// The longest "Sync now" shows syncing before the server reports anything of
+// the run. The auto sync finishes the look it is in before it starts the run
+// a click asks for, and a click has it check rclone again first: a remote-stamp
+// read (capped at 60 s) and then the two rclone calls of that check (30 s
+// each), plus a poll. Past this the server is taken to have not started it,
+// and the button goes back to what the server says.
+const SYNC_ASK_MAX_MS = 150_000
+
+/** What a status from the server is, as far as "has the asked-for run shown
+ * up yet" goes: a sync starting, ending, failing or stopping changes it. */
+function syncStatusKey(s: SyncStatus): string {
+  return [s.state, s.reason, s.seq, s.nextTryAt, s.runningSince, s.lastOkAt].join('|')
+}
 
 // An SI window that would pop on its own waits while someone is typing: an
 // editable has focus and a key went down within this long. Popping mid-word
@@ -122,11 +145,6 @@ const ARRAY_FILTER_FIELDS: Array<'topics' | 'methods' | 'data'> = [
 
 /** The open SI window: its request, and whether the poll popped it. */
 type SiWindowState = SiRequestSeed & { auto: boolean }
-
-function tabLabel(id: string, kind: TabKind): string {
-  if (kind === 'pdf') return id
-  return `${id} · ${kind}`
-}
 
 /** Reads the `.dark` class the no-FOUC script (index.html) already set on
  * <html>, then flips it and persists the choice. Lifted from TopBar to App
@@ -173,16 +191,13 @@ interface ResyncSnapshot {
   mtimes: DocMtimes | null
 }
 
-// Per-paper tag arrays, with the singular label used in the message. `data` has
-// NO trailing-s to strip, so it is spelled out (not derived from the key).
-const RESYNC_TAG_FIELDS: ReadonlyArray<{
-  key: 'topics' | 'methods' | 'data' | 'projects'
-  label: string
-}> = [
-  { key: 'topics', label: 'topic' },
-  { key: 'methods', label: 'method' },
-  { key: 'data', label: 'data' },
-  { key: 'projects', label: 'project' },
+// Per-paper tag arrays. The singular word each one gets in the message is UI
+// text (`browse.resyncLog.tagAdded`).
+const RESYNC_TAG_FIELDS: ReadonlyArray<'topics' | 'methods' | 'data' | 'projects'> = [
+  'topics',
+  'methods',
+  'data',
+  'projects',
 ]
 
 // Taxonomy keys the diff inspects (D3): `projects` is owned by the projects-
@@ -203,13 +218,20 @@ function diffResync(
   prev: ResyncSnapshot,
   fresh: ResyncSnapshot,
 ): ActivityLogEntry[] {
-  // Structured changes have no real timestamp → stamp detection time. Free-form
-  // (notes/discussion) changes carry the file mtime. appendLog sorts the batch
-  // by ts ascending (D4) so the panel orders them sensibly.
+  // Every row is stamped with the time this window noticed the change, the same
+  // clock every other log row runs on, so the newest-first list is in order.
+  // Not a file's mtime: after a sync that is when the OTHER machine wrote it,
+  // which can be well before this window saw it and before rows already logged.
   const now = Date.now()
   const out: ActivityLogEntry[] = []
   const add = (message: string, variant: ToastVariant = 'info') =>
     out.push({ ts: now, variant, message })
+  const T = getT()
+  const t = T.browse.resyncLog
+  const statusText = (v: string | null | undefined) =>
+    resyncScalar(v && enumLabel(T.common.status, v))
+  const typeText = (v: string | null | undefined) =>
+    resyncScalar(v && enumLabel(T.common.paperType, v))
 
   // Papers: add / remove (→ trashed when it lands in trash) / per-survivor diff.
   const prevById = new Map(prev.papers.map((p) => [p.id, p]))
@@ -217,29 +239,29 @@ function diffResync(
   const trashedIds = new Set(fresh.trash.map((t) => t.paperId))
 
   for (const p of fresh.papers) {
-    if (!prevById.has(p.id)) add(`+ ${p.id} added`, 'success')
+    if (!prevById.has(p.id)) add(t.paperAdded(p.id), 'success')
   }
   for (const p of prev.papers) {
     if (!freshById.has(p.id)) {
-      add(trashedIds.has(p.id) ? `🗑 ${p.id} trashed` : `− ${p.id} removed`)
+      add(trashedIds.has(p.id) ? t.paperTrashed(p.id) : t.paperRemoved(p.id))
     }
   }
   for (const [id, f] of freshById) {
     const p = prevById.get(id)
     if (!p) continue
     if (f.status !== p.status)
-      add(`${id}: status ${resyncScalar(p.status)} → ${resyncScalar(f.status)}`)
+      add(t.statusChanged(id, statusText(p.status), statusText(f.status)))
     if (f.type !== p.type)
-      add(`${id}: type ${resyncScalar(p.type)} → ${resyncScalar(f.type)}`)
+      add(t.typeChanged(id, typeText(p.type), typeText(f.type)))
     const prevRead = p['read-date']
     const freshRead = f['read-date']
-    if (!prevRead && freshRead) add(`${id}: marked read`)
-    else if (prevRead && !freshRead) add(`${id}: read-date cleared`)
-    for (const { key, label } of RESYNC_TAG_FIELDS) {
+    if (!prevRead && freshRead) add(t.markedRead(id))
+    else if (prevRead && !freshRead) add(t.readDateCleared(id))
+    for (const key of RESYNC_TAG_FIELDS) {
       const before = new Set(p[key] ?? [])
       const after = new Set(f[key] ?? [])
-      for (const v of after) if (!before.has(v)) add(`${id}: +${label} ${v}`)
-      for (const v of before) if (!after.has(v)) add(`${id}: −${label} ${v}`)
+      for (const v of after) if (!before.has(v)) add(t.tagAdded(id, key, v))
+      for (const v of before) if (!after.has(v)) add(t.tagRemoved(id, key, v))
     }
   }
 
@@ -248,8 +270,8 @@ function diffResync(
     for (const key of RESYNC_TAXONOMY_KEYS) {
       const before = new Set(prev.taxonomy[key] ?? [])
       const after = new Set(fresh.taxonomy[key] ?? [])
-      for (const v of after) if (!before.has(v)) add(`taxonomy: +${key} ${v}`)
-      for (const v of before) if (!after.has(v)) add(`taxonomy: −${key} ${v}`)
+      for (const v of after) if (!before.has(v)) add(t.taxonomyAdded(key, v))
+      for (const v of before) if (!after.has(v)) add(t.taxonomyRemoved(key, v))
     }
   }
 
@@ -259,30 +281,26 @@ function diffResync(
     const prevProjects = new Set(prev.projects.map((p) => p.name))
     const freshProjects = new Set(fresh.projects.map((p) => p.name))
     for (const name of freshProjects)
-      if (!prevProjects.has(name)) add(`project: + ${name}`)
+      if (!prevProjects.has(name)) add(t.projectAdded(name))
     for (const name of prevProjects)
-      if (!freshProjects.has(name)) add(`project: − ${name}`)
+      if (!freshProjects.has(name)) add(t.projectRemoved(name))
   }
 
   // Doc mtimes: a notes/discussion edit made outside the GUI bumps the file
   // mtime. Only papers tracked in the previous snapshot are compared — a brand-
   // new paper is already covered by its "+ added" entry, so its file is not
-  // double-logged. The entry ts is the real edit time (mtime × 1000).
+  // double-logged. Stamped `now` like the rest (see the top of this function).
   if (prev.mtimes && fresh.mtimes) {
     for (const [id, before] of Object.entries(prev.mtimes)) {
       const after = fresh.mtimes[id]
       if (!after) continue
       if (after.notes != null && (before.notes == null || after.notes > before.notes))
-        out.push({ ts: after.notes * 1000, variant: 'info', message: `${id}: notes updated` })
+        add(t.notesUpdated(id))
       if (
         after.discussion != null &&
         (before.discussion == null || after.discussion > before.discussion)
       )
-        out.push({
-          ts: after.discussion * 1000,
-          variant: 'info',
-          message: `${id}: discussion appended`,
-        })
+        add(t.discussionAppended(id))
     }
   }
 
@@ -290,10 +308,12 @@ function diffResync(
 }
 
 /** A fetch that failed at the network level (connection refused, tunnel down)
- * rejects with a TypeError; an HTTP error Response reaches the api helpers,
- * which throw an ApiError. Only the former means "server unreachable". */
+ * rejects, and the api helpers turn that into an OfflineError; an HTTP error
+ * Response throws an ApiError. Only the former means "server unreachable". A
+ * bare TypeError is still taken as one: pdf.js and anything not going through
+ * the helpers reject with it. */
 function isNetworkError(err: unknown): boolean {
-  return err instanceof TypeError
+  return err instanceof OfflineError || err instanceof TypeError
 }
 
 /** The server can no longer see the library it is bound to — the vault directory
@@ -302,11 +322,16 @@ function isNetworkError(err: unknown): boolean {
  * connection: it is not a failed request, it is a lost library. Kept strictly
  * apart from the 409 "no vault yet" that raises the welcome page — a user whose
  * library merely moved must never be invited to create a new one on top of it. */
+/** How a resync sweep ended: it landed, or the error that stopped it (already
+ * classified into the banners by the sweep). */
+type ResyncResult = { ok: true } | { ok: false; error: unknown }
+
 function isVaultGone(err: unknown): boolean {
   return err instanceof ApiError && err.status === 410
 }
 
 export default function App() {
+  const T = useT()
   const [vaults, setVaults] = useState<VaultsPayload | null>(null)
   // The vault this server is serving: `undefined` = not yet known (pre-bootstrap),
   // `null` = none (render the welcome page), a string = a real vault (render the
@@ -493,10 +518,17 @@ export default function App() {
   // until the panel is opened.
   const [activityLog, setActivityLog] = useState<ActivityLogEntry[]>([])
   const [logUnread, setLogUnread] = useState(false)
+  // `log: false` is for a toast that sums up rows the caller has just put in
+  // the log itself: its "see the activity log" would point at itself there.
   const notify = useCallback(
-    (msg: string, variant: ToastVariant = 'info', opts?: { sticky?: boolean }) => {
+    (
+      msg: string,
+      variant: ToastVariant = 'info',
+      opts?: { sticky?: boolean; log?: boolean },
+    ) => {
       toastSeq.current += 1
       setToast({ id: toastSeq.current, message: msg, variant, sticky: opts?.sticky })
+      if (opts?.log === false) return
       setActivityLog((prev) =>
         [...prev, { ts: Date.now(), variant, message: msg }].slice(-200),
       )
@@ -505,6 +537,8 @@ export default function App() {
     [],
   )
   const markLogRead = useCallback(() => setLogUnread(false), [])
+  // What the document tabs report: a save that did not land (notes, PDF).
+  const notifyTabFailure = useCallback((msg: string) => notify(msg, 'error'), [notify])
 
   // In the --window app window only: links to other sites go to the default
   // browser, where the user is signed in (externalLinks.ts). A tab never routes.
@@ -512,13 +546,11 @@ export default function App() {
 
   // Silent log sink for resync-diff entries: appends to the same ring + lights
   // the unread dot like notify, but does NOT toast (a resync can yield dozens of
-  // entries — see §5.2). Each batch is sorted ts-ascending first (D4) so the
-  // panel (newest-first) interleaves mtime-stamped notes entries and detection-
-  // time structured entries sensibly.
+  // entries — see §5.2). The panel lists rows in the order they were appended,
+  // newest first, so every row is stamped with the time it is appended.
   const appendLog = useCallback((entries: ActivityLogEntry[]) => {
     if (entries.length === 0) return
-    const sorted = [...entries].sort((a, b) => a.ts - b.ts)
-    setActivityLog((prev) => [...prev, ...sorted].slice(-200))
+    setActivityLog((prev) => [...prev, ...entries].slice(-200))
     setLogUnread(true)
   }, [])
 
@@ -776,6 +808,18 @@ export default function App() {
     void bootstrap()
   }, [bootstrap])
 
+  // The UI language preference, on mount — the welcome page renders in it too.
+  // The local mirror already applied it for the first paint; the server copy
+  // (ui-state.json) is the record and wins when the two differ: the other
+  // browser profile changed it since.
+  useEffect(() => {
+    fetchUiLang()
+      .then(({ lang }) => {
+        if (isLangPref(lang) && lang !== getLangPref()) setLangPref(lang)
+      })
+      .catch(() => {})
+  }, [])
+
   useEffect(() => {
     // Only seed once a real vault is being served: `undefined` = still
     // bootstrapping, `null` = welcome page (no vault to seed from).
@@ -806,14 +850,11 @@ export default function App() {
         setUpdateLatest(v.latest)
         // A failed one-click update left a note behind (the server surfaces
         // it once per run) — tell the user the app is still on the old
-        // version and hand them the manual path.
+        // version. Why it failed stays in self-update.log, for the agent.
         if (v.selfUpdateFailed) {
-          notify(
-            `Automatic update failed (${v.selfUpdateFailed}). ` +
-              'You are still on the previous version — run `lit self-update` in a terminal.',
-            'error',
-            { sticky: true },
-          )
+          notify(getT().browse.app.selfUpdateFailed, 'error', {
+            sticky: true,
+          })
         }
         // Post-update "What's new": pop once when the running version is not
         // the one this MACHINE last dismissed the card for. A fresh install
@@ -1054,9 +1095,10 @@ export default function App() {
       const req = pins.includes(id) ? unpinPaper(id) : pinPaper(id)
       req
         .then((r) => setPins(r.pins))
-        .catch((err) =>
-          notify(err instanceof Error ? err.message : String(err), 'error'),
-        )
+        .catch((err) => {
+          const line = errorLine(err, getT().errors.paper.pinNotSaved)
+          if (line) notify(line, 'error')
+        })
     },
     [pins, notify],
   )
@@ -1064,9 +1106,10 @@ export default function App() {
   const clearAllPins = useCallback(() => {
     clearPins()
       .then((r) => setPins(r.pins))
-      .catch((err) =>
-        notify(err instanceof Error ? err.message : String(err), 'error'),
-      )
+      .catch((err) => {
+        const line = errorLine(err, getT().errors.paper.pinNotSaved)
+        if (line) notify(line, 'error')
+      })
   }, [notify])
 
   const toggleFilter = useCallback((field: FacetKey, value: string) => {
@@ -1091,7 +1134,9 @@ export default function App() {
   }, [])
   const showCockpitFailure = useCallback((err: unknown) => {
     setCockpitPaper(null)
-    setCockpitError(err instanceof ApiError ? err.message : null)
+    // A paper gone or a file that cannot be read says which; the server's
+    // own words are in the GUI log.
+    setCockpitError(err instanceof ApiError ? errorLine(err) : null)
   }, [])
 
   // Only the latest selection may settle the cockpit. Two can be in flight —
@@ -1192,7 +1237,7 @@ export default function App() {
   // read sweep — no writes, so invariant #16 is untouched. The diff runs ONLY
   // here (the resync path), never in the direct refreshAfterWrite a GUI write
   // fires, so a GUI action is not double-logged (red line #3).
-  const doResync = useCallback(async () => {
+  const doResync = useCallback(async (): Promise<ResyncResult> => {
     // `selectedId` is the selection this sweep started under; J held through
     // the sweep moves it on, and then the cockpit is no longer this sweep's.
     const seq = selectSeq.current
@@ -1275,6 +1320,7 @@ export default function App() {
       setListFailed(false)
       if (selectedId) refetchCockpit(selectedId, seq)
       setMdReloadToken((t) => t + 1)
+      return { ok: true }
     } catch (err) {
       // A failed sweep is a data no-op: leave the UI and the diff baseline
       // untouched (a transient fetch error must not wipe the view or desync
@@ -1283,6 +1329,7 @@ export default function App() {
       // next successful sweep. Keeping the stale list on screen is deliberate:
       // it is the last thing that was true, and the banner says so.
       classifyFetchError(err)
+      return { ok: false, error: err }
     }
   }, [listMode, selectedId, appendLog, classifyFetchError, refetchCockpit])
 
@@ -1324,28 +1371,22 @@ export default function App() {
     },
     [setSiWindow],
   )
-  // One toast, since a second would replace the first: the warnings (rare,
-  // and sentences long) go to the activity log, and the toast points there.
+  // One toast. The warnings themselves are in the GUI log (the server wrote
+  // them); the toast says only what the person can see: an index that lags.
+  // A copy left behind in the upload stash changes nothing they see.
   const onSiAdded = useCallback(
     (snap: SiSnapshot) => {
       closeSiWindow(snap.id)
+      const t = getT().browse.app
       const n = snap.added.length
-      const added = n === 1 ? 'Added 1 SI file' : `Added ${n} SI files`
-      const w = snap.warnings.length
-      if (w === 0) {
-        notify(added, 'success')
+      if ((snap.warningCodes ?? []).includes('index-not-updated')) {
+        notify(t.siAddedWithWarnings(n), 'warning')
       } else {
-        notify(
-          `${added} · ${w === 1 ? '1 warning' : `${w} warnings`} in the activity log`,
-          'warning',
-        )
-        appendLog(
-          snap.warnings.map((message) => ({ ts: Date.now(), variant: 'warning', message })),
-        )
+        notify(t.siAdded(n), 'success')
       }
       refreshAfterWrite()
     },
-    [closeSiWindow, notify, appendLog, refreshAfterWrite],
+    [closeSiWindow, notify, refreshAfterWrite],
   )
   // Closed at once; the server is told after. Cancel has nothing to show for
   // itself, so it says nothing — unless the server refused, in which case the
@@ -1358,7 +1399,8 @@ export default function App() {
         // either way.
         if (err instanceof ApiError && (err.status === 404 || err.status === 409)) return
         closedSiIds.current.delete(id)
-        notify(err instanceof Error ? err.message : String(err), 'error')
+        const line = errorLine(err)
+        if (line) notify(line, 'error')
       })
     },
     [closeSiWindow, notify],
@@ -1382,7 +1424,10 @@ export default function App() {
             auto: false,
           })
         })
-        .catch((err) => notify(err instanceof Error ? err.message : String(err), 'error'))
+        .catch((err) => {
+          const line = errorLine(err)
+          if (line) notify(line, 'error')
+        })
     },
     [notify, setSiWindow],
   )
@@ -1429,6 +1474,118 @@ export default function App() {
   }
   const onSiPollRef = useRef(onSiPoll)
   onSiPollRef.current = onSiPoll
+
+  // --- The auto sync's status (rides on the same poll) ----------------------
+  // The cloud button by the library selector shows it; each finished sync or
+  // stop that has something to say is told once (keyed by `seq`): one toast,
+  // plus one activity-log row per conflict / folder / repo. The first status
+  // after a load or a library switch only sets the baseline: what happened
+  // before the page was looking is in the button's popover, not a toast.
+  // `undefined` until the first poll of the served library; `null` when it
+  // has no `sync:`.
+  const [syncStatus, setSyncStatus] = useState<SyncStatus | null | undefined>(undefined)
+  const syncSeqRef = useRef<{ served: string; seq: number } | null>(null)
+  // "Sync now" was pressed: the key of the server's status then. The auto
+  // sync runs one sync at a time and ends the look it is in first, which on a
+  // slow cloud takes a while, and all that time the server still says what it
+  // said before. So from the press until the server's status changes (the run
+  // starts, or ends, fails or stops before a poll saw it start) the button
+  // shows the run as already under way; SYNC_ASK_MAX_MS is the fallback.
+  const [syncAsked, setSyncAsked] = useState<string | null>(null)
+  useEffect(() => {
+    setSyncStatus(undefined)
+    setSyncAsked(null)
+  }, [served])
+  useEffect(() => {
+    if (syncAsked === null) return
+    const timer = setTimeout(() => setSyncAsked(null), SYNC_ASK_MAX_MS)
+    return () => clearTimeout(timer)
+  }, [syncAsked])
+  const shownSyncStatus = useMemo<SyncStatus | null | undefined>(
+    () =>
+      syncAsked !== null && syncStatus
+        ? { ...syncStatus, state: 'running', reason: null, holder: null }
+        : syncStatus,
+    [syncAsked, syncStatus],
+  )
+  const onSyncPoll = (status: SyncStatus | null) => {
+    setSyncStatus(status)
+    if (syncAsked !== null && (status === null || syncStatusKey(status) !== syncAsked))
+      setSyncAsked(null)
+    if (!status || !served) return
+    const seen = syncSeqRef.current
+    syncSeqRef.current = { served, seq: status.seq }
+    if (!seen || seen.served !== served || status.seq <= seen.seq) return
+    const notice = status.notice
+    if (!notice) return
+    const ts = getT().sync
+    if (notice.kind === 'stopped') {
+      // A stop without a line of its own (rclone missing or too old, the
+      // config, the locks) says the popover's `other`, never the server's words.
+      const cause = stopCause(ts, notice.reason, status.remote)
+      notify(cause ? ts.toast.stopped(cause) : ts.line.other, 'error', { sticky: true })
+      return
+    }
+    const now = Date.now()
+    const rows: ActivityLogEntry[] = [
+      ...(notice.conflicts ?? []).map((c) => ({
+        ts: now,
+        variant: 'warning' as const,
+        message: ts.log.conflict(c.path, c.kept === 'local', c.backup),
+      })),
+      ...(notice.deletedFolders ?? []).map((d) => ({
+        ts: now,
+        variant: 'warning' as const,
+        message: ts.log.deletedFolder(d.folder, d.deletedHere, d.backup),
+      })),
+      ...(notice.reposNotRestored ?? []).map((r) => ({
+        ts: now,
+        variant: 'warning' as const,
+        message: ts.log.repo(r.name, r.kind),
+      })),
+    ]
+    const parts = [
+      notice.conflicts?.length ? ts.toast.conflicts(notice.conflicts.length) : null,
+      notice.deletedFolders?.length
+        ? ts.toast.deletedFolders(notice.deletedFolders.length)
+        : null,
+      notice.reposNotRestored?.length ? ts.toast.repos(notice.reposNotRestored.length) : null,
+    ].filter((x): x is string => x !== null)
+    if (parts.length === 0) return
+    appendLog(rows)
+    notify(ts.toast.synced(parts.join(ts.toast.sep)), 'warning', { log: false })
+  }
+  const onSyncPollRef = useRef(onSyncPoll)
+  onSyncPollRef.current = onSyncPoll
+
+  // "Sync now" in the cloud button's popover. The button shows syncing at once
+  // (syncAsked), and a poll right after the request picks up a run that has
+  // already started. A press while one is pending does nothing more: the
+  // syncing popover has no "Sync now" to press.
+  const syncNow = useCallback(() => {
+    if (!syncStatus || syncAsked !== null) return
+    setSyncAsked(syncStatusKey(syncStatus))
+    postSyncNow()
+      .then(() => pollNowRef.current?.())
+      .catch(() => {
+        setSyncAsked(null)
+        notify(getT().sync.toast.syncNowFailed, 'error')
+      })
+  }, [notify, syncStatus, syncAsked])
+
+  // A save that went over a file changed since it was read (a sync brought
+  // the other machine's copy, an agent rewrote it): the save won, and the copy
+  // it replaced is in the backup. The toast says so briefly; the log keeps one
+  // row, with the backup's path.
+  const reportReplaced = useCallback(
+    (paperId: string, file: string, backup: string) => {
+      const ts = getT().sync
+      const name = `${paperId}/${file}`
+      appendLog([{ ts: Date.now(), variant: 'warning', message: ts.replacedLog(name, backup) }])
+      notify(ts.replaced(name), 'warning', { log: false })
+    },
+    [notify, appendLog],
+  )
   // Only ever reads the key: capture, so it sees every key whoever stops it
   // later, and it never prevents or stops anything.
   useEffect(() => {
@@ -1480,7 +1637,7 @@ export default function App() {
         return
       }
       try {
-        const { version, siRequest } = await fetchVaultVersion()
+        const { version, siRequest, sync } = await fetchVaultVersion()
         if (stopped) return
         const seen = vaultVersionRef.current
         vaultVersionRef.current = { served, version }
@@ -1489,6 +1646,7 @@ export default function App() {
           void doResyncRef.current()
         }
         onSiPollRef.current(siRequest ?? null)
+        onSyncPollRef.current(sync ?? null)
       } catch {
         // Silent by design: a failed poll degrades to exactly today's behaviour
         // (resync on focus / the refresh button). It must never raise the
@@ -1531,11 +1689,19 @@ export default function App() {
 
   // Manual refresh (TopBar button): force an immediate sweep (bypass the throttle)
   // and confirm with a toast — this is the explicit-feedback path, whereas the
-  // focus-driven sweep stays silent so alt-tabbing doesn't spam toasts.
-  const manualResync = useCallback(() => {
+  // focus-driven sweep stays silent so alt-tabbing doesn't spam toasts. Only a
+  // sweep that landed says "refreshed": a gone library or a lost server already
+  // has its banner, and any other failure gets its line.
+  const manualResync = useCallback(async () => {
     lastResyncRef.current = Date.now()
-    doResync()
-    notify('Refreshed from disk.', 'success')
+    const result = await doResync()
+    if (result.ok) {
+      notify(getT().browse.app.refreshed, 'success')
+      return
+    }
+    if (isVaultGone(result.error) || isNetworkError(result.error)) return
+    const line = errorLine(result.error)
+    if (line) notify(line, 'error')
   }, [doResync, notify])
 
   const openTab = useCallback(
@@ -1544,7 +1710,7 @@ export default function App() {
       setTabs((prev) =>
         prev.some((t) => t.key === key)
           ? prev
-          : [...prev, { key, kind, paperId: id, label: tabLabel(id, kind) }],
+          : [...prev, { key, kind, paperId: id }],
       )
       setActiveTab(key)
       selectPaper(id)
@@ -1571,13 +1737,13 @@ export default function App() {
   const openWikilink = useCallback(
     (target: string) => {
       if (target.includes(':')) {
-        notify('Cross-vault link — open that vault to follow it.')
+        notify(getT().browse.app.crossVaultLink)
         return
       }
       if (allPapers.some((p) => p.id === target)) {
         openPdf(target)
       } else {
-        notify(`No paper "${target}" in this vault.`)
+        notify(getT().browse.app.noSuchPaper(target))
       }
     },
     [allPapers, openPdf, notify],
@@ -1612,10 +1778,25 @@ export default function App() {
   // and so the close prompt / page-unload guard can see "unsaved md edits" the
   // same way they see dirty PDF annotations.
 
-  const mdBeginEdit = useCallback((tabKey: string, seed: string) => {
+  const mdBeginEdit = useCallback((tabKey: string, seed: string, base: string | null) => {
     setMdDrafts((prev) => {
       const next = new Map(prev)
-      next.set(tabKey, { draft: seed, savedText: seed })
+      next.set(tabKey, { draft: seed, savedText: seed, base })
+      return next
+    })
+  }, [])
+
+  // The tab's file was read afresh. A session nobody has typed in follows it:
+  // re-seeded from the new text and version, so the textarea shows what a
+  // sync brought and a later save does not count that sync as a conflict.
+  // Checked inside the update, against the draft as it is now, so typing that
+  // landed first keeps the session as it is.
+  const mdFileRead = useCallback((tabKey: string, text: string, base: string | null) => {
+    setMdDrafts((prev) => {
+      const cur = prev.get(tabKey)
+      if (!cur || cur.draft !== cur.savedText || cur.base === base) return prev
+      const next = new Map(prev)
+      next.set(tabKey, { draft: text, savedText: text, base })
       return next
     })
   }, [])
@@ -1626,6 +1807,20 @@ export default function App() {
       if (!cur) return prev // not editing (stale event) — ignore
       const next = new Map(prev)
       next.set(tabKey, { ...cur, draft })
+      return next
+    })
+  }, [])
+
+  // A save of `sent` went through. The draft may have moved on while it was on
+  // its way (the textarea stays open, and a sync can hold a save for minutes):
+  // then the session goes on, from the saved text and the version it left.
+  const mdSaveSettled = useCallback((tabKey: string, sent: string, base: string | null) => {
+    setMdDrafts((prev) => {
+      const cur = prev.get(tabKey)
+      if (!cur) return prev
+      const next = new Map(prev)
+      if (cur.draft === sent) next.delete(tabKey)
+      else next.set(tabKey, { draft: cur.draft, savedText: sent, base })
       return next
     })
   }, [])
@@ -1746,7 +1941,7 @@ export default function App() {
   )
 
   // Close-others keeps the tab being READ (the active one), not the tab under
-  // the cursor — wangq's call, diverging from the browser convention on
+  // the cursor — a deliberate choice, diverging from the browser convention on
   // purpose: the menu means the same thing wherever on the strip you invoke it,
   // and the page you are reading never vanishes. (To keep a background tab:
   // activate it first.)
@@ -1778,7 +1973,8 @@ export default function App() {
       const entry = mdDraftsRef.current.get(key)
       if (tab && tab.kind !== 'pdf' && entry) {
         const put = tab.kind === 'notes' ? putNotes : putDiscussion
-        await put(tab.paperId, entry.draft)
+        const saved = await put(tab.paperId, entry.draft, entry.base)
+        if (saved.replaced) reportReplaced(tab.paperId, `${tab.kind}.md`, saved.replaced.backup)
         bumpDocMtime(tab.paperId, tab.kind) // D2: this is a GUI md save too
       } else {
         await handlesRef.current.get(key)?.flush()
@@ -1797,7 +1993,7 @@ export default function App() {
     setSavingClose(false)
     removeTab(key)
     advanceCloseQueue()
-  }, [pendingClose, removeTab, tabs, bumpDocMtime, advanceCloseQueue])
+  }, [pendingClose, removeTab, tabs, bumpDocMtime, advanceCloseQueue, reportReplaced])
 
   const confirmDiscard = useCallback(() => {
     const key = pendingClose
@@ -1829,7 +2025,8 @@ export default function App() {
     try {
       await removePaper(id)
     } catch (err) {
-      notify(err instanceof Error ? err.message : String(err), 'error')
+      const line = errorLine(err, getT().errors.paper.notTrashed)
+      if (line) notify(line, 'error')
       setRemoving(false)
       return
     }
@@ -1844,7 +2041,7 @@ export default function App() {
     }
     setRemoving(false)
     setPendingRemove(null)
-    notify(`Removed “${id}” to trash · restore from the 🗑 Trash`, 'success')
+    notify(getT().browse.app.removedToTrash(id), 'success')
     // The removed paper drops out of the list + counts; do NOT re-fetch its own
     // metadata (it's gone) — just reload the list, the INDEX projection, and the
     // trash count (the paper just landed in trash). Pins: a pin on the removed
@@ -1948,12 +2145,13 @@ export default function App() {
       const tab = tabs.find((t) => t.key === key)
       if (tab && tab.kind !== 'pdf') {
         const put = tab.kind === 'notes' ? putNotes : putDiscussion
-        await put(tab.paperId, entry.draft)
+        const saved = await put(tab.paperId, entry.draft, entry.base)
+        if (saved.replaced) reportReplaced(tab.paperId, `${tab.kind}.md`, saved.replaced.backup)
         bumpDocMtime(tab.paperId, tab.kind) // D2: GUI md save (covers a switch
         // that then fails before reloadForVault resets the baseline).
       }
     }
-  }, [tabs, bumpDocMtime])
+  }, [tabs, bumpDocMtime, reportReplaced])
 
   // Reload everything for the now-active vault and reset per-vault view state
   // (the old vault's tabs / selection / filters / scope no longer apply).
@@ -2033,8 +2231,10 @@ export default function App() {
     const name = pendingVault
     if (!name) return
     setSwitchingVault(true)
+    let flushed = false
     try {
       await flushAllDirty()
+      flushed = true
       await putActiveVault(name)
       reloadForVault()
       setPendingVault(null)
@@ -2044,7 +2244,20 @@ export default function App() {
       // way — leaving the dialog up reads as if nothing happened. Refresh the
       // vault list on the way out so the selector marks it missing (best-effort:
       // if the switch failed because the server died, this fetch dies with it).
-      notify(err instanceof Error ? err.message : String(err), 'error')
+      const t = getT().errors
+      let line: string | null
+      if (flushed) {
+        line = errorLine(err, null, t.vault)
+      } else {
+        // An open document could not be saved, so the switch did not happen.
+        // A save the server refused is in the GUI log already; one that failed
+        // in the page (pdf.js) is put there now.
+        if (!(err instanceof ApiError || err instanceof OfflineError)) {
+          logPageFailure('save open documents before switching library', describe(err))
+        }
+        line = errorLine(err, t.unsavedNotSaved, {})
+      }
+      if (line) notify(line, 'error')
       setPendingVault(null)
       fetchVaults()
         .then(setVaults)
@@ -2064,7 +2277,7 @@ export default function App() {
   const onRegisterVault = useCallback(
     async (name: string, path: string, setActive: boolean) => {
       await registerVault(name, path)
-      notify(`Registered vault “${name}”.`, 'success')
+      notify(getT().browse.app.vaultRegistered(name), 'success')
       // Best-effort: the register already succeeded, so a failure HERE must not
       // propagate into the dialog's catch — it would render as if the register
       // failed, contradicting the success toast, and a resubmit would then 400
@@ -2088,7 +2301,7 @@ export default function App() {
   const onCreateVault = useCallback(
     async (parentDir: string, name: string, setActive: boolean) => {
       const created = await createVault(parentDir, name)
-      notify(`Created vault “${created.name}” at ${created.path}.`, 'success')
+      notify(getT().browse.app.vaultCreated(created.name, created.path), 'success')
       // Best-effort, same reason as onRegisterVault: the vault exists on disk
       // now, so a failed list refresh must not reach the dialog as a failed
       // create — resubmitting would 400 on the (real) name clash.
@@ -2106,10 +2319,11 @@ export default function App() {
     async (name: string) => {
       try {
         await unregisterVault(name)
-        notify(`Unregistered vault “${name}”.`, 'success')
+        notify(getT().browse.app.vaultUnregistered(name), 'success')
         await fetchVaults().then(setVaults)
       } catch (err) {
-        notify(err instanceof Error ? err.message : String(err), 'error')
+        const line = errorLine(err, null, getT().errors.vault)
+        if (line) notify(line, 'error')
       }
     },
     [notify],
@@ -2125,7 +2339,7 @@ export default function App() {
   const onRelocateVault = useCallback(
     async (name: string, path: string) => {
       await setVaultPath(name, path)
-      notify(`Re-pointed vault “${name}” to ${path}.`, 'success')
+      notify(getT().browse.app.vaultRelocated(name, path), 'success')
       await doResync()
     },
     [notify, doResync],
@@ -2149,22 +2363,19 @@ export default function App() {
       setRestoringEntry(entry.entryName)
       try {
         const res = await restorePaper(entry.entryName)
-        const parts: string[] = []
-        if (res.reverseEdgesRebuilt.length)
-          parts.push(`${res.reverseEdgesRebuilt.length} reverse edge(s)`)
-        if (res.reposRebound.length)
-          parts.push(`${res.reposRebound.length} repo(s)`)
-        if (res.projectsRebuilt.length)
-          parts.push(`${res.projectsRebuilt.length} project(s)`)
-        let msg = `Restored “${res.paperId}”`
-        if (parts.length) msg += ` · rebuilt ${parts.join(', ')}`
         const missing = Object.keys(res.missingRepos)
+        const msg = getT().browse.app.restored({
+          id: res.paperId,
+          reverseEdges: res.reverseEdgesRebuilt.length,
+          repos: res.reposRebound.length,
+          projects: res.projectsRebuilt.length,
+          missingRepos: missing,
+        })
         if (missing.length) {
           // The 1:1 code repo(s) were hard-deleted on rm and the GUI deliberately
           // does NOT re-clone (decision b). The restore put each one's record
           // (upstream included) back, so one CLI command clones them all —
           // warn prominently and don't auto-dismiss until it has been run.
-          msg += ` · ⚠ code not cloned again: ${missing.join(', ')} — run lit code restore-all`
           notify(msg, 'warning', { sticky: true })
         } else {
           notify(msg, 'success')
@@ -2174,7 +2385,8 @@ export default function App() {
         loadList(listMode)
         fetchPapers().then(setAllPapers)
       } catch (err) {
-        notify(err instanceof Error ? err.message : String(err), 'error')
+        const line = errorLine(err, null, getT().errors.paper.restoreCodes)
+        if (line) notify(line, 'error')
       } finally {
         setRestoringEntry(null)
       }
@@ -2216,9 +2428,10 @@ export default function App() {
       setUploading(true)
       uploadIngestPdf(file)
         .then((r) => setAddUpload({ ...r, fileName: file.name }))
-        .catch((e) =>
-          notify(e instanceof Error ? e.message : String(e), 'error'),
-        )
+        .catch((e) => {
+          const line = errorLine(e, null, getT().errors.addPaper)
+          if (line) notify(line, 'error')
+        })
         .finally(() => setUploading(false))
     },
     [notify],
@@ -2241,7 +2454,7 @@ export default function App() {
   const onPaperAdded = useCallback(
     (id: string) => {
       setAddUpload(null)
-      notify(`Added ${id}`, 'success')
+      notify(getT().browse.app.paperAdded(id), 'success')
       loadList(listMode)
       fetchPapers()
         .then(setAllPapers)
@@ -2334,7 +2547,7 @@ export default function App() {
         cockpitHandle.triggerRead()
         // Modifiers spelled out, per the cheat sheet's own convention: a glyph
         // is an extra decode step, and ⌥ names a key Windows keyboards lack.
-        notify('Marked read · Alt+Shift+R to undo')
+        notify(getT().browse.app.markedRead)
       },
     }
   }, [cockpitHandle, notify])
@@ -2395,7 +2608,7 @@ export default function App() {
   // mirrors the ⌥-curation convention (subtle feedback, never a write).
   const togglePinSelected = useCallback(() => {
     if (!selectedId) {
-      notify('No paper selected')
+      notify(getT().browse.noPaperSelected)
       return
     }
     togglePin(selectedId)
@@ -2406,7 +2619,7 @@ export default function App() {
   const openSelectedDoc = useCallback(
     (doc: 'notes' | 'discussion') => {
       if (!selectedId) {
-        notify('No paper selected')
+        notify(getT().browse.noPaperSelected)
         return
       }
       openDoc(selectedId, doc)
@@ -2470,16 +2683,16 @@ export default function App() {
         <div className="fixed left-1/2 top-3 z-50 flex max-w-[min(44rem,92vw)] -translate-x-1/2 items-center gap-3 rounded-full bg-red-100 py-1.5 pl-4 pr-1.5 text-sm text-red-900 shadow-md ring-1 ring-red-200 dark:bg-red-950/80 dark:text-red-100 dark:ring-red-900">
           <span className="h-2 w-2 shrink-0 rounded-full bg-red-500" />
           <span className="truncate">
-            This library is no longer at{' '}
-            <span className="font-mono text-[0.8em]">{served}</span> — it was moved,
-            renamed or deleted.
+            {rich(T.browse.app.vaultGone, {
+              path: <span className="font-mono text-[0.8em]">{served}</span>,
+            })}
           </span>
           <button
             type="button"
             onClick={() => openVaultManager?.()}
             className="shrink-0 rounded-full bg-white/80 px-3 py-1 text-xs font-medium text-red-900 shadow-sm ring-1 ring-red-200 transition duration-200 ease-fluid hover:bg-white dark:bg-red-900/60 dark:text-red-50 dark:ring-red-800 dark:hover:bg-red-900"
           >
-            Find it
+            {T.browse.app.findIt}
           </button>
         </div>
       ) : (
@@ -2490,7 +2703,7 @@ export default function App() {
         disconnected && (
           <div className="fixed left-1/2 top-3 z-50 flex -translate-x-1/2 items-center gap-2 rounded-full bg-amber-100 px-4 py-1.5 text-sm text-amber-800 shadow-md ring-1 ring-amber-200 dark:bg-amber-950/70 dark:text-amber-200 dark:ring-amber-900">
             <span className="h-2 w-2 animate-pulse rounded-full bg-amber-500" />
-            Can't reach the litman server — retrying…
+            {T.browse.app.disconnected}
           </div>
         )
       )}
@@ -2507,23 +2720,20 @@ export default function App() {
         <div className="fixed left-1/2 top-14 z-40 flex max-w-[min(46rem,92vw)] -translate-x-1/2 items-start gap-3 rounded-2xl bg-stone-100 py-2 pl-4 pr-2 text-sm text-stone-700 shadow-md ring-1 ring-stone-200 dark:bg-stone-800 dark:text-stone-200 dark:ring-stone-700">
           <div className="min-w-0 py-0.5">
             <span>
-              This drive can't hold folder links, so{' '}
-              <span className="font-mono text-[0.85em]">views/</span> and the
-              project shortcuts aren't being made.{' '}
-              <span className="text-stone-500 dark:text-stone-400">
-                Your library is fine — every command, this app and the agent
-                workflow all work normally.
-              </span>
+              {rich(T.browse.app.linkNotice, {
+                views: <span className="font-mono text-[0.85em]">views/</span>,
+                reassurance: (
+                  <span className="text-stone-500 dark:text-stone-400">
+                    {T.browse.app.linkNoticeFine}
+                  </span>
+                ),
+              })}
             </span>
-            <div className="mt-1 text-xs text-stone-500 dark:text-stone-400">
-              Usual on USB sticks (FAT32 / exFAT) and network drives; a library
-              on an internal drive gets the shortcuts automatically.
-            </div>
           </div>
           <div className="flex shrink-0 items-center gap-1">
             <button
               type="button"
-              aria-label="Dismiss"
+              aria-label={T.browse.app.dismiss}
               onClick={() => {
                 localStorage.setItem(LINK_NOTICE_DISMISSED, '1')
                 setLinkNotice(false)
@@ -2572,6 +2782,8 @@ export default function App() {
         onRegisterAgentManage={registerAgentManage}
         onRegisterVaultManagerOpen={registerVaultManagerOpen}
         trashMode={trashMode}
+        syncStatus={shownSyncStatus}
+        onSyncNow={syncNow}
       />
       <div className="flex min-h-0 flex-1">
         {trashMode ? (
@@ -2627,14 +2839,17 @@ export default function App() {
               onCloseAll={closeAllTabs}
               onOpenPaper={openWikilink}
               onRegisterPdf={registerPdf}
-              onNotify={notify}
+              onNotify={notifyTabFailure}
               mdJump={mdJump}
               mdDraft={activeTab ? mdDrafts.get(activeTab) : undefined}
               mdReloadToken={mdReloadToken}
               onMdBeginEdit={mdBeginEdit}
+              onMdFileRead={mdFileRead}
               onMdDraftChange={mdDraftChange}
               onMdEndEdit={mdEndEdit}
+              onMdSaveSettled={mdSaveSettled}
               onMdSaved={bumpDocMtime}
+              onSaveReplaced={reportReplaced}
             />
             <Cockpit
               paper={cockpitPaper}
@@ -2662,13 +2877,12 @@ export default function App() {
       </div>
       {pendingClose && (
         <SaveDialog
-          label={pendingTab?.label ?? pendingClose}
+          label={pendingTab ? tabLabel(T, pendingTab) : pendingClose}
           saving={savingClose}
           onSave={confirmSave}
           onDiscard={confirmDiscard}
           onCancel={cancelClose}
-          title={pendingIsMd ? 'Save edits?' : undefined}
-          bodyNoun={pendingIsMd ? 'unsaved edits' : undefined}
+          kind={pendingIsMd ? 'md' : 'pdf'}
         />
       )}
       {pendingVault && (
@@ -2689,7 +2903,7 @@ export default function App() {
           onConfirm={confirmRemove}
         />
       )}
-      {cheatSheetOpen && <CheatSheet onClose={closeCheatSheet} />}
+      {cheatSheetOpen && <CheatSheet onClose={closeCheatSheet} notify={notify} />}
       {whatsNew && <WhatsNew info={whatsNew} onClose={closeWhatsNew} />}
       {/* Drag-in ingest: the drop catcher is the ONLY GUI add entry (no
           button by design). Parked while the confirm dialog is up so a

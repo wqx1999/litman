@@ -1,4 +1,5 @@
 import { useEffect } from 'react'
+import { getT } from './i18n'
 import type { PdfHandle, PdfEditMode } from './pdf/PdfView'
 import type { CockpitHandle } from './cockpit/Cockpit'
 
@@ -232,7 +233,7 @@ export function useKeyboardShortcuts(deps: ShortcutDeps): void {
           // selection (preventDefault stops the OS menu-key / dead-key glyph).
           e.preventDefault()
           if (!selectedId || !cockpit) {
-            notify('No paper selected')
+            notify(getT().browse.noPaperSelected)
             return
           }
           action(cockpit)

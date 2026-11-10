@@ -153,8 +153,8 @@ def _provenance_label(entry: VaultEntry) -> str:
     "imported_from",
     default=None,
     help=(
-        "Free-form provenance label for a vault wangq received from "
-        "elsewhere (e.g. 'Zhang via USB drop'). When given without "
+        "Free-form provenance label for a vault you received from "
+        "elsewhere (e.g. 'a colleague, via USB'). When given without "
         "--import-at, today's date is auto-filled."
     ),
 )

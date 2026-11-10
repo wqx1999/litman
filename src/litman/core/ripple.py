@@ -455,10 +455,10 @@ def migrate_retired_priority(vault: Path) -> int:
             continue
         projects = rt_metadata.get("projects")
         if projects is not None and not isinstance(projects, list):
-            # `projects: pepcodec` (a hand-edit) would iterate CHARACTER by
-            # character into priority-p, priority-e, ... and no check could
+            # `projects: my-project` (a hand-edit) would iterate CHARACTER by
+            # character into priority-m, priority-y, ... and no check could
             # catch it afterwards: check_priority_orphan matches each letter
-            # against set("pepcodec"), which contains them all. Refuse the
+            # against set("my-project"), which contains them all. Refuse the
             # paper, mirroring _ripple_removals' scalar guard.
             continue
 

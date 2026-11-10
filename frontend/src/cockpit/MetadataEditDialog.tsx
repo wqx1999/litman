@@ -1,10 +1,14 @@
 import { useMemo, useState } from 'react'
 import type { PaperMeta } from '../types'
 import type { MetadataWrite } from '../api'
+import { getT, useT, type Messages } from '../i18n'
+import { errorLine } from '../apiErrors'
 import AuthorRows from '../ui/AuthorRows'
 import { useEscapeLayer } from '../ui/escapeStack'
-import { isYearShape, YEAR_HINT } from '../ui/year'
+import { isYearShape, yearHint } from '../ui/year'
 import { modalBackdropProps } from '../ui/modalShell'
+
+type EditText = Messages['cockpit']['metadataEdit']
 
 /** The bibliographic scalars the edit dialog exposes, in display order.
  * `status`/`type` are NOT here (they have dropdowns), nor are the
@@ -14,21 +18,21 @@ import { modalBackdropProps } from '../ui/modalShell'
  * write, and the dialog says so instead of offering an input. */
 const EDIT_SCALARS: ReadonlyArray<{
   key: string
-  label: string
+  label: (m: EditText) => string
   wide: boolean
   /** Shown beside the label, always — the shape rule, not an error. */
-  hint?: string
+  hint?: () => string
 }> = [
-  { key: 'title', label: 'Title', wide: true },
-  { key: 'year', label: 'Year', wide: false, hint: YEAR_HINT },
-  { key: 'journal', label: 'Journal', wide: true },
-  { key: 'doi', label: 'DOI', wide: true },
-  { key: 'volume', label: 'Volume', wide: false },
-  { key: 'issue', label: 'Issue', wide: false },
-  { key: 'pages', label: 'Pages', wide: false },
-  { key: 'publisher', label: 'Publisher', wide: true },
-  { key: 'venue-type', label: 'Venue type', wide: false },
-  { key: 'booktitle', label: 'Book title', wide: true },
+  { key: 'title', label: (m) => m.labels.title, wide: true },
+  { key: 'year', label: (m) => m.labels.year, wide: false, hint: yearHint },
+  { key: 'journal', label: (m) => m.labels.journal, wide: true },
+  { key: 'doi', label: () => 'DOI', wide: true },
+  { key: 'volume', label: (m) => m.labels.volume, wide: false },
+  { key: 'issue', label: (m) => m.labels.issue, wide: false },
+  { key: 'pages', label: (m) => m.labels.pages, wide: false },
+  { key: 'publisher', label: (m) => m.labels.publisher, wide: true },
+  { key: 'venue-type', label: (m) => m.labels.venueType, wide: false },
+  { key: 'booktitle', label: (m) => m.labels.booktitle, wide: true },
 ]
 
 /** Edit dialog for bibliographic metadata (task-gui-metadata-edit).
@@ -53,6 +57,8 @@ export default function MetadataEditDialog({
   onSave: (body: MetadataWrite) => Promise<void>
   onClose: () => void
 }) {
+  const t = useT()
+  const m = t.cockpit.metadataEdit
   const original = useMemo(() => {
     const scalars: Record<string, string> = {}
     for (const f of EDIT_SCALARS) {
@@ -65,7 +71,9 @@ export default function MetadataEditDialog({
   const [authors, setAuthors] = useState<string[]>(
     paper.authors.length > 0 ? [...paper.authors] : [''],
   )
-  const [error, setError] = useState<string | null>(null)
+  // A server message as sent, or the year the shape rule rejected (its
+  // sentence is built at render, so it follows a language switch).
+  const [error, setError] = useState<{ server: string } | { badYear: string } | null>(null)
   const [saving, setSaving] = useState(false)
 
   async function doSave() {
@@ -84,7 +92,7 @@ export default function MetadataEditDialog({
     // does — `lit modify` is the escape hatch) must not have its title edit
     // held hostage by a field nobody came here to change.
     if (typeof set.year === 'string' && !isYearShape(set.year)) {
-      setError(`Year must be ${YEAR_HINT} — got '${set.year}'.`)
+      setError({ badYear: set.year })
       return
     }
 
@@ -106,9 +114,12 @@ export default function MetadataEditDialog({
       await onSave(body)
       onClose()
     } catch (err) {
-      // The backend's raw message (DOI collision, non-numeric year, emptied
-      // author list). The dialog stays open, the input stays as typed.
-      setError(err instanceof Error ? err.message : String(err))
+      // What the server refused (DOI taken, an author twice, no author left),
+      // in the dialog's words; anything else, that the change was not saved.
+      // The dialog stays open, the input stays as typed.
+      const c = getT().errors.cockpit
+      const line = errorLine(err, c.changeNotSaved, c.codes)
+      if (line) setError({ server: line })
     } finally {
       setSaving(false)
     }
@@ -124,9 +135,9 @@ export default function MetadataEditDialog({
         onClick={(e) => e.stopPropagation()}
         className="flex max-h-[85vh] w-[30rem] animate-grow-in flex-col rounded-2xl bg-white p-5 shadow-xl ring-1 ring-stone-200"
       >
-        <h2 className="text-sm font-semibold text-stone-900">Edit metadata</h2>
-        <p className="mt-0.5 font-mono text-[11px] text-stone-400" title="The id is derived from year + first author + title keyword and is referenced by wikilinks. Changing it is `lit rename`, which updates every reference — not a field edit.">
-          {paper.id} <span className="font-sans">· id is fixed — rename via CLI</span>
+        <h2 className="text-sm font-semibold text-stone-900">{m.title}</h2>
+        <p className="mt-0.5 font-mono text-[11px] text-stone-400" title={m.idTitle}>
+          {paper.id} <span className="font-sans">{m.idFixed}</span>
         </p>
 
         <div className="mt-3 grid min-h-0 grid-cols-2 gap-x-3 gap-y-2.5 overflow-y-auto pr-1">
@@ -136,10 +147,10 @@ export default function MetadataEditDialog({
               className={f.wide ? 'col-span-2 block' : 'block'}
             >
               <span className="mb-0.5 block text-[11px] font-semibold uppercase tracking-wider text-stone-600">
-                {f.label}
+                {f.label(m)}
                 {f.hint && (
                   <span className="ml-1.5 font-normal normal-case tracking-normal text-stone-400">
-                    {f.hint}
+                    {f.hint()}
                   </span>
                 )}
               </span>
@@ -171,7 +182,7 @@ export default function MetadataEditDialog({
 
         {error && (
           <div className="mt-3 rounded-md border border-red-300 bg-red-50 px-2.5 py-1.5 text-xs leading-relaxed text-red-700">
-            {error}
+            {'badYear' in error ? m.yearShape(yearHint(), error.badYear) : error.server}
           </div>
         )}
 
@@ -181,14 +192,14 @@ export default function MetadataEditDialog({
             disabled={saving}
             className="rounded-lg px-3 py-1.5 text-xs text-stone-600 transition-colors hover:bg-stone-100 disabled:opacity-40"
           >
-            Cancel
+            {t.common.cancel}
           </button>
           <button
             onClick={doSave}
             disabled={saving}
             className="rounded-lg bg-accent-600 px-3 py-1.5 text-xs font-medium text-white shadow-sm transition-colors hover:bg-accent-700 disabled:opacity-40"
           >
-            {saving ? 'Saving…' : 'Save'}
+            {saving ? m.saving : m.save}
           </button>
         </div>
       </div>

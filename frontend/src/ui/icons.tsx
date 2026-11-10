@@ -135,6 +135,20 @@ export function QuestionCircleIcon(p: IconProps) {
   )
 }
 
+/** 文A-style glyph for the UI-language menu (the welcome card's corner). */
+export function LanguageIcon(p: IconProps) {
+  return (
+    <Line {...p}>
+      <path d="M3.5 5.5h9" />
+      <path d="M8 3.5v2" />
+      <path d="M11 5.5c-.9 4.2-3.5 7.5-7.5 9.5" />
+      <path d="M6 8.5c1.1 2.3 2.8 4.1 5 5.3" />
+      <path d="M12.5 20.5 16.5 11l4 9.5" />
+      <path d="M13.8 17.5h5.4" />
+    </Line>
+  )
+}
+
 /** The line icon for a standard anchor / location kind; a plain folder for
  * anything else. `kind` is an anchor label ('Home'/'Desktop'/'Documents'/
  * 'Downloads') or 'folder'. */
@@ -160,6 +174,14 @@ export function IconVault() {
       <ellipse cx="12" cy="5" rx="7" ry="3" />
       <path d="M5 5v6c0 1.7 3.1 3 7 3s7-1.3 7-3V5" />
       <path d="M5 11v6c0 1.7 3.1 3 7 3s7-1.3 7-3v-6" />
+    </Line>
+  )
+}
+
+export function IconCloud() {
+  return (
+    <Line>
+      <path d="M6.5 18.5h11a3.75 3.75 0 0 0 .5-7.47 5.5 5.5 0 0 0-10.72 1.1A3.2 3.2 0 0 0 6.5 18.5z" />
     </Line>
   )
 }

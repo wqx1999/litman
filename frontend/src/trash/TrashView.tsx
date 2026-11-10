@@ -4,6 +4,7 @@ import type { PaperMeta, TrashEntry } from '../types'
 import PdfView from '../pdf/PdfView'
 import MdView from '../md/MdView'
 import Cockpit from '../cockpit/Cockpit'
+import { useT, type Messages } from '../i18n'
 
 /** A read-only tab inside the trash view: a trashed paper's PDF or one of its
  * markdown docs. Addressed by the trash `entryName` (all trash endpoints key off
@@ -13,11 +14,12 @@ interface TrashTab {
   kind: 'pdf' | 'notes' | 'discussion'
   entryName: string
   paperId: string
-  label: string
 }
 
-function tabLabel(paperId: string, kind: TrashTab['kind']): string {
-  return kind === 'pdf' ? paperId : `${paperId} · ${kind}`
+// Built at render rather than stored on the tab, so an open tab follows a
+// language switch.
+function tabLabel(t: Messages, paperId: string, kind: TrashTab['kind']): string {
+  return kind === 'pdf' ? paperId : t.browse.docTab[kind](paperId)
 }
 
 interface Props {
@@ -50,6 +52,8 @@ export default function TrashView({
   onRestore,
   restoringEntry,
 }: Props) {
+  const T = useT()
+  const t = T.browse.trash
   const [filter, setFilter] = useState('')
   const [selected, setSelected] = useState<string | null>(null)
   const [tabs, setTabs] = useState<TrashTab[]>([])
@@ -128,7 +132,6 @@ export default function TrashView({
               kind,
               entryName: entry.entryName,
               paperId: entry.paperId,
-              label: tabLabel(entry.paperId, kind),
             },
           ],
     )
@@ -161,14 +164,13 @@ export default function TrashView({
           onClick={onExit}
           className="rounded-md px-2 py-1 text-xs font-medium text-amber-800 transition-colors hover:bg-amber-200 dark:text-amber-200 dark:hover:bg-amber-900/60"
         >
-          ← Back to library
+          {t.back}
         </button>
         <span className="font-medium">
           {/* Cap is TRASH_MAX_ENTRIES = 100 (core/trash.py, ADR-011): hardcoded
               by design, no flag — safe to mirror as a literal. Past 100 the
               oldest entries are permanently evicted (ring eviction). */}
-          🗑 Trash{vaultName ? ` · ${vaultName}` : ''} · {entries.length} / 100 ·
-          restores back here (oldest auto-removed past 100)
+          {t.banner(vaultName, entries.length)}
         </span>
       </div>
 
@@ -180,18 +182,18 @@ export default function TrashView({
               type="text"
               value={filter}
               onChange={(e) => setFilter(e.target.value)}
-              placeholder="Filter by id or title…"
-              aria-label="Filter trash"
+              placeholder={t.filterPlaceholder}
+              aria-label={t.filterAria}
               className="w-full rounded-md border border-stone-300 bg-white px-2 py-1 text-sm text-stone-800 shadow-sm focus:border-accent-500 focus:outline-none focus:ring-2 focus:ring-accent-500/25"
             />
           </div>
           <div className="min-h-0 flex-1 overflow-auto bg-white py-1">
             {loading && (
-              <div className="p-3 text-sm text-stone-500">Loading…</div>
+              <div className="p-3 text-sm text-stone-500">{T.browse.loading}</div>
             )}
             {!loading && filtered.length === 0 && (
               <div className="p-3 text-sm text-stone-400">
-                {entries.length === 0 ? 'Trash is empty.' : 'No match.'}
+                {entries.length === 0 ? t.empty : t.noMatch}
               </div>
             )}
             {filtered.map((e) => {
@@ -232,14 +234,14 @@ export default function TrashView({
                       onClick={() => openTab(e, 'notes')}
                       className="rounded-lg bg-white px-2 py-0.5 text-xs text-stone-700 shadow-sm ring-1 ring-stone-200 transition-colors hover:text-accent-700 hover:ring-accent-200"
                     >
-                      📝 notes
+                      {T.browse.openNotes}
                     </button>
                     <button
                       onClick={() => onRestore(e)}
                       disabled={busy}
                       className="ml-auto rounded-lg bg-accent-500 px-2.5 py-0.5 text-xs font-medium text-white shadow-sm transition-colors hover:bg-accent-600 disabled:opacity-50"
                     >
-                      {busy ? 'Restoring…' : '↩ Restore'}
+                      {busy ? t.restoring : t.restore}
                     </button>
                   </div>
                 </div>
@@ -253,14 +255,14 @@ export default function TrashView({
           <div className="flex items-stretch gap-1 overflow-x-auto border-b border-stone-200 bg-stone-100 px-2 pt-1.5">
             {tabs.length === 0 && (
               <div className="px-2 py-2 text-xs text-stone-400">
-                Open a trashed paper from the list (read-only).
+                {t.noTabs}
               </div>
             )}
-            {tabs.map((t) => {
-              const isActive = t.key === activeTab
+            {tabs.map((tab) => {
+              const isActive = tab.key === activeTab
               return (
                 <div
-                  key={t.key}
+                  key={tab.key}
                   className={`group flex shrink-0 animate-grow-in items-center gap-2 rounded-t-lg border border-b-0 px-3 py-1.5 text-sm transition-colors ${
                     isActive
                       ? 'border-stone-200 bg-white text-stone-900'
@@ -269,22 +271,22 @@ export default function TrashView({
                 >
                   <button
                     onClick={() => {
-                      setActiveTab(t.key)
+                      setActiveTab(tab.key)
                       const ent = entries.find(
-                        (e) => e.entryName === t.entryName,
+                        (e) => e.entryName === tab.entryName,
                       )
                       if (ent) selectEntry(ent)
                     }}
                     className="flex max-w-56 items-center gap-1.5 truncate"
                   >
                     <span className="shrink-0 rounded bg-amber-100 px-1 py-px text-[10px] font-medium text-amber-700 dark:bg-amber-900/70 dark:text-amber-200">
-                      Trash
+                      {t.tabBadge}
                     </span>
-                    <span className="truncate">{t.label}</span>
+                    <span className="truncate">{tabLabel(T, tab.paperId, tab.kind)}</span>
                   </button>
                   <button
-                    onClick={() => closeTab(t.key)}
-                    title="Close tab"
+                    onClick={() => closeTab(tab.key)}
+                    title={t.closeTab}
                     className={`rounded p-0.5 leading-none text-stone-400 transition-colors hover:bg-stone-300 hover:text-stone-700 ${
                       isActive ? '' : 'opacity-0 group-hover:opacity-100'
                     }`}
@@ -299,7 +301,7 @@ export default function TrashView({
           <div className="min-h-0 flex-1">
             {active === null && (
               <div className="flex h-full items-center justify-center text-sm text-stone-400">
-                Select a trashed paper to preview it (read-only).
+                {t.noPreview}
               </div>
             )}
             {active && active.kind === 'pdf' && (
@@ -319,8 +321,10 @@ export default function TrashView({
                 readOnly
                 onOpenPaper={() => {}}
                 onBeginEdit={() => {}}
+                onFileRead={() => {}}
                 onDraftChange={() => {}}
                 onEndEdit={() => {}}
+                onSaveSettled={() => {}}
               />
             )}
           </div>

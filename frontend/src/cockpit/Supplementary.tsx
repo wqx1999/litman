@@ -1,5 +1,7 @@
 import { useEffect, useRef, useState, type MouseEvent } from 'react'
 import { fetchSiRmPreview, openSiFile, siFileUrl, type SiRmPreview } from '../api'
+import { getT, useT } from '../i18n'
+import { errorLine } from '../apiErrors'
 import { formatBytes } from '../ui/bytes'
 import { useEscapeLayer } from '../ui/escapeStack'
 import { modalBackdropProps } from '../ui/modalShell'
@@ -81,6 +83,7 @@ export function SupplementaryChips({
   // browser.
   const opening = useRef(new Set<string>())
   const fellBack = useRef(new Set<string>())
+  const m = useT().cockpit.supplementary
   const records = parseSupplementary(value)
 
   function openOnServer(e: MouseEvent<HTMLAnchorElement>, file: string) {
@@ -94,10 +97,13 @@ export function SupplementaryChips({
     opening.current.add(key)
     const href = siFileUrl(paperId, file)
     openSiFile(paperId, file)
-      .then((r) => notify?.(`Opened ${r.file} on ${r.host}`, 'success'))
+      .then((r) => notify?.(getT().cockpit.supplementary.opened(r.file, r.host), 'success'))
       .catch((err: unknown) => {
         fellBack.current.add(key)
-        notify?.(err instanceof Error ? err.message : String(err), 'error')
+        // The browser takes the file either way (below): the line says which.
+        const open = getT().errors.cockpit.siOpen
+        const line = errorLine(err, open['cannot-open']({ file }), open)
+        if (line) notify?.(line, 'error')
         // Still within the click's user activation (the server waits only a
         // moment for the app), so the browser lets this through. Opened with
         // 'noopener' it would come back null, so the tie is cut by hand.
@@ -144,8 +150,8 @@ export function SupplementaryChips({
           </a>
           <button
             type="button"
-            aria-label={`Remove ${r.file}`}
-            title="Remove"
+            aria-label={m.removeAria(r.file)}
+            title={m.removeTitle}
             disabled={busy}
             onClick={() => onRemove?.(r)}
             className="grid w-4 place-items-center rounded-r-md leading-none text-stone-500 opacity-0 transition-opacity hover:text-rose-600 focus-visible:opacity-100 group-hover/si:opacity-100 disabled:opacity-0"
@@ -163,15 +169,10 @@ export function SupplementaryChips({
         <span aria-hidden className="text-accent-600">
           +
         </span>
-        Add SI
+        {m.add}
       </button>
     </div>
   )
-}
-
-/** "Cited 2× in discussion.md." / "Cited 1× in notes.md and 2× in discussion.md." */
-function citedLine(cited: SiRmPreview['cited']): string {
-  return `Cited ${cited.map((c) => `${c.count}× in ${c.name}`).join(' and ')}.`
 }
 
 /** Confirm before an SI file is deleted — the relation-remove confirm's
@@ -193,6 +194,8 @@ export function SiRemoveConfirm({
   onCancel: () => void
   onConfirm: () => void
 }) {
+  const t = useT()
+  const m = t.cockpit.siRemove
   const [preview, setPreview] = useState<SiRmPreview | null>(null)
   const [failed, setFailed] = useState(false)
   useEscapeLayer(true, busy ? null : onCancel)
@@ -219,10 +222,10 @@ export function SiRemoveConfirm({
       <div
         onClick={(e) => e.stopPropagation()}
         role="dialog"
-        aria-label="Delete this SI file?"
+        aria-label={m.title}
         className="w-[22rem] animate-grow-in rounded-2xl bg-white p-5 shadow-xl ring-1 ring-stone-200"
       >
-        <h2 className="text-sm font-semibold text-stone-900">Delete this SI file?</h2>
+        <h2 className="text-sm font-semibold text-stone-900">{m.title}</h2>
         <p className="mt-1.5 font-mono text-xs leading-relaxed text-stone-600">
           {record.file}
         </p>
@@ -232,17 +235,15 @@ export function SiRemoveConfirm({
           </p>
         )}
         <div className="mt-3 space-y-1 text-xs leading-relaxed">
-          {checking && <p className="text-stone-400">Checking the notes for citations…</p>}
-          {failed && <p className="text-stone-500">Couldn't check the notes for citations.</p>}
+          {checking && <p className="text-stone-400">{m.checking}</p>}
+          {failed && <p className="text-stone-500">{m.checkFailed}</p>}
           {preview && preview.cited.length > 0 && (
-            <p className="text-amber-700 dark:text-amber-400">{citedLine(preview.cited)}</p>
+            <p className="text-amber-700 dark:text-amber-400">{m.cited(preview.cited)}</p>
           )}
           {preview && preview.unchecked.length > 0 && (
-            <p className="text-stone-500">
-              Couldn't check {preview.unchecked.join(' and ')} for citations.
-            </p>
+            <p className="text-stone-500">{m.unchecked(preview.unchecked)}</p>
           )}
-          <p className="text-stone-600">This can't be undone — add it again with Add SI.</p>
+          <p className="text-stone-600">{m.noUndo}</p>
         </div>
         <div className="mt-5 flex justify-end gap-2">
           <button
@@ -251,14 +252,14 @@ export function SiRemoveConfirm({
             disabled={busy}
             className="rounded-lg px-3 py-1.5 text-xs text-stone-600 transition-colors hover:bg-stone-100 disabled:opacity-40"
           >
-            Cancel
+            {t.common.cancel}
           </button>
           <button
             onClick={onConfirm}
             disabled={busy || checking}
             className="rounded-lg bg-rose-500 px-3 py-1.5 text-xs font-medium text-white transition-colors hover:bg-rose-600 disabled:opacity-60"
           >
-            Delete
+            {t.common.delete}
           </button>
         </div>
       </div>

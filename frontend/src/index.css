@@ -5,7 +5,7 @@
 
 @theme {
   /* macOS-native neutral system palette. Replaces the previous warm-stone
-     (PepForge) ramp with cool, near-neutral greys (Apple systemGray / label
+     ramp with cool, near-neutral greys (Apple systemGray / label
      family) so nothing reads as warm or yellow. Kept under the `stone-*` names
      so every existing utility re-tints globally with zero class churn. */
   --color-stone-50: #fbfbfd;
@@ -36,11 +36,19 @@
   --color-status-dropped: #c7c7cc;
 
   /* System font stacks — San Francisco on macOS, graceful fallbacks elsewhere.
-     The native look wants the system faces, not a bundled webfont. */
+     The native look wants the system faces, not a bundled webfont. The Chinese
+     faces sit AFTER system-ui: the browser picks per glyph, so Latin text keeps
+     the system face and only Chinese characters fall through to them (Windows
+     would otherwise reach for SimSun). The mono stack gets the Windows and
+     macOS ones too: a path, a folder name or a code span can hold Chinese.
+     Consolas / Menlo always catch Latin first there. Not Noto CJK: on a Linux
+     box with no listed mono face it would catch Latin text with proportional
+     glyphs, and fontconfig's own `monospace` already falls back to CJK. */
   --font-sans: -apple-system, BlinkMacSystemFont, "SF Pro Text",
-    "Helvetica Neue", system-ui, sans-serif;
+    "Helvetica Neue", system-ui, "PingFang SC", "Microsoft YaHei",
+    "Noto Sans CJK SC", sans-serif;
   --font-mono: ui-monospace, "SF Mono", SFMono-Regular, Menlo, "Cascadia Mono",
-    Consolas, "Liberation Mono", monospace;
+    Consolas, "Liberation Mono", "PingFang SC", "Microsoft YaHei", monospace;
 
   /* Motion language — one fluid easing shared by every transition (panels,
      disclosures, dropdowns, tabs) so nothing feels one-off or rigid. Reused via

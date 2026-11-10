@@ -279,8 +279,8 @@ _MODEL_FAMILY: dict[str, str] = {
     # Composer. Unlike cursor the served string is IDENTICAL to the requested one
     # (export returns the same id), so check 6's exact-match branch already carries
     # it and this entry only names the family for a smoke run's report. Which
-    # CONTROLLED model opencode routes for the real comparison is wangq's call
-    # (spec "待 wangq 决定"); that entry lands when the model is chosen.
+    # CONTROLLED model opencode routes for the real comparison is the maintainer's call
+    # (spec "待定"); that entry lands when the model is chosen.
     "opencode/deepseek-v4-flash-free": "deepseek-v4-flash-free",
     # --- codex: requests an id, the rollout echoes it verbatim ----------------
     # Codex's first-party models. Like opencode, the served string is IDENTICAL to

@@ -47,6 +47,7 @@ import sys
 from fastapi import APIRouter, HTTPException, Request, Response
 
 from litman.core import agent_prefs, agents, app_launch, terminal
+from litman.server.errors import api_error, log_entry
 
 router = APIRouter(prefix="/api")
 
@@ -56,8 +57,34 @@ def _resolved_default() -> str:
     return agent_prefs.load_default_agent() or agents.default_agent_name()
 
 
+#: The page's code for every permission warning: the rule litman tried to
+#: write for ``lit`` is not (fully) in force, so the agent may ask each time.
+PERMISSIONS_NOT_WRITTEN = "permissions-not-written"
+
+
+def _permission_fields(
+    request: Request, spec: agents.AgentSpec, warning: str | None
+) -> dict[str, object]:
+    """``permission_warning`` and its code for an answer; the warning is logged.
+
+    The page shows one line naming the agent; the warning itself (which file,
+    which rules) is what the agent needs, so it goes to the GUI log.
+    """
+    if not warning:
+        return {"permission_warning": None, "permission_code": None}
+    log_entry(
+        request,
+        kind="warning",
+        text=warning,
+        status=200,
+        code=PERMISSIONS_NOT_WRITTEN,
+        params={"agent": spec.display},
+    )
+    return {"permission_warning": warning, "permission_code": PERMISSIONS_NOT_WRITTEN}
+
+
 def _copy_fallback(
-    agent_name: str, default: str, permission_warning: str | None
+    agent_name: str, default: str, permission: dict[str, object]
 ) -> dict[str, object]:
     """Hand back the `lit agent` wrapper (correct from any cwd), not the raw
     command (which is only correct inside the vault)."""
@@ -67,7 +94,7 @@ def _copy_fallback(
         "mode": "copy",
         "agent": agent_name,
         "command": lit_line,
-        "permission_warning": permission_warning,
+        **permission,
     }
 
 
@@ -145,12 +172,14 @@ async def launch_agent(request: Request) -> dict[str, object]:
                 "on PATH. Install it, then recheck."
             )
         )
-        raise HTTPException(status_code=409, detail=detail)
+        raise api_error(409, detail, "agent-not-installed", agent=spec.display)
 
     # Skills may already be present through another agent's shared directory,
     # while permissions are always agent-native. Heal this agent's own rule on
     # launch so "Ready" plus "Set default" cannot leave it prompting forever.
-    permission = spec.install_lit_permission()
+    permission = _permission_fields(
+        request, spec, spec.install_lit_permission()["warning"]
+    )
 
     saved = agent_prefs.load_launch_modes().get(agent_name)
     if agents.choose_mode(spec, saved) == "app":
@@ -158,15 +187,15 @@ async def launch_agent(request: Request) -> dict[str, object]:
         try:
             app_launch.open_app(spec, request.app.state.vault)
         except app_launch.AppNoDisplay:
-            return _copy_fallback(agent_name, default, permission["warning"])
+            return _copy_fallback(agent_name, default, permission)
         except app_launch.AppNotFound as exc:
-            raise HTTPException(status_code=409, detail=str(exc)) from exc
+            raise api_error(409, exc) from exc
         return {
             "ok": True,
             "mode": "app",
             "agent": agent_name,
             "command": "",
-            "permission_warning": permission["warning"],
+            **permission,
         }
 
     # A CLI may have been installed while this long-running GUI server was
@@ -195,10 +224,10 @@ async def launch_agent(request: Request) -> dict[str, object]:
             "mode": "spawned",
             "agent": agent_name,
             "command": spec.launch,
-            "permission_warning": permission["warning"],
+            **permission,
         }
 
-    return _copy_fallback(agent_name, default, permission["warning"])
+    return _copy_fallback(agent_name, default, permission)
 
 
 @router.get("/agent/status")
@@ -321,6 +350,7 @@ async def install_agent_skill(request: Request) -> dict[str, object]:
         if any(result.get("mode") == "overwritten" for result in results)
         else "created"
     )
+    code = _permission_fields(request, spec, permission["warning"])["permission_code"]
     return {
         "ok": True,
         "agent": name,
@@ -330,6 +360,7 @@ async def install_agent_skill(request: Request) -> dict[str, object]:
             "mode": permission["mode"],
             "rule": permission["rule"],
             "warning": permission["warning"],
+            "code": code,
         },
     }
 
@@ -358,11 +389,11 @@ async def set_default_agent(request: Request) -> dict[str, object]:
                 "installed or is not available on PATH."
             )
         )
-        raise HTTPException(status_code=409, detail=detail)
+        raise api_error(409, detail, "agent-not-installed", agent=spec.display)
     try:
         agent_prefs.save_default_agent(name)
     except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+        raise api_error(400, exc) from exc
     return {"ok": True, "default": name}
 
 
@@ -384,5 +415,5 @@ async def set_launch_mode(request: Request) -> dict[str, object]:
     try:
         agent_prefs.save_launch_mode(name, mode)
     except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+        raise api_error(400, exc) from exc
     return {"ok": True, "agent": name, "mode": mode}

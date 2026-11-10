@@ -1,3 +1,5 @@
+import { getT } from '../i18n'
+
 /** The year shape the GUI's two write paths agree on.
  *
  * They used to disagree, which is how a library ends up holding both `145`
@@ -11,8 +13,13 @@
  * where the future ends (preprints carry next year's date routinely) and
  * where the past begins, and being wrong about either costs more than the
  * typo it would catch. Length is the part that is never a matter of opinion.
+ *
+ * `yearHint()` is that rule in words, for beside the field. A function, not a
+ * constant: it is read in the language of the moment.
  */
-export const YEAR_HINT = '4 digits'
+export function yearHint(): string {
+  return getT().reader.year.hint
+}
 
 export function isYearShape(raw: string): boolean {
   return /^\d{4}$/.test(raw.trim())

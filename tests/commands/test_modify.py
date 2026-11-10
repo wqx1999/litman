@@ -600,10 +600,10 @@ def test_modify_add_tag_multiple_fields(
         cli, ["taxonomy", "add", "methods", "cell-free",
               "--library", str(vault)]
     )
-    proj = vault / "_proj_pepforge"
+    proj = vault / "_proj_seahorse"
     proj.mkdir()
     runner.invoke(
-        cli, ["project", "add", "pepforge", "--path", str(proj),
+        cli, ["project", "add", "seahorse", "--path", str(proj),
               "--library", str(vault)]
     )
     result = runner.invoke(
@@ -613,7 +613,7 @@ def test_modify_add_tag_multiple_fields(
             "--add-tag", "topics=peptide",
             "--add-tag", "topics=AMP",
             "--add-tag", "methods=cell-free",
-            "--add-tag", "projects=pepforge",
+            "--add-tag", "projects=seahorse",
             "--library", str(vault),
         ],
     )
@@ -622,7 +622,7 @@ def test_modify_add_tag_multiple_fields(
     meta = _read_meta(vault, paper_id)
     assert meta["topics"] == ["peptide", "AMP"]
     assert meta["methods"] == ["cell-free"]
-    assert meta["projects"] == ["pepforge"]
+    assert meta["projects"] == ["seahorse"]
 
 
 def test_modify_add_tag_on_scalar_rejected(
@@ -804,10 +804,10 @@ def test_modify_rebuilds_views(vault_with_paper: tuple[Path, str]) -> None:
     runner.invoke(
         cli, ["taxonomy", "add", "topics", "peptide", "--library", str(vault)]
     )
-    proj = vault / "_proj_pepforge"
+    proj = vault / "_proj_seahorse"
     proj.mkdir()
     runner.invoke(
-        cli, ["project", "add", "pepforge", "--path", str(proj),
+        cli, ["project", "add", "seahorse", "--path", str(proj),
               "--library", str(vault)]
     )
     result = runner.invoke(
@@ -815,7 +815,7 @@ def test_modify_rebuilds_views(vault_with_paper: tuple[Path, str]) -> None:
         [
             "modify", paper_id,
             "--add-tag", "topics=peptide",
-            "--add-tag", "projects=pepforge",
+            "--add-tag", "projects=seahorse",
             "--set", "status=deep-read",
             "--library", str(vault),
         ],
@@ -823,7 +823,7 @@ def test_modify_rebuilds_views(vault_with_paper: tuple[Path, str]) -> None:
     assert result.exit_code == 0, result.output
 
     assert is_portable_link(vault / "views" / "by-topic" / "peptide" / paper_id)
-    assert is_portable_link(vault / "views" / "by-project" / "pepforge" / paper_id)
+    assert is_portable_link(vault / "views" / "by-project" / "seahorse" / paper_id)
     assert is_portable_link(vault / "views" / "by-status" / "deep-read" / paper_id)
 
 
@@ -988,14 +988,14 @@ def test_modify_add_tag_unregistered_project_redirects_to_lit_project(
     runner = CliRunner()
     result = runner.invoke(
         cli,
-        ["modify", paper_id, "--add-tag", "projects=pepforge",
+        ["modify", paper_id, "--add-tag", "projects=seahorse",
          "--library", str(vault)],
     )
     assert result.exit_code != 0
     assert isinstance(result.exception, ModifyError)
     msg = str(result.exception)
     assert "not registered" in msg
-    assert "lit project add pepforge --path" in msg
+    assert "lit project add seahorse --path" in msg
 
 
 def test_modify_rm_tag_not_validated(
@@ -2091,13 +2091,13 @@ def test_modify_set_priority_out_of_range_is_refused(
     vault_with_paper: tuple[Path, str]
 ) -> None:
     vault, paper_id = vault_with_paper
-    _link(vault, paper_id, "pepforge")
+    _link(vault, paper_id, "seahorse")
     result = CliRunner().invoke(
         cli,
-        ["modify", paper_id, "--set", "priority-pepforge=Q", "--library", str(vault)],
+        ["modify", paper_id, "--set", "priority-seahorse=Q", "--library", str(vault)],
     )
     assert result.exit_code != 0
-    assert "Invalid priority-pepforge 'Q'" in str(result.exception)
+    assert "Invalid priority-seahorse 'Q'" in str(result.exception)
     assert "A, B, C" in str(result.exception)
 
 
@@ -2109,14 +2109,14 @@ def test_modify_refuses_to_create_a_null_grade(
     the companion test below), but absence is the canonical ungraded form and
     no command creates a null."""
     vault, paper_id = vault_with_paper
-    _link(vault, paper_id, "pepforge")
+    _link(vault, paper_id, "seahorse")
     result = CliRunner().invoke(
         cli,
-        ["modify", paper_id, "--set", "priority-pepforge=", "--library", str(vault)],
+        ["modify", paper_id, "--set", "priority-seahorse=", "--library", str(vault)],
     )
     assert result.exit_code != 0
     assert "absent key" in str(result.exception)
-    assert "priority-pepforge" not in _read_meta(vault, paper_id)
+    assert "priority-seahorse" not in _read_meta(vault, paper_id)
 
 
 def test_schema_tolerates_the_null_grade_modify_refuses_to_write(
@@ -2130,11 +2130,11 @@ def test_schema_tolerates_the_null_grade_modify_refuses_to_write(
     from litman.core.locking import lock_truth_file, unlock_truth_file
 
     vault, paper_id = vault_with_paper
-    _link(vault, paper_id, "pepforge")
+    _link(vault, paper_id, "seahorse")
     meta = vault / "papers" / paper_id / "metadata.yaml"
     unlock_truth_file(meta)
     with meta.open("a", encoding="utf-8") as f:
-        f.write("priority-pepforge:\n")
+        f.write("priority-seahorse:\n")
     lock_truth_file(meta)
 
     assert check_schema(vault, list_papers(vault)) == []
@@ -2144,13 +2144,13 @@ def test_modify_set_priority_for_a_linked_project_is_accepted(
     vault_with_paper: tuple[Path, str]
 ) -> None:
     vault, paper_id = vault_with_paper
-    _link(vault, paper_id, "pepforge")
+    _link(vault, paper_id, "seahorse")
     result = CliRunner().invoke(
         cli,
-        ["modify", paper_id, "--set", "priority-pepforge=B", "--library", str(vault)],
+        ["modify", paper_id, "--set", "priority-seahorse=B", "--library", str(vault)],
     )
     assert result.exit_code == 0, result.output
-    assert _read_meta(vault, paper_id)["priority-pepforge"] == "B"
+    assert _read_meta(vault, paper_id)["priority-seahorse"] == "B"
 
 
 def test_retired_field_refusal_never_preempts_the_older_gates(
