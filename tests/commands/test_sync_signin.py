@@ -11,7 +11,7 @@ be reached at all stays a network error: retried, never a stop.
 
 from __future__ import annotations
 
-import socket
+import re
 import subprocess
 import time
 from collections.abc import Iterator
@@ -150,10 +150,8 @@ class _Dav:
             self.server.wait(timeout=30)
 
 
-def _free_port() -> int:
-    with socket.socket() as probe:
-        probe.bind(("127.0.0.1", 0))
-        return int(probe.getsockname()[1])
+# rclone's own line once it listens: `... WebDav Server started on [http://127.0.0.1:PORT/]`.
+_SERVING = re.compile(r"started on \[http://127\.0\.0\.1:(\d+)/\]")
 
 
 @pytest.fixture
@@ -163,30 +161,35 @@ def dav(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[_Dav]:
     monkeypatch.setenv("RCLONE_CONFIG", str(conf))
     root = tmp_path / "dav"
     root.mkdir()
-    port = _free_port()
-    server = subprocess.Popen(
-        [
-            RCLONE_BIN, "serve", "webdav", str(root),
-            "--addr", f"127.0.0.1:{port}", "--user", "u", "--pass", "right",
-        ],
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-    )
-    served = _Dav(port, server)
+    # Port 0, and the port read back from rclone's log: a port probed free
+    # first and handed to rclone later can be taken in between, by another
+    # process or another pytest-xdist worker, and the test would then talk
+    # to whatever holds it.
+    log = tmp_path / "dav.log"
+    with open(log, "wb") as out:
+        server = subprocess.Popen(
+            [
+                RCLONE_BIN, "serve", "webdav", str(root),
+                "--addr", "127.0.0.1:0", "--user", "u", "--pass", "right",
+            ],
+            stdout=subprocess.DEVNULL,
+            stderr=out,
+        )
+    served = _Dav(0, server)
     try:
         deadline = time.monotonic() + 30
         while True:
-            try:
-                socket.create_connection(("127.0.0.1", port), timeout=1).close()
+            match = _SERVING.search(log.read_text(encoding="utf-8", errors="replace"))
+            if match is not None:
+                served.port = int(match.group(1))
                 break
-            except OSError:
-                if server.poll() is not None or time.monotonic() > deadline:
-                    raise
-                time.sleep(0.1)
+            assert server.poll() is None, log.read_text(encoding="utf-8", errors="replace")
+            assert time.monotonic() < deadline, "rclone serve webdav never started"
+            time.sleep(0.1)
         subprocess.run(
             [
                 RCLONE_BIN, "config", "create", "wd", "webdav",
-                "url", f"http://127.0.0.1:{port}/", "vendor", "rclone",
+                "url", f"http://127.0.0.1:{served.port}/", "vendor", "rclone",
                 "user", "u", "pass", "right",
             ],
             check=True,

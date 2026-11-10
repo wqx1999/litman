@@ -23,12 +23,12 @@ Guarded with ``importorskip`` so the suite still collects without fastapi
 
 from __future__ import annotations
 
-import socket
 import subprocess
 import sys
 import threading
 import time
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -121,10 +121,14 @@ def test_presence_works_when_the_vault_is_gone(tmp_path: Path) -> None:
 # ===========================================================================
 
 
-def _free_port() -> int:
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
-        sock.bind(("127.0.0.1", 0))
-        return sock.getsockname()[1]
+def _served_port(server: Any) -> int:
+    """The port a started uvicorn server listens on.
+
+    Servers here bind port 0, so the kernel picks the port as uvicorn binds
+    it. A port probed free first and bound later can be taken in between,
+    by another process or another pytest-xdist worker.
+    """
+    return int(server.servers[0].sockets[0].getsockname()[1])
 
 
 def test_window_gate_survives_the_browser_handoff_end_to_end() -> None:
@@ -140,9 +144,8 @@ def test_window_gate_survives_the_browser_handoff_end_to_end() -> None:
     from websockets.sync.client import connect as ws_connect
 
     app = create_app(None)
-    port = _free_port()
     server = uvicorn.Server(
-        uvicorn.Config(app, host="127.0.0.1", port=port, log_level="error")
+        uvicorn.Config(app, host="127.0.0.1", port=0, log_level="error")
     )
     server_thread = threading.Thread(target=server.run, daemon=True)
     server_thread.start()
@@ -150,6 +153,7 @@ def test_window_gate_survives_the_browser_handoff_end_to_end() -> None:
         # The sync websockets client has no retry: connect only once uvicorn
         # actually listens, or the handshake dies on ConnectionRefused.
         assert _wait_for(lambda: server.started, timeout=10), "server never started"
+        port = _served_port(server)
 
         # Edge's first-run handoff: the process we spawned is already gone.
         proc = subprocess.Popen([sys.executable, "-c", ""])

@@ -743,6 +743,7 @@ def test_a_sigterm_to_a_running_gui_syncs_a_change_before_it_exits(
 
     import litman
     from tests.commands.test_sync_bisync import _machine
+    from tests.server._gui_process import gui_port
 
     a = _machine(tmp_path, cloud, "a")
     _write_paper(a, "p1")
@@ -768,14 +769,16 @@ def test_a_sigterm_to_a_running_gui_syncs_a_change_before_it_exits(
     assert first.returncode == 0, first.stdout + first.stderr
     with socket.socket() as probe:
         probe.bind(("127.0.0.1", 0))
-        port = probe.getsockname()[1]
+        asked = probe.getsockname()[1]
     log_path = tmp_path / "gui.log"
     with open(log_path, "w", encoding="utf-8") as log:
         gui = subprocess.Popen(
-            [*lit, "gui", "--no-browser", "--port", str(port), "--library", str(a)],
+            [*lit, "gui", "--no-browser", "--port", str(asked), "--library", str(a)],
             env=env, stdout=log, stderr=subprocess.STDOUT,
         )
         try:
+            # The port lit gui took, which need not be the one asked for.
+            port = gui_port(tmp_path / "registry", gui)
             state = None
             deadline = time.monotonic() + 90
             while state != "ok" and time.monotonic() < deadline:
