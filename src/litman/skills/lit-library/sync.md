@@ -15,7 +15,7 @@ Read this when the user wants their library on more than one computer or kept in
 4. **`lit sync setup --remote '<name>' --path '<folder>'`**: a folder inside the remote (`litman`, say), never its top level. Backups go next to it, into `<folder>-litman-backup`.
 5. **The first `lit sync`.** An empty cloud folder takes this library; a new, empty library takes the cloud's. Relay the summary. Exit `20` (`both hold a library already`) → explain, then wait for the user's choice: `lit sync --first-from local` keeps this computer's copy of every file that differs, `lit sync --first-from cloud` the cloud's; the other copies go to the backup, and files only one side has are kept on both.
 
-**Each further computer:** litman installed there (by the user, Rule 8), an empty library (`lit init`), rclone and a remote on the same cloud account (steps 2–3), `lit sync setup` with the same `--path`, then `lit sync`: the library comes down, and code repos follow by commit (below). A library already there → exit `20`, step 5.
+**Each further computer:** litman installed there (by the user, Rule 8), an empty library (`lit init`), rclone and a remote on the same cloud account (steps 2–3), `lit sync setup` with the same `--path` (the user doesn't know it → `rclone lsf -R --max-depth 2 --files-only --include '.litman-sync-stamp.json' '<name>:'` lists the cloud folders that hold a synced library; they pick), then `lit sync`: the library comes down, and code repos follow by commit (below). A library already there → exit `20`, step 5.
 
 ## Daily use
 
