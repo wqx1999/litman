@@ -24,6 +24,15 @@ from litman.core.library import create_vault
 from litman.core.vault_registry import REGISTRY_ENV_VAR
 from litman.core.views import write_index
 
+# pytest-xdist starts its workers with COLUMNS=80 and LINES=24 in the
+# environment; a plain `pytest` run has neither. A rich Console built while
+# COLUMNS is set keeps that width for good, and the CLI builds its consoles at
+# import, which is collection time, before any test can widen them. Dropped
+# here, before any test module is imported, so a worker renders like a plain
+# run and a test that sets COLUMNS itself is the only thing that sets it.
+for _name in ("COLUMNS", "LINES"):
+    os.environ.pop(_name, None)
+
 
 def _build_text_pdf(pages: Sequence[Sequence[str]]) -> bytes:
     """Hand-assemble a minimal multi-page PDF carrying the given text lines.
