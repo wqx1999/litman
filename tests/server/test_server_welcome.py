@@ -48,6 +48,7 @@ from litman.core.vault_registry import (
 )
 from litman.server import create_app
 from tests.server._client import TestClient
+from tests.server._gui_process import gui_port
 
 
 def _register(vault: Path, name: str) -> None:
@@ -256,16 +257,16 @@ def test_e2e_lit_gui_no_vault_creates_library(tmp_path: Path) -> None:
     # Empty, isolated registry so find_vault discovers nothing → no-vault mode.
     env["LITMAN_REGISTRY_DIR"] = str(home / "litman-registry")
 
-    port = _free_port()
-    base = f"http://127.0.0.1:{port}"
     proc = subprocess.Popen(
-        [sys.executable, "-m", "litman", "gui", "--no-browser", "--port", str(port)],
+        [sys.executable, "-m", "litman", "gui", "--no-browser", "--port", str(_free_port())],
         env=env,
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
         text=True,
     )
     try:
+        # The port lit gui took, which need not be the one asked for.
+        base = f"http://127.0.0.1:{gui_port(home / 'litman-registry', proc)}"
         # Poll until the server answers (or the process died).
         deadline = time.time() + 30
         ready = False

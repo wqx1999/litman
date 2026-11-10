@@ -36,7 +36,6 @@ from click.testing import CliRunner
 from litman import cli
 from litman.commands import _mac_shell, gui
 from litman.commands.gui import (
-    _DEFAULT_PORT,
     _MAX_PORT,
     _app_window_argv,
     _find_free_port,
@@ -209,12 +208,33 @@ def test_find_free_port_increments_when_busy() -> None:
     assert chosen >= busy + 1
 
 
-def test_find_free_port_binds_loopback_only() -> None:
-    # The returned port must be bindable on 127.0.0.1 — proves the probe
-    # targets loopback, not 0.0.0.0.
-    port = _find_free_port(_DEFAULT_PORT)
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
-        sock.bind(("127.0.0.1", port))
+def test_find_free_port_binds_loopback_only(monkeypatch: pytest.MonkeyPatch) -> None:
+    # The probe targets loopback, not 0.0.0.0, and the port it returns is one
+    # it bound there. Read off the probe's own binds: a port the finder has
+    # let go of may be taken by another process before a second bind, so
+    # binding it again here would test the machine, not the finder.
+    with _bind_free_loopback_port() as probe:
+        start = probe.getsockname()[1]
+    binds: list[Any] = []
+
+    class _Recording(socket.socket):
+        def bind(self, address: Any) -> None:
+            binds.append(address)
+            super().bind(address)
+
+    class _GuiSocketModule:
+        # gui's own name for the socket module, recording its binds. Patching
+        # gui.socket.socket instead would swap the class for every socket in
+        # the process: gui.socket IS the global module.
+        socket = _Recording
+
+        def __getattr__(self, name: str) -> Any:
+            return getattr(socket, name)
+
+    monkeypatch.setattr(gui, "socket", _GuiSocketModule())
+    port = _find_free_port(start)
+    assert binds and all(host == "127.0.0.1" for host, _ in binds)
+    assert binds[-1] == ("127.0.0.1", port)
 
 
 # ---------------------------------------------------------------------------
@@ -3204,9 +3224,25 @@ def test_mac_shell_real_default_end_to_end() -> None:
     webview = gui._load_mac_shell()
     assert webview is not None, "pywebview must be installed on the mac host"
 
-    port = _find_free_port(_DEFAULT_PORT)
+    # The server listens on a socket bound here, so the port is held from
+    # the moment it is chosen: a port found free and bound later can be taken
+    # in between. run_shell calls run() with no arguments, so the real
+    # Server is told which socket to serve through run() itself. Bound the
+    # way uvicorn binds its own (SO_REUSEADDR), or the TIME_WAIT pairs the
+    # real traffic leaves would refuse the final bind below even once
+    # nothing listens.
+    listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    listener.bind(("127.0.0.1", 0))
+    listener.listen()
+    port = listener.getsockname()[1]
+
+    class _OnListener(uvicorn.Server):
+        def run(self, sockets: Any = None) -> None:
+            super().run(sockets=[listener])
+
     application = create_app(None)
-    server = uvicorn.Server(
+    server = _OnListener(
         uvicorn.Config(
             application, host="127.0.0.1", port=port, log_level="warning"
         )
@@ -3433,10 +3469,11 @@ def test_open_when_ready_real_server_default_constants() -> None:
 
     from litman.server import create_app
 
-    port = _find_free_port(_DEFAULT_PORT)
+    # Port 0: the kernel picks a port while uvicorn binds it, so no other
+    # process can take it in between. Nothing here needs the number.
     server = uvicorn.Server(
         uvicorn.Config(
-            create_app(None), host="127.0.0.1", port=port, log_level="warning"
+            create_app(None), host="127.0.0.1", port=0, log_level="warning"
         )
     )
     server.install_signal_handlers = lambda: None  # type: ignore[method-assign]

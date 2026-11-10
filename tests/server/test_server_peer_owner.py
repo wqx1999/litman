@@ -105,28 +105,24 @@ def _wait_for(predicate, *, timeout: float = 10.0) -> bool:
     return predicate()
 
 
-def _free_port() -> int:
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
-        sock.bind(("127.0.0.1", 0))
-        return sock.getsockname()[1]
-
-
 @contextmanager
 def _serving(app: Any) -> Iterator[int]:
     """A real uvicorn serving ``app`` the way ``lit gui`` does; yields its port."""
     import uvicorn
 
-    port = _free_port()
+    # Port 0: the kernel picks the port as uvicorn binds it. A port probed
+    # free first and bound later can be taken in between, by another process
+    # or another pytest-xdist worker.
     server = uvicorn.Server(
         uvicorn.Config(
-            app, host="127.0.0.1", port=port, proxy_headers=False, log_level="critical"
+            app, host="127.0.0.1", port=0, proxy_headers=False, log_level="critical"
         )
     )
     thread = threading.Thread(target=server.run, daemon=True)
     thread.start()
     try:
         assert _wait_for(lambda: server.started), "server never started"
-        yield port
+        yield int(server.servers[0].sockets[0].getsockname()[1])
     finally:
         server.should_exit = True
         thread.join(timeout=10)

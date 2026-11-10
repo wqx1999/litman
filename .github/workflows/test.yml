@@ -36,8 +36,11 @@ jobs:
         with:
           python-version: '3.12'
 
+      # pytest-xdist runs the suite on every core. It is installed here, not in
+      # the [dev] extra, because only CI runs the suite in parallel; pinned so a
+      # new release cannot change how the tests are spread on its own.
       - name: Install
-        run: pip install -e ".[dev]"
+        run: pip install -e ".[dev]" pytest-xdist==3.8.0
 
       # The two-way sync tests run a real rclone bisync against local folders,
       # and skip themselves when rclone is missing. Pinned, and checked against
@@ -82,8 +85,10 @@ jobs:
       # here for a reason that says nothing about the code under test. The
       # exclusion is named in the step title so every run declares what it
       # did not cover.
+      # --durations lists the 30 slowest test phases, so a run that got slower
+      # can be traced from its own log.
       - name: Test (excludes tests/bench — its fixture PDFs cannot be committed)
-        run: pytest -q --ignore=tests/bench
+        run: pytest -q -n auto --durations=30 --ignore=tests/bench
 
   # ruff, mypy, and a check that the committed webUI build matches its source.
   # Linux only: none of the three depends on the platform, and on Windows git's

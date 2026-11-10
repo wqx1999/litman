@@ -13,10 +13,10 @@ from __future__ import annotations
 
 import http.client
 import json
-import socket
 import threading
 import time
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -49,10 +49,14 @@ def _wait_for(predicate, *, timeout: float = 5.0) -> bool:
     return predicate()
 
 
-def _free_port() -> int:
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
-        sock.bind(("127.0.0.1", 0))
-        return sock.getsockname()[1]
+def _served_port(server: Any) -> int:
+    """The port a started uvicorn server listens on.
+
+    Servers here bind port 0, so the kernel picks the port as uvicorn binds
+    it. A port probed free first and bound later can be taken in between,
+    by another process or another pytest-xdist worker.
+    """
+    return int(server.servers[0].sockets[0].getsockname()[1])
 
 
 def _mkdir(client: TestClient, parent: Path, name: str, **headers: str):
@@ -403,14 +407,14 @@ def test_a_real_server_refuses_with_403() -> None:
     from websockets.sync.client import connect as ws_connect
 
     app = create_app(None)
-    port = _free_port()
     server = uvicorn.Server(
-        uvicorn.Config(app, host="127.0.0.1", port=port, log_level="error")
+        uvicorn.Config(app, host="127.0.0.1", port=0, log_level="error")
     )
     server_thread = threading.Thread(target=server.run, daemon=True)
     server_thread.start()
     try:
         assert _wait_for(lambda: server.started, timeout=10), "server never started"
+        port = _served_port(server)
         url = f"ws://127.0.0.1:{port}/api/presence"
 
         with ws_connect(url, origin=f"http://127.0.0.1:{port}"):  # type: ignore[arg-type]  # websockets' Origin is a NewType of str
