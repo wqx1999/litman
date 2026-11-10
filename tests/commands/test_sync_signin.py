@@ -184,7 +184,10 @@ def dav(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[_Dav]:
                 served.port = int(match.group(1))
                 break
             assert server.poll() is None, log.read_text(encoding="utf-8", errors="replace")
-            assert time.monotonic() < deadline, "rclone serve webdav never started"
+            assert time.monotonic() < deadline, (
+                "rclone serve webdav printed no 'started on' line in 30 s:\n"
+                + log.read_text(encoding="utf-8", errors="replace")
+            )
             time.sleep(0.1)
         subprocess.run(
             [

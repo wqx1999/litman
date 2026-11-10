@@ -222,7 +222,16 @@ def test_find_free_port_binds_loopback_only(monkeypatch: pytest.MonkeyPatch) -> 
             binds.append(address)
             super().bind(address)
 
-    monkeypatch.setattr(gui.socket, "socket", _Recording)
+    class _GuiSocketModule:
+        # gui's own name for the socket module, recording its binds. Patching
+        # gui.socket.socket instead would swap the class for every socket in
+        # the process: gui.socket IS the global module.
+        socket = _Recording
+
+        def __getattr__(self, name: str) -> Any:
+            return getattr(socket, name)
+
+    monkeypatch.setattr(gui, "socket", _GuiSocketModule())
     port = _find_free_port(start)
     assert binds and all(host == "127.0.0.1" for host, _ in binds)
     assert binds[-1] == ("127.0.0.1", port)
