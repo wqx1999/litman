@@ -73,9 +73,8 @@ def cloud(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
 
 @pytest.fixture(autouse=True)
 def _wide_consoles(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Let panels and rclone lines print unwrapped, so phrases stay whole."""
+    """Let panels print unwrapped, so phrases stay whole."""
     monkeypatch.setattr(sync_cmd, "console", Console(width=400))
-    monkeypatch.setattr(sync_cmd, "_rclone_console", Console(stderr=True, width=400))
 
 _LEFT_BEHIND = (
     "codes/tool/repo/ stays on this machine: tool was removed from the library. "

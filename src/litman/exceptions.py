@@ -279,7 +279,20 @@ class SyncError(LitmanError):
     """`lit sync` rejected an op: rclone not installed, remote misconfigured,
     sync not yet set up in lit-config.yaml, or rclone returned a non-zero
     exit status (network down, auth failure, transfer error, etc.).
+
+    ``rclone_tail`` is rclone's last log lines when they end the message, ``""``
+    otherwise: ``lit sync`` leaves them out of an error it recognises, as the
+    record ``lit sync status`` shows keeps them.
     """
+
+    rclone_tail: str = ""
+
+    def without_rclone_tail(self) -> str:
+        """The message without rclone's last lines: litman's own words."""
+        text = str(self)
+        if self.rclone_tail and text.endswith("\n" + self.rclone_tail):
+            return text[: -len(self.rclone_tail) - 1]
+        return text
 
 
 class SyncChoiceRequiredError(SyncError):

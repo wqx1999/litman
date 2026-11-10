@@ -236,12 +236,11 @@ def test_a_refused_webdav_password_stops_the_sync_and_says_how_to_get_back_in(
     assert result.exit_code == 1
     err = result.exception
     assert isinstance(err, SyncAuthError), result.output
-    assert str(err).startswith(
-        f"wd refused the password, so nothing was synced. {_PASSWORD_WAY_BACK}\n"
-    )
-    assert "401 Unauthorized" in str(err)
+    # litman's words on the terminal; rclone's lines are in the record.
+    assert str(err) == f"wd refused the password, so nothing was synced. {_PASSWORD_WAY_BACK}"
     run = read_sync_state(vault).last_run
     assert run is not None
+    assert "401 Unauthorized" in (run.error or "")
     assert (run.trigger, run.result, run.reason, run.sign_in) == (
         "terminal", "failed", "auth", "password",
     )

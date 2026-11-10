@@ -158,7 +158,9 @@ def test_a_stopped_run_keeps_its_whole_error_until_a_run_goes_through(
     assert stopped.exit_code == 1
     run = _last_run(a)
     assert (run.trigger, run.result, run.reason) == ("terminal", "failed", "safety-stop")
-    assert run.error == str(stopped.exception)
+    # The terminal got litman's words; the record keeps rclone's lines as well.
+    assert (run.error or "").startswith(f"{stopped.exception}\n")
+    assert "Safety abort: too many deletes" in (run.error or "")
     said = _one_line(_sync(a, "status").output)
     assert "failed (rclone's safety check stopped it)." in said
     assert "lit sync --force" in said

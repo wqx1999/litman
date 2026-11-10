@@ -623,6 +623,10 @@ RunTrigger = Literal["terminal", "auto", "exit"]
 RUN_RECORD_CAP = 20
 #: The most characters of an error a :class:`LastRun` keeps.
 RUN_ERROR_CAP = 8000
+#: How many of rclone's own lines a :class:`LastRun` keeps, and the most
+#: characters of each.
+RUN_RCLONE_LINES_CAP = 10
+RUN_RCLONE_LINE_CHARS = 500
 
 
 @dataclass(frozen=True)
@@ -691,7 +695,10 @@ class LastRun:
     the record needs no rclone. ``repos_with_work`` names the code checkouts
     holding changes only this machine has (:class:`RunRepoWork`). The lists
     hold the first :data:`RUN_RECORD_CAP` entries; the totals count all of
-    them.
+    them. ``rclone_lines`` are the lines rclone logged at NOTICE and above
+    in the run's passes, which ``lit sync`` does not show: each once, in
+    order, without its stats lines and without the lines ``error`` already
+    quotes, at most :data:`RUN_RCLONE_LINES_CAP`.
     """
 
     at: str
@@ -706,6 +713,7 @@ class LastRun:
     sign_in: str | None = None
     repos_with_work: tuple[RunRepoWork, ...] = ()
     repos_with_work_total: int = 0
+    rclone_lines: tuple[str, ...] = ()
 
 
 def repo_rows(result: TwoWayResult) -> list[RunRepo]:
@@ -773,6 +781,17 @@ def run_from_error(
     )
 
 
+def _with_rclone_lines(run: LastRun, heard: Iterable[str]) -> LastRun:
+    """``run`` with the lines rclone logged during it (:attr:`LastRun.rclone_lines`)."""
+    quoted = {line.strip() for line in (run.error or "").splitlines()}
+    kept = dict.fromkeys(
+        line[:RUN_RCLONE_LINE_CHARS]
+        for line in heard
+        if line.strip() and line.strip() not in quoted and not is_rclone_stats(line)
+    )
+    return replace(run, rclone_lines=tuple(kept)[:RUN_RCLONE_LINES_CAP])
+
+
 def record_run(vault: Path, run: LastRun) -> None:
     """Keep ``run`` as this machine's last run, preserving the other fields.
 
@@ -810,6 +829,8 @@ def _last_run_to(run: LastRun) -> dict[str, Any]:
             {"name": w.name, "uncommitted": w.uncommitted, "unpushed": w.unpushed}
             for w in run.repos_with_work
         ]
+    if run.rclone_lines:
+        out["rclone-lines"] = list(run.rclone_lines)
     return out
 
 
@@ -855,6 +876,12 @@ def _last_run_from(data: object) -> LastRun | None:
         for r in rows("repos-with-work")
         if (name := text(r, "name")) is not None
     )
+    said = data.get("rclone-lines")
+    rclone_lines = (
+        tuple(line for line in said if isinstance(line, str))[:RUN_RCLONE_LINES_CAP]
+        if isinstance(said, list)
+        else ()
+    )
     return LastRun(
         at=at,
         trigger=trigger,
@@ -868,6 +895,7 @@ def _last_run_from(data: object) -> LastRun | None:
         repos_total=count("repos-total", len(repos)),
         repos_with_work=work,
         repos_with_work_total=count("repos-with-work-total", len(work)),
+        rclone_lines=rclone_lines,
     )
 
 
@@ -896,7 +924,8 @@ def push(
     dry_run: bool = False,
     lock_wait: float = 0.0,
     on_lock_wait: Callable[[LockHolder | None], None] | None = None,
-) -> subprocess.CompletedProcess[str]:
+    on_progress: Callable[[SyncProgress | None], None] | None = None,
+) -> subprocess.CompletedProcess[str] | None:
     """Mirror ``vault`` to ``target_url`` (``rclone sync`` one-way).
 
     ``rclone sync`` deletes destination files that are absent from the
@@ -920,10 +949,14 @@ def push(
     just before another machine's first two-way sync does not delete it. A
     real push holds the library's sync lock, waiting up to ``lock_wait``
     seconds for another sync to end (``on_lock_wait`` hears when it starts
-    waiting).
+    waiting). A dry run shows rclone's output, which is what it is for; a
+    real push shows none of it (:func:`_mirror`).
+
+    Returns the dry run's process; None for a real push.
 
     Raises:
         SyncBusyError: another sync still held the lock after ``lock_wait``.
+        SyncError: rclone failed (its last lines are in the message).
     """
     args = [
         "sync", str(vault), target_url,
@@ -934,9 +967,9 @@ def push(
         return run_rclone(args, capture=False)
     workdir = sync_workdir(vault, target_url)
     with hold_sync_lock(workdir, by="lit sync push", wait=lock_wait, on_wait=on_lock_wait):
-        result = run_rclone(args, capture=False)
+        _mirror(args, target_url, "push", on_progress)
         stamp_push(vault)
-    return result
+    return None
 
 
 def pull(
@@ -947,7 +980,8 @@ def pull(
     dry_run: bool = False,
     lock_wait: float = 0.0,
     on_lock_wait: Callable[[LockHolder | None], None] | None = None,
-) -> subprocess.CompletedProcess[str]:
+    on_progress: Callable[[SyncProgress | None], None] | None = None,
+) -> subprocess.CompletedProcess[str] | None:
     """Mirror ``target_url`` into ``vault`` (``rclone sync`` one-way).
 
     Used for cross-machine recovery: a fresh machine runs ``lit sync pull``
@@ -962,10 +996,14 @@ def pull(
     The caller first checks :func:`require_one_way`, which refuses a library
     that syncs two-way, and a cloud folder holding no ``lit-config.yaml``,
     whose pull would delete this one. The auto-sync stamp stays out of the
-    vault all the same. A real pull holds the sync lock like :func:`push`.
+    vault all the same. Like :func:`push`, a real pull holds the sync lock,
+    and only a dry run shows rclone's output.
+
+    Returns the dry run's process; None for a real pull.
 
     Raises:
         SyncBusyError: another sync still held the lock after ``lock_wait``.
+        SyncError: rclone failed (its last lines are in the message).
     """
     args = [
         "sync", target_url, str(vault),
@@ -976,14 +1014,49 @@ def pull(
         return run_rclone(args, capture=False)
     workdir = sync_workdir(vault, target_url)
     with hold_sync_lock(workdir, by="lit sync pull", wait=lock_wait, on_wait=on_lock_wait):
-        result = run_rclone(args, capture=False)
+        _mirror(args, target_url, "pull", on_progress)
         stamp_pull(vault)
         # rclone does not round-trip Unix permissions, so pulled TRUTH files
         # land writable (default 0o644). Re-assert the read-only lock locally
         # (M32). Only the pull path needs this — push is unaffected (0o444 is
         # readable, uploads fine).
         ensure_truth_locked(vault)
-    return result
+    return None
+
+
+def _mirror(
+    args: list[str],
+    target_url: str,
+    verb: OneWay,
+    on_progress: Callable[[SyncProgress | None], None] | None,
+) -> None:
+    """Run the ``rclone sync`` of a push or pull as a two-way pass is run (:func:`run_bisync`).
+
+    None of rclone's lines are shown: its stats lines go to ``on_progress``,
+    logged every second for it, and its last other lines end the error of a
+    run that failed, a refused sign-in's too (:func:`as_auth_failure`): a push
+    or pull keeps no record of its run, so they are all that is left of it.
+
+    Raises:
+        SyncAuthError: the cloud refused the sign-in.
+        SyncError: rclone exited non-zero for another reason.
+    """
+    stats = ["--stats", "1s", *_STATS_ARGS] if on_progress is not None else []
+    run = run_bisync([*args, *stats], on_progress=on_progress)
+    if run.returncode == 0:
+        return
+    tail = _tail(list(run.lines))
+    err = _ending_with_rclone(
+        SyncError(
+            f"rclone could not finish the {verb} (exit {run.returncode}). Run "
+            f"`lit sync {verb}` again; rclone's last lines say why:\n{tail}"
+        ),
+        tail,
+    )
+    refused = as_auth_failure(err, target_url, verb)
+    if refused is not err:
+        raise refused from err
+    raise err
 
 
 # -- one-way and two-way do not mix ------------------------------------------------
@@ -1313,6 +1386,27 @@ _RCLONE_LEVEL_RE = re.compile(
 #: Records below NOTICE: bisync's per-file report and its progress chatter.
 #: litman reads them and does not show them.
 _RCLONE_REPORT_LEVELS = frozenset({"DEBUG", "INFO"})
+
+#: What tells one of rclone's ``--stats-one-line`` lines: a size, a slash and a
+#: size after NOTICE ("NOTICE:     2.505 MiB / 3.492 MiB, 72%, 102.023 KiB/s,
+#: ETA 9s"). Loose, so that a stats line another rclone version words a little
+#: differently is still known for one: never shown as rclone's, kept among a
+#: run's lines or recorded. :data:`_RCLONE_STATS_RE` reads it.
+_RCLONE_STATS_LOOSE_RE = re.compile(r"^NOTICE\s*:\s+\d[\d.]*\s*[A-Za-z]*\s*/\s*\d")
+
+#: A stats line read: the bytes copied, of how many, and rclone's percentage
+#: (``-`` while there is nothing to copy).
+_RCLONE_STATS_RE = re.compile(
+    r"^NOTICE\s*:\s+(?P<done>\d+(?:\.\d+)?) (?P<done_unit>[KMGTPE]i)?B"
+    r" / (?P<total>\d+(?:\.\d+)?) (?P<total_unit>[KMGTPE]i)?B, (?P<percent>\d+%|-),"
+)
+
+_SIZE_UNITS = {
+    "": 1, "Ki": 1 << 10, "Mi": 1 << 20, "Gi": 1 << 30, "Ti": 1 << 40, "Pi": 1 << 50, "Ei": 1 << 60,
+}
+
+#: How rclone logs its stats when it logs them: on one line, at NOTICE.
+_STATS_ARGS = ("--stats-one-line", "--stats-log-level", "NOTICE")
 
 #: Environment variables that change what rclone prints, or where. litman
 #: reads bisync's log, so its bisync runs go without them; rclone would even
@@ -2971,6 +3065,7 @@ def bisync_args(
     backup_name: str,
     resync_mode: Literal["path1", "path2"] | None = None,
     force: bool = False,
+    stats: str = "30s",
 ) -> list[str]:
     """The one place the ``rclone bisync`` command line is built.
 
@@ -2984,7 +3079,8 @@ def bisync_args(
     running sync renews its lock). ``--log-level INFO`` makes bisync report
     each file it found new, changed or deleted on each side
     (:func:`parse_bisync_deltas`); :func:`run_bisync` keeps those lines from
-    the user.
+    the user. ``stats`` is how often rclone logs its stats line: every second
+    when litman draws its own progress line from it.
     """
     args = [
         "bisync", str(vault), target_url,
@@ -3001,7 +3097,7 @@ def bisync_args(
         "--backup-dir2", f"{paths.remote_backup_root}/{backup_name}",
         "--color", "NEVER",
         "--log-level", "INFO",
-        "--stats", "30s", "--stats-one-line", "--stats-log-level", "NOTICE",
+        "--stats", stats, *_STATS_ARGS,
     ]
     if resync_mode is not None:
         args += ["--resync-mode", resync_mode]
@@ -3012,17 +3108,52 @@ def bisync_args(
 
 @dataclass(frozen=True)
 class BisyncRun:
-    """One ``rclone bisync`` run that ended.
+    """One ``rclone bisync`` run that ended (or a push's or pull's ``rclone sync``).
 
-    ``lines`` are its log lines at NOTICE and above, the ones the user sees;
-    ``report`` its INFO lines, the per-file report that
-    :func:`parse_bisync_deltas` reads among them. rclone's date and time are
-    taken off every line.
+    ``lines`` are its log lines at NOTICE and above but its stats lines
+    (:func:`is_rclone_stats`): the ones its error quotes. ``report`` are its
+    INFO lines, the per-file report that :func:`parse_bisync_deltas` reads
+    among them. rclone's date and time are taken off every line.
     """
 
     returncode: int
     lines: tuple[str, ...]
     report: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class SyncProgress:
+    """How far one rclone run has copied, from its stats line.
+
+    ``done`` and ``total`` are bytes, as precise as rclone prints them;
+    ``percent`` is rclone's own, None while there is nothing to copy.
+    """
+
+    done: int
+    total: int
+    percent: int | None
+
+
+def is_rclone_stats(line: str) -> bool:
+    """True when ``line`` (rclone's date and time taken off) is one of its stats lines."""
+    return _RCLONE_STATS_LOOSE_RE.match(line) is not None
+
+
+def parse_rclone_stats(line: str) -> SyncProgress | None:
+    """``line`` read as rclone's stats line; None when it does not read as one."""
+    match = _RCLONE_STATS_RE.match(line)
+    if match is None:
+        return None
+
+    def size(number: str, unit: str | None) -> int:
+        return round(float(number) * _SIZE_UNITS[unit or ""])
+
+    percent = match["percent"]
+    return SyncProgress(
+        done=size(match["done"], match["done_unit"]),
+        total=size(match["total"], match["total_unit"]),
+        percent=None if percent == "-" else int(percent[:-1]),
+    )
 
 
 @dataclass
@@ -3094,6 +3225,7 @@ def run_bisync(
     on_log: Callable[[str], None] | None = None,
     *,
     control: SyncControl | None = None,
+    on_progress: Callable[[SyncProgress | None], None] | None = None,
 ) -> BisyncRun:
     """Run ``rclone <args>``; hand each line the user should see to ``on_log`` as it comes.
 
@@ -3106,6 +3238,11 @@ def run_bisync(
     that before the interrupt goes on. Any other way out of this function
     (a SIGTERM made into ``SystemExit``, say) reached litman alone, so rclone
     is asked to stop first. ``control`` steers the run from another thread.
+
+    rclone's stats lines (:func:`is_rclone_stats`) are never among the run's
+    ``lines``. With ``on_progress``, each one that reads
+    (:func:`parse_rclone_stats`) goes to it, and ``None`` once the run is over,
+    however it ends; without, they go to ``on_log`` like any other line.
     """
     _require_rclone()
     own_group = control is not None and control.own_group
@@ -3155,6 +3292,14 @@ def run_bisync(
                 if line == text:
                     held.append(line)
                 continue
+            if line != text and is_rclone_stats(line):
+                if on_progress is not None:
+                    progress = parse_rclone_stats(line)
+                    if progress is not None:
+                        on_progress(progress)
+                elif on_log is not None:
+                    on_log(line)
+                continue
             show(line)
         returncode = proc.wait()
         for line in held:
@@ -3171,6 +3316,8 @@ def run_bisync(
         raise
     finally:
         done.set()
+        if on_progress is not None:
+            on_progress(None)
     return BisyncRun(returncode, tuple(lines), tuple(report))
 
 
@@ -3182,10 +3329,30 @@ def _choice_message(reason: str) -> str:
     )
 
 
+def _ending_with_rclone[E: SyncError](err: E, tail: str) -> E:
+    """``err``, marked when its message ends with rclone's last lines ``tail``.
+
+    :attr:`litman.exceptions.SyncError.rclone_tail`.
+    """
+    if tail and str(err).endswith("\n" + tail):
+        err.rclone_tail = tail
+    return err
+
+
+def _tail(lines: list[str]) -> str:
+    """rclone's last five lines, blank ones left out and each said once (where it last came)."""
+    latest = dict.fromkeys(line for line in reversed(lines) if line.strip())
+    return "\n".join(reversed(list(latest)[:5]))
+
+
 def _bisync_failure(returncode: int, lines: list[str], workdir: Path) -> SyncError:
-    """Turn a failed bisync run into the error the user sees."""
+    """Turn a failed bisync run into the error the user sees, rclone's last lines marked."""
+    tail = _tail(lines)
+    return _ending_with_rclone(_bisync_error(returncode, lines, workdir, tail), tail)
+
+
+def _bisync_error(returncode: int, lines: list[str], workdir: Path, tail: str) -> SyncError:
     text = "\n".join(lines).lower()
-    tail = "\n".join([line for line in lines if line.strip()][-5:])
     if "too many deletes" in text:
         here, there = (
             ("in the cloud", "on this machine")
@@ -3264,6 +3431,10 @@ def sign_in_refused(text: str) -> bool:
 
 SignIn = Literal["browser", "password"]
 
+#: What a sign-in error says to run again once signed in: ``lit sync``, or its
+#: push or pull.
+SyncCommand = Literal["sync", "push", "pull"]
+
 #: The rclone backends whose sign-in goes through a browser, by name and by
 #: prefix (:func:`_oauth_backends`); ``None`` until rclone has listed them.
 _oauth_backend_names: frozenset[str] | None = None
@@ -3331,23 +3502,25 @@ def remote_sign_in(remote: str) -> SignIn | None:
     return "browser" if kind in oauth else "password"
 
 
-def sign_in_way_out(remote: str, sign_in: str | None) -> str:
-    """The sentence that tells the user how to sign in to ``remote`` again, then sync."""
+def _command(verb: SyncCommand) -> str:
+    return "lit sync" if verb == "sync" else f"lit sync {verb}"
+
+
+_DONE = {"sync": "synced", "push": "pushed", "pull": "pulled"}
+
+
+def sign_in_way_out(remote: str, sign_in: str | None, verb: SyncCommand = "sync") -> str:
+    """The sentence that tells the user how to sign in to ``remote`` again, then rerun ``verb``."""
+    again = f"then run `{_command(verb)}`."
     if sign_in == "browser":
-        return (
-            f"Sign in again with `rclone config reconnect {shell_arg(remote + ':')}`, "
-            "then run `lit sync`."
-        )
+        return f"Sign in again with `rclone config reconnect {shell_arg(remote + ':')}`, {again}"
     if sign_in == "password":
-        return (
-            f"Enter the password again with `rclone config` (edit remote {remote}), "
-            "then run `lit sync`."
-        )
-    return f"Sign in again with `rclone config` (edit remote {remote}), then run `lit sync`."
+        return f"Enter the password again with `rclone config` (edit remote {remote}), {again}"
+    return f"Sign in again with `rclone config` (edit remote {remote}), {again}"
 
 
-def auth_failure(target_url: str, detail: str) -> SyncAuthError:
-    """The error for a sync the cloud's sign-in stopped: what happened, the way out, rclone's lines.
+def auth_failure(target_url: str, detail: str, verb: SyncCommand = "sync") -> SyncAuthError:
+    """The error for a ``verb`` the cloud's sign-in stopped: what happened, way out, rclone's lines.
 
     The way out fits the remote (:func:`remote_sign_in`); rclone's own words
     for an expired OAuth token settle it without asking rclone.
@@ -3356,28 +3529,34 @@ def auth_failure(target_url: str, detail: str) -> SyncAuthError:
     sign_in: SignIn | None = (
         "browser" if _OAUTH_EXPIRED_RE.search(detail) else remote_sign_in(remote)
     )
+    nothing = f"so nothing was {_DONE[verb]}."
     if sign_in == "browser":
-        verdict = f"The sign-in to {remote} has expired, so nothing was synced."
+        verdict = f"The sign-in to {remote} has expired, {nothing}"
     elif sign_in == "password":
-        verdict = f"{remote} refused the password, so nothing was synced."
+        verdict = f"{remote} refused the password, {nothing}"
     else:
-        verdict = f"{remote} refused the sign-in, so nothing was synced."
-    return SyncAuthError(
-        f"{verdict} {sign_in_way_out(remote, sign_in)}\n{detail}", sign_in=sign_in
+        verdict = f"{remote} refused the sign-in, {nothing}"
+    return _ending_with_rclone(
+        SyncAuthError(
+            f"{verdict} {sign_in_way_out(remote, sign_in, verb)}\n{detail}", sign_in=sign_in
+        ),
+        detail,
     )
 
 
-def as_auth_failure(err: BaseException, target_url: str) -> BaseException:
+def as_auth_failure(
+    err: BaseException, target_url: str, verb: SyncCommand = "sync"
+) -> BaseException:
     """``err`` made into :func:`auth_failure` when the cloud refused the sign-in; else ``err``.
 
     Keeps rclone's lines from ``err`` (what follows its first line) and drops
-    its own advice, which would say to run the sync again.
+    its own advice, which would say to run ``verb`` again as it was.
     """
     if isinstance(err, SyncAuthError) or classify_sync_error(err) != ("needs-user", "auth"):
         return err
     text = str(err)
     detail = text.split("\n", 1)[1] if "\n" in text else text
-    return auth_failure(target_url, detail)
+    return auth_failure(target_url, detail, verb)
 
 
 def classify_sync_error(err: BaseException) -> tuple[SyncErrorKind, str]:
@@ -3637,6 +3816,7 @@ def two_way_sync(
     control: SyncControl | None = None,
     by: str = "lit sync",
     trigger: RunTrigger = "terminal",
+    on_progress: Callable[[SyncProgress | None], None] | None = None,
 ) -> TwoWayResult:
     """Sync ``vault`` with ``target_url`` both ways through ``rclone bisync``.
 
@@ -3670,7 +3850,8 @@ def two_way_sync(
        How the run ended, with its conflicts, repos left behind or error, is
        kept there too (:class:`LastRun`, ``trigger`` saying who ran it), for
        ``lit sync status``, with the repos holding changes only this machine
-       has; a run another sync held off leaves it as it was.
+       has and the lines rclone logged; a run another sync held off leaves it
+       as it was.
 
     Every file a run replaces or deletes goes to a backup folder: on this
     machine under ``<data dir>/sync-backup/<vault-key>/``, in the cloud under
@@ -3683,6 +3864,9 @@ def two_way_sync(
     lock. Before the passes the auto-sync stamp is read, and after a sync
     that changed the cloud a new one is written (:class:`StampRound`).
     ``control`` steers a sync the GUI runs (:class:`SyncControl`).
+    ``on_log`` hears each line rclone logs at NOTICE and above; with
+    ``on_progress``, its stats lines, logged every second, go there instead
+    (:func:`run_bisync`).
 
     Raises:
         SyncChoiceRequiredError: the run needs the user's ``--first-from``.
@@ -3692,6 +3876,13 @@ def two_way_sync(
             log lines are in the message).
     """
     vault = vault.resolve()
+    heard: list[str] = []
+
+    def hear(line: str) -> None:
+        heard.append(line)
+        if on_log is not None:
+            on_log(line)
+
     try:
         require_bisync_rclone()
         paths = bisync_paths(vault, target_url)
@@ -3707,18 +3898,19 @@ def two_way_sync(
                 paths,
                 first_from=first_from,
                 force=force,
-                on_log=on_log,
+                on_log=hear,
+                on_progress=on_progress,
                 git_progress=git_progress,
                 control=control or SyncControl(),
             )
-            record_run(vault, run_from_result(result, trigger))
+            record_run(vault, _with_rclone_lines(run_from_result(result, trigger), heard))
             return result
     except (SyncBusyError, BisyncLockedError):
         # Another sync's run: the record stays that run's.
         raise
     except (LitmanError, OSError) as err:
         refused = as_auth_failure(err, target_url)
-        record_run(vault, run_from_error(refused, trigger))
+        record_run(vault, _with_rclone_lines(run_from_error(refused, trigger), heard))
         if refused is not err:
             raise refused from err
         raise
@@ -3732,6 +3924,7 @@ def _two_way_sync_held(
     first_from: FirstFrom | None,
     force: bool,
     on_log: Callable[[str], None] | None,
+    on_progress: Callable[[SyncProgress | None], None] | None,
     git_progress: bool,
     control: SyncControl,
 ) -> TwoWayResult:
@@ -3810,8 +4003,9 @@ def _two_way_sync_held(
         args = bisync_args(
             vault, target_url, paths,
             backup_name=name, resync_mode=resync_mode, force=force,
+            stats="30s" if on_progress is None else "1s",
         )
-        run = run_bisync(args, on_log, control=control)
+        run = run_bisync(args, on_log, control=control, on_progress=on_progress)
         if run.returncode != 0:
             raise _bisync_failure(run.returncode, list(run.lines), paths.workdir)
         ops.append(parse_bisync_ops(run))

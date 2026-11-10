@@ -53,7 +53,9 @@ from litman.core.sync import (
     LastRun,
     RunConflict,
     SetupPayload,
+    SyncProgress,
     TwoWayResult,
+    classify_sync_error,
     codes_ignore_patterns_to_rclone,
     compute_status,
     conflict_backups_root,
@@ -81,8 +83,6 @@ from litman.core.sync_lock import LockHolder
 from litman.exceptions import SyncBusyError, SyncChoiceRequiredError, SyncError
 
 console = Console()
-# rclone's own log lines go to stderr, as they do when rclone runs by itself.
-_rclone_console = Console(stderr=True)
 
 # Exit codes of two-way `lit sync` beyond 0 (synced) and 1 (failed); documented
 # in docs/4-commands.md. Clear of every other litman command's codes.
@@ -213,8 +213,61 @@ def _refuse_group_options_before(ctx: click.Context, sub: str) -> None:
 # ---------------------------------------------------------------------------
 
 
-def _echo_rclone_line(line: str) -> None:
-    _rclone_console.print(f"[dim]{escape(line)}[/]", highlight=False, soft_wrap=True)
+class _ProgressLine:
+    """litman's own line for how far rclone has copied, redrawn in place on a terminal.
+
+    For ``on_progress`` of a sync, push or pull. Written straight to the
+    console's file, not through Rich, which could wrap the line or drop its
+    carriage return: each update goes back to the start of the line and pads
+    over the last one with spaces, cut to the console's width less one so that
+    no terminal wraps it, and needs no escape codes (the Windows console host
+    shows it as any terminal does). ``None`` (rclone is done, however its run
+    ended) blanks it and goes back to the start, so what prints next starts on
+    a clean line. Nothing is drawn while there is nothing to copy, nor when
+    the console is not a terminal: Rich takes an agent's pipe for one when
+    FORCE_COLOR is set, so the file must be a terminal too.
+    """
+
+    def __init__(self, out: Console) -> None:
+        self._out = out
+        isatty = getattr(out.file, "isatty", None)
+        self._draws = out.is_terminal and callable(isatty) and bool(isatty())
+        self._shown = 0
+
+    def __call__(self, progress: SyncProgress | None) -> None:
+        if not self._draws:
+            return
+        text = _progress_text(progress) if progress is not None and progress.total else ""
+        text = text[: max(self._out.width - 1, 0)]
+        if not text and not self._shown:
+            return
+        pad = " " * max(self._shown - len(text), 0)
+        self._out.file.write(f"\r{text}{pad}" + ("" if text else "\r"))
+        self._out.file.flush()
+        self._shown = len(text)
+
+
+def _progress_text(progress: SyncProgress) -> str:
+    percent = progress.percent
+    if percent is None:
+        percent = progress.done * 100 // progress.total
+    return (
+        f"Copying {humanize_bytes(progress.done)} of {humanize_bytes(progress.total)} "
+        f"({percent}%)"
+    )
+
+
+def _in_own_words(err: SyncError) -> None:
+    """Leave rclone's last lines out of an error of two-way sync that litman recognises.
+
+    One that needs the user, or another sync to end
+    (:func:`litman.core.sync.classify_sync_error`), says what happened and
+    what to do in litman's words, and the record ``lit sync status`` shows
+    keeps rclone's lines. Any other error keeps them: they may be all that
+    says what went wrong.
+    """
+    if classify_sync_error(err)[0] != "offline":
+        err.args = (err.without_rclone_tail(),)
 
 
 def _say_waiting(holder: LockHolder | None) -> None:
@@ -469,7 +522,7 @@ def _run_two_way(
             target,
             first_from=first_from,
             force=force,
-            on_log=_echo_rclone_line,
+            on_progress=_ProgressLine(console),
             git_progress=console.is_terminal,
             lock_wait=SYNC_LOCK_WAIT,
             on_lock_wait=_say_waiting,
@@ -479,12 +532,15 @@ def _run_two_way(
     except SyncChoiceRequiredError as err:
         console.print(
             Panel.fit(
-                escape(str(err)),
+                escape(err.without_rclone_tail()),
                 title="lit sync — nothing was synced",
                 border_style="yellow",
             )
         )
         sys.exit(EXIT_SYNC_NEEDS_CHOICE)
+    except SyncError as err:
+        _in_own_words(err)
+        raise
     _render_two_way_summary(result)
     if result.conflicts or result.deleted_folders:
         sys.exit(EXIT_SYNC_CONFLICTS)
@@ -916,6 +972,7 @@ def sync_push_cmd(
             dry_run=dry_run,
             lock_wait=SYNC_LOCK_WAIT,
             on_lock_wait=_say_waiting,
+            on_progress=_ProgressLine(console),
         )
     except SyncBusyError as err:
         _exit_busy(err, "lit sync push — nothing was pushed")
@@ -1005,6 +1062,7 @@ def sync_pull_cmd(
             dry_run=dry_run,
             lock_wait=SYNC_LOCK_WAIT,
             on_lock_wait=_say_waiting,
+            on_progress=_ProgressLine(console),
         )
     except SyncBusyError as err:
         _exit_busy(err, "lit sync pull — nothing was pulled")
@@ -1193,8 +1251,10 @@ def _print_last_run(run: LastRun, target: str) -> None:
     """This machine's last two-way run (:class:`LastRun`), for a person or an agent.
 
     One line says when, who and how it ended; then the whole error, each
-    conflict with its backup, each repo left behind with its way out, and
-    what to do; then the code repos with changes only on this machine
+    conflict with its backup, each repo left behind with its way out, the
+    other lines rclone logged (:attr:`LastRun.rclone_lines`, which ``lit
+    sync`` does not show), and what to do; then the code repos with changes
+    only on this machine
     (:func:`_print_repos_with_work`). Printed unwrapped, so a long path stays
     whole.
     """
@@ -1225,6 +1285,10 @@ def _print_last_run(run: LastRun, target: str) -> None:
         say(f"  • {escape(head)}: {escape(r.what)}{f'. {escape(r.way_out)}' if r.way_out else ''}")
     if run.repos_total > len(run.repos):
         say(f"  • … and {run.repos_total - len(run.repos)} more repos")
+    if run.rclone_lines:
+        say("  rclone said:")
+        for line in run.rclone_lines:
+            say(f"    {escape(line)}")
     way_out = _run_way_out(run, target)
     if way_out:
         say(f"[bold]What to do:[/] {escape(way_out)}")

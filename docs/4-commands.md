@@ -1004,6 +1004,10 @@ down. It syncs with a folder inside the remote (the `--path` of
   GUI's auto sync, or `lit sync` in another terminal), `lit sync` waits up to
   90 seconds for it to end, then exits `23` without syncing. `push` and `pull`
   wait the same way.
+- **What it shows.** In a terminal, one line of how much rclone has copied,
+  gone once it is done; nothing of it in a pipe or for an agent. rclone's own
+  log lines are not shown: `lit sync status` lists them under the last run.
+  `push` and `pull` show the same line.
 - **Auto sync.** While `lit gui` runs, it syncs a library that has had its
   first `lit sync` on this machine by itself (see `lit gui` below). A two-way
   sync keeps a small `.litman-sync-stamp.json` in the cloud folder, which tells
@@ -1023,7 +1027,7 @@ down. It syncs with a folder inside the remote (the `--path` of
 | Exit code | Meaning |
 |---|---|
 | `0` | Synced. |
-| `1` | Failed, with rclone's last lines. What was not synced is picked up by the next `lit sync`. |
+| `1` | Failed. A failure litman knows (an expired sign-in, rclone's safety stop) is said in litman's words, and `lit sync status` has rclone's lines; any other ends with rclone's last lines. What was not synced is picked up by the next `lit sync`. |
 | `20` | Nothing was synced: pick the side that wins with `--first-from cloud` or `--first-from local`. |
 | `21` | Synced, with conflicts: the newer copy of each file was kept and the older one is in the backup, or a folder deleted on one machine won over changes made to it on the other. |
 | `22` | Synced, but a code repo here does not match the library: its checkout is missing, at another commit, or left behind by a repo removed on another machine. The summary says why and what to do. |
@@ -1038,7 +1042,7 @@ is only listed; it does not change the exit code.
 | `setup` | Hand the TTY to `rclone config`, then record the chosen remote + path in `lit-config.yaml`. `--remote <name>` skips the interactive step (point litman at an existing remote); `--path <path>` sets the mirror path. Off a terminal, both are required. |
 | `push` | Upload the vault (`rclone sync` — deletes orphans on the remote). Refused once the library syncs two-way, on this machine or another: run `lit sync` instead. |
 | `pull` | Download the remote into the vault. **One-way with deletion** — local files absent on the remote are removed. Refused once the library syncs two-way (run `lit sync`; on a new machine, `lit sync --first-from cloud`), and when the remote holds no `lit-config.yaml`. |
-| `status` | Show last-push / last-pull timestamps and local vs. remote file counts. No network mutation. For a library that syncs two-way, it counts what two-way sync carries and shows the last sync. Below that, this machine's last two-way run, from a terminal or the GUI: how it ended, each conflict with its backup, the code repos left behind, or the full error with what to do. After it, the code repos that run found with changes only on this machine (uncommitted changes, or commits no remote has), each with what to do. Then the folders of conflict backups made on this machine in the last 7 days, besides the last run's: each one's time, whether a sync or a save in the GUI made it, its path and its first files. Both parts show even when the cloud cannot be reached. `--local` reads only this machine's records, with no rclone call: the mode (two-way, one-way push / pull, or not synced from this machine yet), the last run and the conflict backups. |
+| `status` | Show last-push / last-pull timestamps and local vs. remote file counts. No network mutation. For a library that syncs two-way, it counts what two-way sync carries and shows the last sync. Below that, this machine's last two-way run, from a terminal or the GUI: how it ended, each conflict with its backup, the code repos left behind, or the full error with what to do, and the lines rclone logged. After it, the code repos that run found with changes only on this machine (uncommitted changes, or commits no remote has), each with what to do. Then the folders of conflict backups made on this machine in the last 7 days, besides the last run's: each one's time, whether a sync or a save in the GUI made it, its path and its first files. Both parts show even when the cloud cannot be reached. `--local` reads only this machine's records, with no rclone call: the mode (two-way, one-way push / pull, or not synced from this machine yet), the last run and the conflict backups. |
 
 `push` runs a full health-check first as an integrity gate: any error-severity
 finding aborts the push, so a corrupted local state never overwrites the cloud

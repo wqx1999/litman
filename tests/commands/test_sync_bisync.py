@@ -89,9 +89,8 @@ needs_rclone = pytest.mark.skipif(
 
 @pytest.fixture(autouse=True)
 def _wide_consoles(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Let panels and rclone lines print unwrapped, so phrases stay whole."""
+    """Let panels print unwrapped, so phrases stay whole."""
     monkeypatch.setattr(sync_cmd, "console", Console(width=400))
-    monkeypatch.setattr(sync_cmd, "_rclone_console", Console(stderr=True, width=400))
 
 
 @pytest.fixture
@@ -1470,10 +1469,10 @@ def test_bisync_reports_every_changed_file_and_litman_reads_each_one_back(
             ),
         ),
     )
-    # The report stays out of sight; rclone's other lines still show.
+    # The report stays out of sight, and so do rclone's other lines.
     assert "File was deleted" not in result.output
     assert "INFO" not in result.output
-    assert "NOTICE" in result.output
+    assert "NOTICE" not in result.output
 
 
 @needs_rclone

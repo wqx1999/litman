@@ -162,6 +162,13 @@ own entry. Read those before you upgrade, whatever the number says.
   got "no `lit health-check` in 14+ days" from its first command, and a computer
   just set up for sync got "no `lit sync` in 7+ days". Both reminders now count
   from when the library was added or sync was set up.
+- **`lit sync` shows its own progress, not rclone's log.** rclone's notices,
+  progress and error lines no longer print above the result. In a terminal,
+  `lit sync`, `push` and `pull` show one line of how much has been copied,
+  gone once it is done. rclone's lines are listed in `lit sync status`, and an
+  error litman does not recognise still ends with them, as does every error of
+  `push` and `pull`, which keep no such record. An expired sign-in during
+  `push` or `pull` now says to sign in again, not to run it again.
 
 ## 1.3.11 — 2026-11-02
 
