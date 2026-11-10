@@ -2,7 +2,7 @@
 
 ``lit sync`` with no subcommand is the two-way sync (``rclone bisync``,
 :func:`litman.core.sync.two_way_sync`) of one library used on several
-machines. Four subcommands wired thinly over ``litman.core.sync``:
+machines. Five subcommands wired thinly over ``litman.core.sync``:
 
 - ``setup`` — hand the TTY to ``rclone config`` so the user can register
   a remote, then persist the chosen remote name + path into
@@ -12,6 +12,9 @@ machines. Four subcommands wired thinly over ``litman.core.sync``:
   fresh machine to materialise the vault).
 - ``status`` — show last-push / last-pull timestamps, local + remote file
   counts, and the size delta.
+- ``disconnect`` — stop syncing on this machine: remove ``sync:`` and this
+  machine's records of the sync (:func:`litman.core.sync.disconnect_sync`),
+  and list what stays with the command that removes each.
 
 ``push`` and ``pull`` refuse a library that syncs two-way
 (:func:`litman.core.sync.require_one_way`).
@@ -48,6 +51,7 @@ from litman.core.sync import (
     CONFLICT_BACKUP_DAYS,
     DEFAULT_EXCLUDES,
     SYNC_LOCK_WAIT,
+    Disconnected,
     FileChanges,
     FirstFrom,
     LastRun,
@@ -60,6 +64,7 @@ from litman.core.sync import (
     compute_status,
     conflict_backups_root,
     describe_sync_lock_holder,
+    disconnect_sync,
     format_iso,
     humanize_bytes,
     largest_files,
@@ -69,6 +74,8 @@ from litman.core.sync import (
     oauth_expired,
     pull,
     push,
+    rclone_available,
+    rclone_never_asks,
     read_sync_mode,
     read_sync_state,
     recent_conflict_backups,
@@ -165,7 +172,7 @@ def sync_group(
     The subcommands are one-way: push mirrors the vault to the cloud as a
     backup, pull restores it from there, setup points litman at an rclone
     remote, status compares the two sides. Once a library syncs two-way,
-    push and pull refuse it.
+    push and pull refuse it. disconnect stops syncing on this computer.
     """
     if ctx.invoked_subcommand is not None:
         _refuse_group_options_before(ctx, ctx.invoked_subcommand)
@@ -700,6 +707,113 @@ def sync_setup_cmd(
             border_style="green",
         )
     )
+
+
+# ---------------------------------------------------------------------------
+# lit sync disconnect
+# ---------------------------------------------------------------------------
+
+
+@sync_group.command("disconnect")
+@library_option
+@vault_option
+def sync_disconnect_cmd(library: Path | None, vault_name: str | None) -> None:
+    """Stop syncing this library on this computer.
+
+    Removes the sync: block from lit-config.yaml and this computer's records
+    of the sync, so that syncing again after a later lit sync setup starts
+    with a first sync. The library stays as it is, and so do the backups,
+    the cloud folders, the rclone remote and the cloud account's access: the
+    output lists each with the command that removes it. Waits for a sync in
+    progress, like lit sync; needs no rclone and no network.
+    """
+    vault = find_vault(resolve_library_or_vault(library, vault_name))
+    try:
+        gone = disconnect_sync(vault, lock_wait=SYNC_LOCK_WAIT, on_lock_wait=_say_waiting)
+    except SyncBusyError as err:
+        _exit_busy(err, "lit sync disconnect — nothing was changed")
+    if gone is None:
+        console.print(
+            "This library has no cloud sync set up, so there is nothing to disconnect.",
+            soft_wrap=True,
+        )
+        return
+    console.print(
+        Panel.fit(
+            f"[bold green]This computer no longer syncs with {escape(gone.target_url)}.[/]\n"
+            "The library here is unchanged.",
+            title="lit sync disconnect",
+            border_style="green",
+        )
+    )
+    _print_left_in_place(gone)
+
+
+def _print_left_in_place(gone: Disconnected) -> None:
+    """What disconnect left, each with the command that removes it, whole on its own line."""
+
+    def say(text: str) -> None:
+        console.print(escape(text), soft_wrap=True, highlight=False)
+
+    remote, target, backup = gone.remote, gone.target_url, gone.cloud_backup
+    here = _remote_here(remote)
+    say("Still there, for you to remove if you want:")
+    if not target.partition(":")[2].strip("/\\"):
+        say(
+            f"  • The library's files at the top of {target}. They share it with the "
+            "rest of the drive, so remove them in the drive itself."
+        )
+    elif here == "yes":
+        if backup is not None:
+            say(
+                "  • The cloud folder, and its backups once a sync has made any. Leave "
+                "them while another computer syncs with them:"
+            )
+        else:
+            say("  • The cloud folder. Leave it while another computer uses it:")
+        for folder in (target, backup):
+            if folder is not None:
+                say(f"      rclone purge {shell_arg(folder)}")
+    else:
+        why = (
+            "rclone is not installed here"
+            if here == "no-rclone"
+            else f"rclone here has no remote {remote}"
+        )
+        if backup is not None:
+            say(
+                f"  • The cloud folder {target}, and its backups {backup} once a sync "
+                f"has made any. {why}, so remove them in the drive itself; leave them "
+                "while another computer syncs with them."
+            )
+        else:
+            say(
+                f"  • The cloud folder {target}. {why}, so remove it in the drive "
+                "itself; leave it while another computer uses it."
+            )
+    if here == "yes":
+        say(f"  • The rclone remote: rclone config delete {shell_arg(remote)}")
+    say(
+        "  • rclone's access to the cloud account: revoke it in the account's "
+        "security settings, once no computer uses rclone with it."
+    )
+    if gone.local_backup is not None:
+        say(f"  • Backups on this computer: {gone.local_backup}")
+
+
+def _remote_here(remote: str) -> str:
+    """``yes`` when this computer's rclone has ``remote``, ``no`` when not, ``no-rclone``.
+
+    Read from rclone's own config, never asking for its password: rclone
+    that cannot tell counts as ``yes``, so its commands are shown.
+    """
+    if not rclone_available():
+        return "no-rclone"
+    try:
+        with rclone_never_asks():
+            return "yes" if remote_exists(remote) else "no"
+    except SyncError:
+        return "yes"
 
 
 # ---------------------------------------------------------------------------

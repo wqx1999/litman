@@ -337,6 +337,16 @@ class SyncBusyError(SyncError):
     """
 
 
+class SyncNotSetUpError(SyncError):
+    """The library no longer syncs with the folder this sync was started for.
+
+    A sync that read the configuration, then waited for the sync lock while
+    ``lit sync disconnect`` removed ``sync:`` or ``lit sync setup`` pointed it
+    elsewhere. Checked once the lock is held, before anything is touched:
+    nothing was synced, and the run is not recorded.
+    """
+
+
 class SyncLockError(SyncError):
     """A sync lock could not be taken because the file system refused locks altogether.
 

@@ -51,6 +51,11 @@ own entry. Read those before you upgrade, whatever the number says.
   sync stops, and the other `lit` commands end with one line saying so until a
   sync goes through, so your agent sees it too. `lit sync status` says why and
   what to do.
+- **`lit sync disconnect` stops syncing on this computer.** It removes the
+  library's `sync:` setting and this computer's sync records, and leaves the
+  library, the backups, the cloud folders and the rclone remote as they are,
+  listing each with the command that removes it. Syncing again later starts with
+  a first sync.
 - **Read commands tell an agent what it missed.** A `lit list` filter such as
   `--topic peptide` that no paper carries and `TAXONOMY.md` does not register now
   gets a note naming the registered values spelled like it, each with its paper

@@ -41,7 +41,7 @@ from litman.core import sync as core_sync
 from litman.core.config import CONFIG_FILENAME, load_config
 from litman.core.sync_lock import SharedHold, read_holder
 from litman.core.vault_token import fingerprint, synced_token
-from litman.exceptions import LitmanError, SyncError
+from litman.exceptions import LitmanError, SyncError, SyncNotSetUpError
 
 #: How often the thread looks at the library, at least. A slow disk stretches
 #: it: the stat walk is kept under 2% of the time (:meth:`SyncScheduler._tick`).
@@ -407,6 +407,7 @@ class SyncScheduler:
         assert lib.target_url is not None and lib.workdir is not None
         try:
             with core_sync.hold_sync_lock(lib.workdir, by="lit gui", wait=0):
+                core_sync.require_still_set_up(lib.vault, lib.target_url)
                 return core_sync.write_owed_stamp(lib.workdir, lib.target_url)
         except (LitmanError, OSError):
             return True
@@ -455,6 +456,12 @@ class SyncScheduler:
         self._recent = [*self._recent[-4:], line]
 
     def _failed(self, lib: _Library, err: BaseException, now: float) -> None:
+        if isinstance(err, SyncNotSetUpError):
+            # `lit sync disconnect` or `lit sync setup` changed the library's
+            # `sync:` while this sync waited for the lock: look again now.
+            lib.config_fp = None
+            self._wake.set()
+            return
         kind, reason = core_sync.classify_sync_error(err)
         message = str(err)
         if kind == "busy":

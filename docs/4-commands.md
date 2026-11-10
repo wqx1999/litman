@@ -937,6 +937,7 @@ lit sync setup [--remote NAME] [--path PATH]
 lit sync push [--dry-run] [-y] [-f] [--exclude-repos]
 lit sync pull [--dry-run] [--exclude-repos]
 lit sync status [--local]
+lit sync disconnect
 ```
 
 **Two-way sync** runs `rclone bisync` and needs rclone 1.74.2 or newer. What
@@ -1043,6 +1044,7 @@ is only listed; it does not change the exit code.
 | `push` | Upload the vault (`rclone sync` — deletes orphans on the remote). Refused once the library syncs two-way, on this machine or another: run `lit sync` instead. |
 | `pull` | Download the remote into the vault. **One-way with deletion** — local files absent on the remote are removed. Refused once the library syncs two-way (run `lit sync`; on a new machine, `lit sync --first-from cloud`), and when the remote holds no `lit-config.yaml`. |
 | `status` | Show last-push / last-pull timestamps and local vs. remote file counts. No network mutation. For a library that syncs two-way, it counts what two-way sync carries and shows the last sync. Below that, this machine's last two-way run, from a terminal or the GUI: how it ended, each conflict with its backup, the code repos left behind, or the full error with what to do, and the lines rclone logged. After it, the code repos that run found with changes only on this machine (uncommitted changes, or commits no remote has), each with what to do. Then the folders of conflict backups made on this machine in the last 7 days, besides the last run's: each one's time, whether a sync or a save in the GUI made it, its path and its first files. Both parts show even when the cloud cannot be reached. `--local` reads only this machine's records, with no rclone call: the mode (two-way, one-way push / pull, or not synced from this machine yet), the last run and the conflict backups. |
+| `disconnect` | Stop syncing this library on this computer: remove the `sync:` block from `lit-config.yaml` and this machine's sync records, so a later `lit sync setup` starts with a first sync. The library, the backups on this machine, the cloud folders, the rclone remote and the cloud account's access stay; it lists each with the command that removes it. Waits for a sync in progress like `lit sync`, and needs no rclone or network. |
 
 `push` runs a full health-check first as an integrity gate: any error-severity
 finding aborts the push, so a corrupted local state never overwrites the cloud

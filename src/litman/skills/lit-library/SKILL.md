@@ -1,6 +1,6 @@
 ---
 name: lit-library
-description: "Write side of the litman vault: drives the `lit` CLI to change the library. NOT for discussing or reading a paper — that's lit-reading. Use to add a paper (PDF or DOI) or its SI files, tag it, link it to a project, bind a code repo, export a .bib (or RIS for EndNote), rename, delete or restore a paper, tidy the topic / method / data vocabulary, or sync the library across computers via a cloud drive. Triggers: '加到文献库' / 'add this paper', '把这些 SI 加到这篇' / 'add these SI files', '导出 bib' / 'export refs', '导出到 EndNote', '给这篇打标签' / 'tag this paper', '新建项目' / 'link it to my project', '把代码 clone 下来' / 'clone this repo', '把这篇删了' / 'delete this paper', '恢复删掉的论文' / 'restore from trash', '合并这两个 topic' / 'merge these tags', '把这篇的 id 改成 X' / 'rename this paper', '库里好多 Unknown' / 'fix these bad ids', '云同步' / 'cloud sync', '多台电脑' / '家里和学校' / 'two computers', '换电脑' / 'new computer', '备份到云盘' / 'back up to the cloud'. NOT for a project's own References/ folder — that's ref-manager."
+description: "Write side of the litman vault: drives the `lit` CLI to change the library. NOT for discussing or reading a paper — that's lit-reading. Use to add a paper (PDF or DOI) or its SI files, tag it, link it to a project, bind a code repo, export a .bib (or RIS for EndNote), rename, delete or restore a paper, tidy the topic / method / data vocabulary, or sync the library across computers via a cloud drive. Triggers: '加到文献库' / 'add this paper', '把这些 SI 加到这篇' / 'add these SI files', '导出 bib' / 'export refs', '导出到 EndNote', '给这篇打标签' / 'tag this paper', '新建项目' / 'link it to my project', '把代码 clone 下来' / 'clone this repo', '把这篇删了' / 'delete this paper', '恢复删掉的论文' / 'restore from trash', '合并这两个 topic' / 'merge these tags', '把这篇的 id 改成 X' / 'rename this paper', '库里好多 Unknown' / 'fix these bad ids', '云同步' / 'cloud sync', '多台电脑' / '家里和学校' / 'two computers', '换电脑' / 'new computer', '备份到云盘' / 'back up to the cloud', '断开同步' / 'stop syncing'. NOT for a project's own References/ folder — that's ref-manager."
 ---
 
 # lit-library — the write side of the litman vault
@@ -170,7 +170,7 @@ Only the paper lit-reading B13 confirmed with the user — never on your own, ne
 
 ## [S] Cloud sync across computers
 
-One library on several computers through the user's cloud drive (`lit sync`): setting it up, a new computer, syncing day to day, conflicts, a code repo that did not follow, a stopped sync → **read `sync.md` (next to this SKILL.md) first.**
+One library on several computers through the user's cloud drive (`lit sync`): setting it up, a new computer, syncing day to day, conflicts, a code repo that did not follow, a stopped sync, stopping sync on a computer → **read `sync.md` (next to this SKILL.md) first.**
 
 ## Something went wrong in litman
 

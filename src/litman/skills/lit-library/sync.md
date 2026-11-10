@@ -27,6 +27,10 @@ Read this when the user wants their library on more than one computer or kept in
 - **`lit sync push` / `lit sync pull` refuse a library that syncs two-way**: never suggest them for one.
 - **`No folder on this machine for project …`** in the summary → ask the user for the folder, then the `lit project set-path` it names ([H]).
 
+## Stop syncing on a computer
+
+The user wants to stop syncing here, leave this computer, or clean up a test sync → `lit sync disconnect`, then relay what it lists. It changes nothing in the library and needs no network; the cloud folders, the rclone remote and the backups stay. Run an `rclone purge` or `rclone config delete` it names only on the user's yes, and first say that a computer still syncing with that folder would see every file deleted from the cloud.
+
 ## Trouble
 
 Exit codes: `0` synced · `21` synced, with conflicts · `22` synced, a code repo here differs · `20` nothing synced, a side must be picked · `23` busy · `1` failed.

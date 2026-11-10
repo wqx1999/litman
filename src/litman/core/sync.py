@@ -47,13 +47,16 @@ import tempfile
 import threading
 import uuid
 from collections.abc import Callable, Iterable, Iterator
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
 
 from platformdirs import user_data_dir
+from ruamel.yaml.comments import CommentedMap, CommentedSeq
+from ruamel.yaml.error import CommentMark
+from ruamel.yaml.tokens import CommentToken
 
 from litman.core.config import CONFIG_FILENAME
 from litman.core.dates import now_iso
@@ -61,8 +64,9 @@ from litman.core.locking import (
     ensure_truth_locked,
     ensure_truth_unlocked,
     is_file_manager_dropping,
+    rmtree,
 )
-from litman.core.replace import replace_file
+from litman.core.replace import remove_file, replace_file
 from litman.core.shell import shell_arg
 from litman.core.sync_lock import FileLock, LockHolder, read_holder
 from litman.core.terminal import hidden_console_flags
@@ -76,6 +80,7 @@ from litman.exceptions import (
     SyncChoiceRequiredError,
     SyncError,
     SyncLockError,
+    SyncNotSetUpError,
     SyncStoppedError,
 )
 
@@ -956,6 +961,8 @@ def push(
 
     Raises:
         SyncBusyError: another sync still held the lock after ``lock_wait``.
+        SyncNotSetUpError: the library stopped syncing with ``target_url``
+            while this waited for the lock.
         SyncError: rclone failed (its last lines are in the message).
     """
     args = [
@@ -967,6 +974,7 @@ def push(
         return run_rclone(args, capture=False)
     workdir = sync_workdir(vault, target_url)
     with hold_sync_lock(workdir, by="lit sync push", wait=lock_wait, on_wait=on_lock_wait):
+        require_still_set_up(vault, target_url, "pushed")
         _mirror(args, target_url, "push", on_progress)
         stamp_push(vault)
     return None
@@ -1003,6 +1011,8 @@ def pull(
 
     Raises:
         SyncBusyError: another sync still held the lock after ``lock_wait``.
+        SyncNotSetUpError: the library stopped syncing with ``target_url``
+            while this waited for the lock.
         SyncError: rclone failed (its last lines are in the message).
     """
     args = [
@@ -1014,6 +1024,7 @@ def pull(
         return run_rclone(args, capture=False)
     workdir = sync_workdir(vault, target_url)
     with hold_sync_lock(workdir, by="lit sync pull", wait=lock_wait, on_wait=on_lock_wait):
+        require_still_set_up(vault, target_url, "pulled")
         _mirror(args, target_url, "pull", on_progress)
         stamp_pull(vault)
         # rclone does not round-trip Unix permissions, so pulled TRUTH files
@@ -1277,6 +1288,58 @@ def write_sync_to_config(config_path: Path, payload: SetupPayload) -> None:
             wrong, mid-edit by another process, etc.). Also when a value
             is not UTF-8 text, which the config could not be read back with.
     """
+    data = _config_for_edit(config_path)
+    data["sync"] = {
+        "remote": payload.remote,
+        "path": payload.path,
+        "exclude_repos": payload.exclude_repos,
+    }
+    message = config_refusal(data)
+    if message is not None:
+        raise SyncError(message)
+    _write_config(config_path, data)
+
+
+def remove_sync_from_config(config_path: Path) -> bool:
+    """Take the ``sync:`` block out of ``lit-config.yaml``; False when it has none.
+
+    The round trip of :func:`write_sync_to_config`, so the rest of the file
+    stays as it was. ruamel keeps the comment lines that follow a block with
+    the block's last entry, the commented-out ``sync:`` example of a new
+    library's config among them; they belong to what follows, so they are
+    hung after the entry before ``sync:`` (before the one after it, when
+    ``sync:`` comes first). The block's own comments go with it.
+
+    Raises:
+        SyncError: the file is missing or holds no YAML mapping.
+    """
+    data = _config_for_edit(config_path)
+    if "sync" not in data:
+        return False
+    keys = list(data)
+    at = keys.index("sync")
+    lines = _comment_lines_after(data["sync"])
+    del data["sync"]
+    if lines.strip():
+        if at > 0:
+            _hang_comment_lines(data, keys[at - 1], lines)
+        elif len(keys) > 1:
+            slot = data.ca.items.setdefault(keys[1], [None, [], None, None])
+            if slot[1] is None:
+                slot[1] = []
+            slot[1][:0] = [
+                CommentToken(line + "\n", CommentMark(0), None) for line in lines.splitlines()
+            ]
+    _write_config(config_path, data)
+    return True
+
+
+def _config_for_edit(config_path: Path) -> Any:
+    """``lit-config.yaml`` read for a round trip (comments kept).
+
+    Raises:
+        SyncError: the file is missing, is not YAML, or holds no mapping.
+    """
     if not config_path.is_file():
         raise SyncError(
             f"No lit-config.yaml at {config_path}. Run `lit init` first."
@@ -1291,18 +1354,61 @@ def write_sync_to_config(config_path: Path, payload: SetupPayload) -> None:
         raise SyncError(
             f"{config_path} does not contain a YAML mapping at the top level."
         )
-    data["sync"] = {
-        "remote": payload.remote,
-        "path": payload.path,
-        "exclude_repos": payload.exclude_repos,
-    }
-    message = config_refusal(data)
-    if message is not None:
-        raise SyncError(message)
+    return data
+
+
+def _write_config(config_path: Path, data: Any) -> None:
     tmp = config_path.with_suffix(config_path.suffix + ".tmp")
     with tmp.open("w", encoding="utf-8") as f:
         _yaml.dump(data, f)
     replace_file(tmp, config_path)
+
+
+def _last_key(node: CommentedMap | CommentedSeq) -> Any:
+    return list(node)[-1] if isinstance(node, CommentedMap) else len(node) - 1
+
+
+def _comment_slot(node: CommentedMap | CommentedSeq, key: Any) -> tuple[list[Any], int]:
+    """Where ruamel keeps the comment after ``node[key]``'s line: the slot and its index."""
+    if isinstance(node, CommentedSeq):
+        return node.ca.items.setdefault(key, [None, None]), 0
+    return node.ca.items.setdefault(key, [None, None, None, None]), 2
+
+
+def _comment_lines_after(value: object) -> str:
+    """The comment lines ruamel hangs on ``value``'s last entry, after that entry's own line."""
+    if not isinstance(value, (CommentedMap, CommentedSeq)) or not value:
+        return ""
+    key = _last_key(value)
+    inner = value[key]
+    if isinstance(inner, (CommentedMap, CommentedSeq)) and inner:
+        return _comment_lines_after(inner)
+    slot, at = _comment_slot(value, key)
+    token = slot[at]
+    if token is None:
+        return ""
+    _, newline, rest = str(token.value).partition("\n")
+    return rest if newline else ""
+
+
+def _hang_comment_lines(data: CommentedMap, key: Any, lines: str) -> None:
+    """Hang comment ``lines`` after the last line of ``data[key]``."""
+    node: CommentedMap | CommentedSeq = data
+    while True:
+        value = node[key]
+        if not (
+            isinstance(value, (CommentedMap, CommentedSeq))
+            and value
+            and not value.fa.flow_style()
+        ):
+            break
+        node, key = value, _last_key(value)
+    slot, at = _comment_slot(node, key)
+    token = slot[at]
+    if token is None:
+        slot[at] = CommentToken("\n" + lines, CommentMark(0), None)
+    else:
+        token.value += lines if token.value.endswith("\n") else "\n" + lines
 
 
 # ---------------------------------------------------------------------------
@@ -1659,6 +1765,152 @@ def hold_pass_lock(workdir: Path) -> Iterator[None]:
 def pass_lock_path(vault: Path, target_url: str) -> Path:
     """Where ``pass.lock`` of ``vault`` synced with ``target_url`` lives."""
     return sync_workdir(vault, target_url) / PASS_LOCK_NAME
+
+
+def require_still_set_up(vault: Path, target_url: str, done: str = "synced") -> None:
+    """Refuse to go on once ``vault`` no longer syncs with ``target_url``.
+
+    The first thing a sync does once it holds the sync lock: one that read
+    the configuration, then waited while ``lit sync disconnect`` removed
+    ``sync:`` or ``lit sync setup`` pointed the library elsewhere, stops here
+    before it touches anything. ``done`` is what did not happen (``synced``,
+    ``pushed``, ...).
+
+    Raises:
+        SyncNotSetUpError: ``sync:`` is gone or names another folder.
+    """
+    from litman.core.config import load_config
+
+    configured = load_config(vault).sync
+    if configured is None or configured.target_url() != target_url:
+        raise SyncNotSetUpError(
+            f"This library is no longer set up to sync with {target_url}, so "
+            f"nothing was {done}."
+        )
+
+
+# -- stopping sync on this machine ----------------------------------------------
+
+
+@dataclass(frozen=True)
+class Disconnected:
+    """What :func:`disconnect_sync` left in place, for the user to remove if they want."""
+
+    target_url: str
+    remote: str
+    #: The cloud folder two-way sync keeps its backups in, which rclone makes
+    #: only once a sync has backed something up; ``None`` for a library only
+    #: pushed or pulled here, or kept at the remote's top, where none is made.
+    cloud_backup: str | None
+    #: This machine's sync backups; ``None`` when there are none.
+    local_backup: Path | None
+
+
+def disconnect_sync(
+    vault: Path,
+    *,
+    lock_wait: float = SYNC_LOCK_WAIT,
+    on_lock_wait: Callable[[LockHolder | None], None] | None = None,
+) -> Disconnected | None:
+    """Stop syncing ``vault`` on this machine: what setting it up and syncing left here goes.
+
+    This machine's records of the sync (:func:`sync_workdir`) go first,
+    rclone's listings of the last sync before anything else; then the
+    sync-state file; the ``sync:`` block of ``lit-config.yaml`` last. Cut off
+    anywhere before that, the library is still set up and has no records of
+    a sync, so its next sync is a first one, as is the first after a later
+    ``lit sync setup``. The library, the backups, the cloud folders, the
+    rclone remote and the cloud account's grant stay. Only the configuration
+    says what to remove: no rclone, no network.
+
+    Holds the sync lock like a sync, waiting up to ``lock_wait`` seconds for
+    one to end (``on_lock_wait`` hears the holder when the wait starts); a
+    sync that read the configuration before and takes the lock after stops
+    at :func:`require_still_set_up`. The lock files go once the lock is let
+    go, where nothing holds one (Windows does not delete an open file): a
+    folder left with them alone holds no records. Where the file system
+    refuses locks no sync can run, so none is waited for.
+
+    Returns None when ``vault`` has no ``sync:``, and touches nothing.
+
+    Raises:
+        SyncBusyError: another sync still held the lock after ``lock_wait``.
+        SyncNotSetUpError: ``lit sync setup`` pointed the library elsewhere
+            while this waited; nothing was changed.
+        ConfigError: ``lit-config.yaml`` could not be read.
+        OSError: a record could not be removed; ``sync:`` is still there.
+    """
+    from litman.core.config import load_config
+
+    configured = load_config(vault).sync
+    if configured is None:
+        return None
+    target_url = configured.target_url()
+    workdir = sync_workdir(vault, target_url)
+    one_way = local_sync_mode(vault, target_url) == "one-way"
+    with ExitStack() as held:
+        try:
+            held.enter_context(
+                hold_sync_lock(
+                    workdir, by="lit sync disconnect", wait=lock_wait, on_wait=on_lock_wait
+                )
+            )
+        except SyncBusyError:
+            holder = read_holder(workdir / SYNC_LOCK_NAME)
+            raise SyncBusyError(
+                f"{describe_sync_lock_holder(holder)}, so this computer is still "
+                "connected. Try again once it is done."
+            ) from None
+        except SyncLockError:
+            pass
+        now = load_config(vault).sync
+        if now is not None and now.target_url() != target_url:
+            raise SyncNotSetUpError(
+                f"This library is no longer set up to sync with {target_url}, so "
+                "nothing was changed. Run `lit sync disconnect` again."
+            )
+        if now is not None:
+            _remove_records(workdir)
+            for name in (SYNC_STATE_FILENAME, SYNC_STATE_FILENAME + ".tmp"):
+                remove_file(vault / name)
+            remove_sync_from_config(vault / CONFIG_FILENAME)
+    rmtree(workdir, ignore_errors=True)
+    if now is None:
+        # Another disconnect went first while this one waited.
+        return None
+    try:
+        cloud_backup = None if one_way else remote_backup_root(target_url)
+    except SyncError:
+        cloud_backup = None
+    local_backup = sync_data_dir() / "sync-backup" / vault_key(vault, target_url)
+    return Disconnected(
+        target_url=target_url,
+        remote=configured.remote,
+        cloud_backup=cloud_backup,
+        local_backup=local_backup if local_backup.is_dir() else None,
+    )
+
+
+def _remove_records(workdir: Path) -> None:
+    """Remove everything in ``workdir`` but the two lock files, rclone's path1 listings first.
+
+    Whatever stops it part-way, the folder no longer reads as synced before
+    (:func:`bisync_initialised`).
+    """
+    try:
+        names = os.listdir(workdir)
+    except FileNotFoundError:
+        return
+    names = sorted(
+        (name for name in names if name not in (SYNC_LOCK_NAME, PASS_LOCK_NAME)),
+        key=lambda name: ".path1.lst" not in name,
+    )
+    for name in names:
+        path = workdir / name
+        if path.is_dir() and not path.is_symlink():
+            rmtree(path)
+        else:
+            remove_file(path)
 
 
 # -- the auto-sync stamp -----------------------------------------------------
@@ -3859,10 +4111,12 @@ def two_way_sync(
 
     The whole sync holds the library's sync lock, waiting up to ``lock_wait``
     seconds for another sync to end (``on_lock_wait`` hears the holder when
-    the wait starts); rclone's passes also hold the lock the GUI's saves
-    wait on (:mod:`litman.core.sync_lock`). ``by`` names this sync in the
-    lock. Before the passes the auto-sync stamp is read, and after a sync
-    that changed the cloud a new one is written (:class:`StampRound`).
+    the wait starts), and goes on only if the library still syncs with
+    ``target_url`` then (:func:`require_still_set_up`); rclone's passes also
+    hold the lock the GUI's saves wait on (:mod:`litman.core.sync_lock`).
+    ``by`` names this sync in the lock. Before the passes the auto-sync stamp
+    is read, and after a sync that changed the cloud a new one is written
+    (:class:`StampRound`).
     ``control`` steers a sync the GUI runs (:class:`SyncControl`).
     ``on_log`` hears each line rclone logs at NOTICE and above; with
     ``on_progress``, its stats lines, logged every second, go there instead
@@ -3871,6 +4125,8 @@ def two_way_sync(
     Raises:
         SyncChoiceRequiredError: the run needs the user's ``--first-from``.
         SyncBusyError: another sync of this library held the lock.
+        SyncNotSetUpError: the library stopped syncing with ``target_url``
+            while this waited for the lock; not recorded.
         SyncError: rclone is missing or too old, its record names would be
             too long, the remote cannot be listed, or bisync failed (its last
             log lines are in the message).
@@ -3892,6 +4148,7 @@ def two_way_sync(
             require_bisync_names_fit(vault, target_url)
         paths.workdir.mkdir(parents=True, exist_ok=True)
         with hold_sync_lock(paths.workdir, by=by, wait=lock_wait, on_wait=on_lock_wait):
+            require_still_set_up(vault, target_url)
             result = _two_way_sync_held(
                 vault,
                 target_url,
@@ -3905,8 +4162,9 @@ def two_way_sync(
             )
             record_run(vault, _with_rclone_lines(run_from_result(result, trigger), heard))
             return result
-    except (SyncBusyError, BisyncLockedError):
-        # Another sync's run: the record stays that run's.
+    except (SyncBusyError, BisyncLockedError, SyncNotSetUpError):
+        # Another sync's run, or none of this library's any more: the record
+        # stays as it was.
         raise
     except (LitmanError, OSError) as err:
         refused = as_auth_failure(err, target_url)

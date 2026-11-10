@@ -113,6 +113,18 @@ def replace_file(src: _Path, dst: _Path) -> None:
     _ride_out(os.replace, src, dst)
 
 
+def remove_file(path: _Path) -> None:
+    """``os.unlink(path)``, riding out a program holding the file; a missing one is fine."""
+
+    def unlink(target: _Path, _unused: _Path) -> None:
+        try:
+            os.unlink(target)
+        except FileNotFoundError:
+            pass
+
+    _ride_out(unlink, path, path)
+
+
 def rename_path(src: _Path, dst: _Path) -> None:
     """``os.rename(src, dst)``, riding out a program holding a file in the folder."""
     _ride_out(os.rename, src, dst)
