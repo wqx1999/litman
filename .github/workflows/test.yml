@@ -85,8 +85,10 @@ jobs:
       # here for a reason that says nothing about the code under test. The
       # exclusion is named in the step title so every run declares what it
       # did not cover.
+      # --durations lists the 30 slowest test phases, so a run that got slower
+      # can be traced from its own log.
       - name: Test (excludes tests/bench — its fixture PDFs cannot be committed)
-        run: pytest -q -n auto --ignore=tests/bench
+        run: pytest -q -n auto --durations=30 --ignore=tests/bench
 
   # ruff, mypy, and a check that the committed webUI build matches its source.
   # Linux only: none of the three depends on the platform, and on Windows git's
