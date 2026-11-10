@@ -214,6 +214,43 @@ def test_a_file_system_that_refuses_locks_is_an_error_not_a_holder(
     again.release()
 
 
+@pytest.mark.parametrize("refused", ["open", "mkdir"])
+def test_a_lock_file_litman_may_not_write_is_its_own_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, refused: str
+) -> None:
+    """A sandbox refusing litman's data folder: not "file locks refused", which
+    ``lit sync disconnect`` goes on after, and not an OSError's traceback."""
+    from litman.exceptions import SyncAccessError, SyncLockError
+
+    folder = tmp_path / "records"
+    if refused == "open":
+        folder.mkdir()
+    denied = os.strerror(errno.EACCES)
+    real = getattr(os, refused)
+
+    def refuse(path: Any, *args: Any, **kwargs: Any) -> Any:
+        if folder in (Path(os.fsdecode(path)), *Path(os.fsdecode(path)).parents):
+            raise PermissionError(errno.EACCES, denied, os.fsdecode(path))
+        return real(path, *args, **kwargs)
+
+    lock = FileLock(folder / "sync.lock")
+    with monkeypatch.context() as sandbox:
+        sandbox.setattr(os, refused, refuse)
+        with pytest.raises(SyncAccessError) as caught:
+            lock.try_acquire()
+
+    assert str(caught.value) == (
+        f"litman could not write its sync records in {folder} ({denied}), so nothing "
+        "was changed. Allow writing to that folder, then run it again."
+    )
+    assert not isinstance(caught.value, SyncLockError)
+    assert isinstance(caught.value.__cause__, PermissionError)
+    assert not lock.held
+    # The in-memory half was let go too.
+    assert lock.try_acquire()
+    lock.release()
+
+
 def test_in_the_gui_rclone_gets_no_terminal_to_ask_on(monkeypatch: pytest.MonkeyPatch) -> None:
     """An encrypted rclone config asks for its password on the terminal; the
     GUI's rclone runs (rclone_never_asks) must fail instead of waiting."""

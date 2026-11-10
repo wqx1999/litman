@@ -1547,5 +1547,5 @@ def _run_way_out(run: LastRun, target: str) -> str | None:
             "Run `lit sync` to try again; it shows rclone's whole output. "
             "If the network was down, the GUI's auto sync tries again on its own."
         )
-    # safety-stop, lock and rclone: the error names the way out itself.
+    # safety-stop, lock, access and rclone: the error names the way out itself.
     return None

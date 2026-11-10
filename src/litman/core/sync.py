@@ -68,13 +68,14 @@ from litman.core.locking import (
 )
 from litman.core.replace import remove_file, replace_file
 from litman.core.shell import shell_arg
-from litman.core.sync_lock import FileLock, LockHolder, read_holder
+from litman.core.sync_lock import FileLock, LockHolder, read_holder, records_refused
 from litman.core.terminal import hidden_console_flags
 from litman.core.undecodable import config_refusal
 from litman.core.yaml_pool import ThreadLocalYAML
 from litman.exceptions import (
     BisyncLockedError,
     LitmanError,
+    SyncAccessError,
     SyncAuthError,
     SyncBusyError,
     SyncChoiceRequiredError,
@@ -1727,6 +1728,9 @@ def hold_sync_lock(
 
     Raises:
         SyncBusyError: the lock was still held after ``wait`` seconds.
+        SyncAccessError: litman's data folder refused the lock file; nothing
+            was changed.
+        SyncLockError: the file system refuses locks.
     """
     lock = FileLock(workdir / SYNC_LOCK_NAME)
 
@@ -1749,9 +1753,18 @@ def hold_pass_lock(workdir: Path) -> Iterator[None]:
 
     Raises:
         SyncBusyError: a GUI save still held it after :data:`PASS_LOCK_WAIT`.
+        SyncAccessError: litman's data folder refused the lock file. The sync
+            holding the sync lock in that folder has begun by then.
     """
     lock = FileLock(workdir / PASS_LOCK_NAME)
-    if not lock.acquire(PASS_LOCK_WAIT):
+    try:
+        taken = lock.acquire(PASS_LOCK_WAIT)
+    except SyncAccessError as err:
+        raise SyncAccessError(
+            f"{records_refused(lock.path.parent, err.__cause__)}, so this sync stopped "
+            "part-way. Allow writing to that folder, then run `lit sync` again."
+        ) from err.__cause__
+    if not taken:
         raise SyncBusyError(
             "The GUI is still saving to this library, so nothing was synced. "
             "Try again in a minute."
@@ -1837,8 +1850,10 @@ def disconnect_sync(
         SyncBusyError: another sync still held the lock after ``lock_wait``.
         SyncNotSetUpError: ``lit sync setup`` pointed the library elsewhere
             while this waited; nothing was changed.
+        SyncAccessError: litman's data folder refused the lock file (nothing
+            was changed), or a record could not be removed (``sync:`` is
+            still there).
         ConfigError: ``lit-config.yaml`` could not be read.
-        OSError: a record could not be removed; ``sync:`` is still there.
     """
     from litman.core.config import load_config
 
@@ -1870,10 +1885,19 @@ def disconnect_sync(
                 "nothing was changed. Run `lit sync disconnect` again."
             )
         if now is not None:
-            _remove_records(workdir)
-            for name in (SYNC_STATE_FILENAME, SYNC_STATE_FILENAME + ".tmp"):
-                remove_file(vault / name)
-            remove_sync_from_config(vault / CONFIG_FILENAME)
+            try:
+                _remove_records(workdir)
+                for name in (SYNC_STATE_FILENAME, SYNC_STATE_FILENAME + ".tmp"):
+                    remove_file(vault / name)
+            except OSError as err:
+                raise _not_removed(err.filename or workdir, err, target_url) from err
+            config_path = vault / CONFIG_FILENAME
+            try:
+                remove_sync_from_config(config_path)
+            except OSError as err:
+                raise _not_removed(
+                    f"the `sync:` block from {config_path}", err, target_url
+                ) from err
     rmtree(workdir, ignore_errors=True)
     if now is None:
         # Another disconnect went first while this one waited.
@@ -1888,6 +1912,15 @@ def disconnect_sync(
         remote=configured.remote,
         cloud_backup=cloud_backup,
         local_backup=local_backup if local_backup.is_dir() else None,
+    )
+
+
+def _not_removed(what: object, err: OSError, target_url: str) -> SyncAccessError:
+    """The error of a disconnect that could not remove ``what``: one line, its way out."""
+    return SyncAccessError(
+        f"litman could not remove {what} ({err.strerror or err}), so this computer "
+        f"is still set up to sync with {target_url}. Once it can be removed, run "
+        "`lit sync disconnect` again."
     )
 
 
@@ -3818,14 +3851,16 @@ def classify_sync_error(err: BaseException) -> tuple[SyncErrorKind, str]:
     filter set, records gone, an emptied side), ``safety-stop`` (rclone's
     too-many-deletes or all-changed stop), ``auth`` (the cloud refused the
     sign-in: an expired OAuth token, a password it no longer accepts),
-    ``lock`` (the file system refuses the sync locks). Busy: another sync
-    holds litman's lock or rclone's. Anything else, the network included, is
-    taken as offline.
+    ``lock`` (the file system refuses the sync locks), ``access`` (litman's
+    data folder refuses writing). Busy: another sync holds litman's lock or
+    rclone's. Anything else, the network included, is taken as offline.
     """
     if isinstance(err, (SyncBusyError, BisyncLockedError)):
         return "busy", "busy"
     if isinstance(err, SyncLockError):
         return "needs-user", "lock"
+    if isinstance(err, SyncAccessError):
+        return "needs-user", "access"
     if isinstance(err, SyncChoiceRequiredError):
         return "needs-user", "choice"
     if isinstance(err, SyncStoppedError):
@@ -4146,7 +4181,8 @@ def two_way_sync(
             # rclone has not written these record names yet; nothing is written
             # before they are known to fit.
             require_bisync_names_fit(vault, target_url)
-        paths.workdir.mkdir(parents=True, exist_ok=True)
+        # The lock makes the folder: one litman may not write in stops there,
+        # in litman's words.
         with hold_sync_lock(paths.workdir, by=by, wait=lock_wait, on_wait=on_lock_wait):
             require_still_set_up(vault, target_url)
             result = _two_way_sync_held(

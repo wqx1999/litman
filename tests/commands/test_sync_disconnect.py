@@ -45,7 +45,13 @@ from litman.core.vault_registry import (
     mark_health_checked,
     save_registry,
 )
-from litman.exceptions import SyncBusyError, SyncError, SyncLockError, SyncNotSetUpError
+from litman.exceptions import (
+    SyncAccessError,
+    SyncBusyError,
+    SyncError,
+    SyncLockError,
+    SyncNotSetUpError,
+)
 from litman.server.sync_scheduler import SaveGate, SyncScheduler
 from tests.commands.test_sync_bisync import (
     _machine,
@@ -639,7 +645,7 @@ def test_cut_off_before_the_config_it_leaves_a_first_sync(
 
     with monkeypatch.context() as patched:
         patched.setattr(core_sync, "remove_sync_from_config", disk_full)
-        with pytest.raises(OSError, match="No space left"):
+        with pytest.raises(SyncAccessError, match="No space left"):
             core_sync.disconnect_sync(vault, lock_wait=0)
 
     assert not core_sync.bisync_initialised(workdir)
@@ -666,7 +672,7 @@ def test_rclones_path1_listings_go_first(tmp_path: Path, monkeypatch: pytest.Mon
 
     monkeypatch.setattr(core_sync, "remove_file", held_by_a_scanner)
 
-    with pytest.raises(PermissionError):
+    with pytest.raises(SyncAccessError, match=r"\(held\), so this computer is still set up"):
         core_sync.disconnect_sync(vault, lock_wait=0)
 
     assert not core_sync.bisync_initialised(workdir)

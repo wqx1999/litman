@@ -491,7 +491,7 @@ view with `lit config show`.
 | `default_clone_depth` | integer ≥ 0 | `1` | `lit code add`, `lit code restore-all`. `0` means full history. |
 | `codes_ignore_patterns` | list[string] | `["repo/"]` | `lit sync push` / `pull`. Glob patterns under `codes/` that backup tools exclude (keeps bulky checkouts out of the cloud; rebuild with `lit code restore-all`). Two-way `lit sync` never carries `codes/*/repo/`. |
 | `projects` | dict[string, string] | `{}` | `lit link`, `lit unlink`, `lit refresh-views`. Project name to directory path. Must be populated (via `lit project add`) before `lit link`. |
-| `sync` | object or null | `null` | `lit sync`. `null` means sync is not configured. Populated by `lit sync setup`. |
+| `sync` | object or null | `null` | `lit sync`. `null` means sync is not configured. Populated by `lit sync setup`, removed by `lit sync disconnect`. |
 
 The nested `sync` object:
 

@@ -347,6 +347,16 @@ class SyncNotSetUpError(SyncError):
     """
 
 
+class SyncAccessError(SyncError):
+    """litman could not write, or remove, a record of a library's sync.
+
+    The records are in litman's data folder, outside the library, which a
+    sandbox that lets a program write only in its workspace refuses. When
+    the sync lock cannot be made, nothing was changed; ``lit sync
+    disconnect`` raises it too for a record it could not remove.
+    """
+
+
 class SyncLockError(SyncError):
     """A sync lock could not be taken because the file system refused locks altogether.
 

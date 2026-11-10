@@ -35,7 +35,7 @@ from datetime import datetime
 from pathlib import Path
 
 from litman.core.dates import now_iso
-from litman.exceptions import SyncLockError
+from litman.exceptions import SyncAccessError, SyncLockError
 
 #: Where the Windows lock sits: one byte this far into the file, past any
 #: holder line, so the line stays readable while the lock is held.
@@ -82,6 +82,16 @@ def _key(path: Path) -> str:
     return os.path.normcase(os.path.abspath(path))
 
 
+def records_refused(folder: Path, err: BaseException | None) -> str:
+    """``litman could not write its sync records in <folder> (Permission denied)``.
+
+    How a :class:`~litman.exceptions.SyncAccessError` begins; ``err`` is the
+    system's refusal.
+    """
+    why = err.strerror if isinstance(err, OSError) and err.strerror else str(err)
+    return f"litman could not write its sync records in {folder} ({why})"
+
+
 def _os_lock(fd: int) -> None:
     """Take the system lock on ``fd`` without waiting; ``OSError`` when it is held."""
     if sys.platform == "win32":
@@ -122,6 +132,8 @@ class FileLock:
         """Take the lock if it is free; False when another holder has it.
 
         Raises:
+            SyncAccessError: the lock file could not be made or opened (a
+                sandbox refusing litman's data folder, say).
             SyncLockError: the file system refused the lock itself.
         """
         if self._fd is not None:
@@ -134,10 +146,13 @@ class FileLock:
         try:
             self.path.parent.mkdir(parents=True, exist_ok=True)
             fd = os.open(self.path, os.O_RDWR | os.O_CREAT, 0o644)
-        except OSError:
+        except OSError as err:
             with _held_guard:
                 _held.discard(key)
-            raise
+            raise SyncAccessError(
+                f"{records_refused(self.path.parent, err)}, so nothing was changed. "
+                "Allow writing to that folder, then run it again."
+            ) from err
         try:
             _os_lock(fd)
         except OSError as err:
