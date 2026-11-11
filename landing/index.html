@@ -3,11 +3,11 @@
 <head>
 <meta charset="utf-8"/>
 <meta name="viewport" content="width=device-width, initial-scale=1"/>
-<title>litman — you read, it files</title>
+<title>litman · you read, it files</title>
 <meta name="description" content="litman keeps every paper you read as plain files on your own disk, and lets the AI agent you already use do the filing."/>
 <link rel="icon" href="img/favicon.png" type="image/png"/>
 
-<meta property="og:title" content="litman — you read, it files"/>
+<meta property="og:title" content="litman · you read, it files"/>
 <meta property="og:description" content="Every paper as plain files on your own disk. Your AI agent keeps them in order."/>
 <meta property="og:image" content="https://litman.dev/img/browse-light.webp"/>
 <meta property="og:url" content="https://litman.dev/"/>
@@ -807,7 +807,7 @@
     </h1>
 
     <p class="lede">
-      Every paper stays as a plain file on your own disk — and the AI agent
+      Every paper stays as a plain file on your own disk, and the AI agent
       you already use does the filing, finding and linking.
     </p>
 
@@ -878,7 +878,7 @@
             <li><span class="ic">PDF</span><span class="nm">download.pdf</span><span class="mt">Dec 30 · 6.4 MB</span></li>
           </ul>
           <div class="callout" data-k="0" style="top:52px">Which folder did I even put it in?</div>
-          <div class="callout" data-k="1" style="top:96px">Wait — did I read this one already?</div>
+          <div class="callout" data-k="1" style="top:96px">Wait, did I read this one already?</div>
           <div class="callout" data-k="2" style="top:150px">I had thoughts on this. They're gone.</div>
         </div>
       </div>
@@ -895,12 +895,12 @@
       <p class="eyebrow">The engine · your agent</p>
       <h2>Just ask, and it's filed.</h2>
       <p class="lede">
-        Ask the AI agent you already use, in plain words. It runs the commands —
-        filing, finding and linking papers for you.
+        Ask the AI agent you already use, in plain words. It runs the commands that
+        file, find and link papers for you.
       </p>
       <p class="note">
-        Works with <b>Claude Code</b> · <b>Codex</b> · <b>Antigravity</b> ·
-        <b>Cursor</b> · <b>OpenCode</b> — use the model you already pay for.
+        Works with <b>Claude Code</b>, <b>ZCode</b> and more. Use the model you already
+        pay for.
       </p>
     </div>
 
@@ -909,7 +909,7 @@
       <div class="picks rise" role="tablist" aria-label="Things you can ask the agent">
         <button class="pick on" data-ex="0" aria-selected="true">
           <span class="n">1</span>
-          <span><b class="k">Add &amp; file a new paper</b><span class="s">One sentence — added, tagged, filed.</span></span>
+          <span><b class="k">Add &amp; file a new paper</b><span class="s">One sentence: added, tagged, filed.</span></span>
         </button>
         <button class="pick" data-ex="1" aria-selected="false">
           <span class="n">2</span>
@@ -938,12 +938,12 @@
           <div class="stream" id="stream">
 
             <div class="ex on" data-ex="0">
-              <div class="msg you">Add the paper I just downloaded — it's about peptide binders.</div>
+              <div class="msg you">Add the paper I just downloaded. It's about peptide binders.</div>
               <div class="tools">
                 <span class="tool"><span class="st"></span><code>lit add ~/Downloads/2310.19325.pdf --from-llm-json meta.json</code></span>
                 <span class="tool"><span class="st"></span><code>lit modify 2024_Chen --add-tag topics=peptide-design</code></span>
               </div>
-              <div class="msg bot">Filed under the <b>peptide-design</b> topic, in <code>papers/2024_Chen_Diffusion-Peptide-Binders/</code>. It cites two papers already in your vault — link them?</div>
+              <div class="msg bot">Filed under the <b>peptide-design</b> topic, in <code>papers/2024_Chen_Diffusion-Peptide-Binders/</code>. It cites two papers already in your vault. Link them?</div>
             </div>
 
             <div class="ex" data-ex="1">
@@ -951,7 +951,7 @@
               <div class="tools">
                 <span class="tool"><span class="st"></span><code>lit list --topic peptide-design --status deep-read</code></span>
               </div>
-              <div class="msg bot">That's <b>Chen 2024</b> — you read it three weeks ago. Your <code>notes.md</code> flags the sampler as the weak point. Open it?</div>
+              <div class="msg bot">That's <b>Chen 2024</b>. You read it three weeks ago. Your <code>notes.md</code> flags the sampler as the weak point. Open it?</div>
             </div>
 
             <div class="ex" data-ex="2">
@@ -960,7 +960,7 @@
                 <span class="tool"><span class="st"></span><code>lit code add https://github.com/chen-lab/pepdiff --paper 2024_Chen</code></span>
                 <span class="tool"><span class="st"></span><code>cd codes/pepdiff/repo &amp;&amp; python train.py --dry-run</code></span>
               </div>
-              <div class="msg bot">Cloned into <code>codes/pepdiff/</code>. <code>train.py</code> needs torch 2.1 and a config they didn't ship — I drafted one and noted it in <code>discussion.md</code>.</div>
+              <div class="msg bot">Cloned into <code>codes/pepdiff/</code>. <code>train.py</code> needs torch 2.1 and a config they didn't ship, so I drafted one and noted it in <code>discussion.md</code>.</div>
             </div>
 
             <div class="ex" data-ex="3">
@@ -999,7 +999,7 @@
         <h2>Sit down and read.</h2>
         <p class="lede">
           The agent keeps everything filed and linked. The app is that same
-          library, made for reading — where <b>you</b> highlight, annotate and note.
+          library, made for reading, where <b>you</b> highlight, annotate and note.
         </p>
 
         <div class="segment" id="seg" role="tablist" aria-label="What the app does">
@@ -1010,7 +1010,7 @@
         </div>
 
         <p class="cap" id="cap">
-          <span class="on">Filter by status, topic, method — the same library the agent files into.</span>
+          <span class="on">Filter by status, topic and method in the same library the agent files into.</span>
           <span>Read it in place. Highlight and annotate; the marks stay with the paper.</span>
           <span>Notes are Markdown on disk. The agent reads them; so does any editor you like.</span>
         </p>
